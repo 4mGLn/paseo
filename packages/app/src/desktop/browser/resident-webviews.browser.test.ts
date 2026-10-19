@@ -250,6 +250,54 @@ describe("resident browser webviews", () => {
     ]);
   });
 
+  it("registers a browser when DOM readiness follows an attachment before method readiness", () => {
+    const webview = ensureTestBrowser({
+      browserId: "browser-not-ready-at-attachment",
+      workspaceId: "workspace-a",
+      url: "https://example.com",
+    });
+    if (!webview) {
+      throw new Error("Expected resident webview");
+    }
+
+    // Model Electron's method-readiness boundary. This event order is a
+    // hypothesis for #7348, not an observation from the packaged desktop.
+    let ready = false;
+    Object.assign(webview, {
+      getWebContentsId: () => {
+        if (!ready) {
+          throw new Error(
+            "The WebView must be attached to the DOM and the dom-ready event emitted before this method can be called.",
+          );
+        }
+        return 303;
+      },
+    });
+    const attachmentErrors: string[] = [];
+    const recordAttachmentError = (event: ErrorEvent) => {
+      attachmentErrors.push(event.message);
+      event.preventDefault();
+    };
+    window.addEventListener("error", recordAttachmentError);
+    try {
+      webview.dispatchEvent(new Event("did-attach"));
+      expect(attachedBrowsers).toEqual([]);
+
+      ready = true;
+      webview.dispatchEvent(new Event("dom-ready"));
+      expect(attachedBrowsers).toEqual([
+        {
+          browserId: "browser-not-ready-at-attachment",
+          workspaceId: "workspace-a",
+          webContentsId: 303,
+        },
+      ]);
+      expect(attachmentErrors).toEqual([]);
+    } finally {
+      window.removeEventListener("error", recordAttachmentError);
+    }
+  });
+
   it("normalizes an existing resident host back to permanent parking", () => {
     const staleHost = document.createElement("div");
     staleHost.id = RESIDENT_HOST_ID;
