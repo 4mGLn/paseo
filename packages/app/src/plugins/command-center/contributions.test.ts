@@ -43,6 +43,7 @@ const agent: PluginAgentSnapshot = {
   thinkingOptionId: null,
   requiresAttention: false,
   attentionReason: null,
+  parent: null,
   parentAgentId: null,
   labels: {},
 };

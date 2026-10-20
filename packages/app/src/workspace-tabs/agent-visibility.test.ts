@@ -1,3 +1,4 @@
+import { managedAgentFields } from "@/subagents/test-fixtures";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { afterEach, describe, expect, it } from "vitest";
 import { useSessionStore, type Agent } from "@/stores/session-store";
@@ -51,7 +52,9 @@ function makeAgent(input: {
     workspaceId: input.workspaceId,
     model: null,
     thinkingOptionId: null,
-    parentAgentId: input.parentAgentId ?? null,
+    ...managedAgentFields(
+      input.parentAgentId ? { serverId: "srv", agentId: input.parentAgentId } : null,
+    ),
     labels: {},
     requiresAttention: false,
     attentionReason: null,
@@ -520,4 +523,29 @@ describe("workspace agent visibility", () => {
       expect(workspaceAgentVisibilityEqual(a, b)).toBe(true);
     });
   });
+});
+
+it("compares qualified workspace identity and ignores an unattested parent pointer", () => {
+  const child = makeAgent({ id: "child", cwd: "/repo", workspaceId: "same" });
+  const parent = { serverId: "A", agentId: "parent" };
+  const attested = {
+    ...child,
+    ...managedAgentFields(parent, { serverId: "A", workspaceId: "same" }),
+  };
+  const visibility = (value: Agent) =>
+    deriveWorkspaceAgentVisibility({
+      sessionAgents: new Map([[value.id, value]]),
+      workspaceId: "same",
+    }).autoOpenAgentIds;
+  expect(visibility(attested)).toEqual(new Set(["child"]));
+  expect(
+    visibility({
+      ...attested,
+      managedRelationship: {
+        ...attested.managedRelationship!,
+        parentWorkspace: { serverId: "srv", workspaceId: "same" },
+      },
+    }),
+  ).toEqual(new Set());
+  expect(visibility({ ...child, parent })).toEqual(new Set(["child"]));
 });

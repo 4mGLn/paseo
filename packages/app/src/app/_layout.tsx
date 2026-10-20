@@ -1,3 +1,4 @@
+import { HostAuthoritySessions } from "@/runtime/host-authority-sessions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useIsExplorerSidebarOpen } from "@/workspace-tabs/explorer-sidebar";
@@ -313,6 +314,7 @@ function HostSessionManager() {
 
   return (
     <>
+      <HostAuthoritySessions />
       {hosts.map((daemon) => (
         <ManagedDaemonSession key={daemon.serverId} daemon={daemon} />
       ))}

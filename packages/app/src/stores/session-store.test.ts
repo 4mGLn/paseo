@@ -40,7 +40,8 @@ function createTestAgent(agentId: string): Agent {
     title: null,
     cwd: "/repo",
     model: null,
-    parentAgentId: null,
+    parent: null,
+    managedRelationship: null,
     labels: {},
   };
 }

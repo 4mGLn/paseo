@@ -5,9 +5,13 @@ import {
   resolveComposerAttachmentSubmitFormat,
   splitComposerAttachmentsForSubmit,
 } from "@/composer/attachments/submit";
-import { isActiveCreateFlowForDraft, useCreateFlowStore } from "@/stores/create-flow-store";
+import {
+  isActiveCreateFlowForDraft,
+  useCreateFlowStore,
+  useCreateFlowStoreApi,
+} from "@/stores/create-flow-store";
 import { handoffCreatedAgentMessageSubmission } from "@/composer/submission/writer";
-import { useSessionStore } from "@/stores/session-store";
+import { useSessionStoreApi } from "@/stores/session-store";
 import {
   createUserMessage,
   type StreamItem,
@@ -122,6 +126,8 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
   onCreateError,
 }: UseDraftAgentCreateFlowOptions<TDraftAgent, TCreateResult>) {
   const { t } = useTranslation();
+  const sessionStore = useSessionStoreApi();
+  const flowStore = useCreateFlowStoreApi();
   const [localMachine, dispatch] = useReducer(
     reducer<TDraftAgent>,
     initialAttempt,
@@ -235,6 +241,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
               images: attempt.images,
               attachments: attempt.attachments,
             }),
+            sessionStore,
           );
           markPendingCreateLifecycle({ draftId, lifecycle: "sent" });
         }
@@ -255,6 +262,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
     },
     [
       createRequest,
+      sessionStore,
       draftId,
       getPendingServerId,
       markPendingCreateLifecycle,
@@ -268,7 +276,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
 
   const handleCreateFromInput = useCallback(
     async ({ text, attachments, cwd }: SubmitContext) => {
-      const existing = useCreateFlowStore.getState().pendingByDraftId[draftId];
+      const existing = flowStore.getState().pendingByDraftId[draftId];
       if (
         isSubmitting ||
         isActiveCreateFlowForDraft({ pending: existing, serverId: getPendingServerId(), draftId })
@@ -285,7 +293,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         throw error;
       }
       const supportsForgeSearch =
-        useSessionStore.getState().sessions[pendingServerId]?.serverInfo?.features?.forgeSearch ===
+        sessionStore.getState().sessions[pendingServerId]?.serverInfo?.features?.forgeSearch ===
         true;
       const wirePayload = splitComposerAttachmentsForSubmit(attachments, {
         format: resolveComposerAttachmentSubmitFormat({
@@ -342,6 +350,8 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
       draftId,
       getPendingServerId,
       isSubmitting,
+      flowStore,
+      sessionStore,
       onCreateStart,
       runCreateAttempt,
       setPendingCreateAttempt,

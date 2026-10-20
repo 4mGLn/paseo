@@ -1,4 +1,4 @@
-import { buildHostAgentDetailRoute } from "@/utils/host-routes";
+import { buildHostAgentDetailRoute, withHostRouteAuthority } from "@/utils/host-routes";
 import { normalizeWorkspaceOpaqueId } from "@/utils/workspace-identity";
 import type { NavigateToWorkspaceInput } from "@/stores/navigation-active-workspace-store";
 
@@ -9,6 +9,7 @@ export interface NavigateToAgentInput {
   // (cold deep-links). Otherwise the workspace is read from the store.
   workspaceId?: string | null;
   pin?: boolean;
+  authority?: { originServerId: string };
 }
 
 export interface AgentNavTarget {
@@ -16,7 +17,11 @@ export interface AgentNavTarget {
 }
 
 export interface NavigateToAgentDeps {
-  readAgentNavTarget: (input: { serverId: string; agentId: string }) => AgentNavTarget;
+  readAgentNavTarget: (input: {
+    serverId: string;
+    agentId: string;
+    authority?: { originServerId: string };
+  }) => AgentNavTarget;
   navigateToHostAgent: (route: string) => void;
   navigateToWorkspace: (input: NavigateToWorkspaceInput) => string;
 }
@@ -27,11 +32,16 @@ export function resolveNavigateToAgent(
 ): string {
   const agentWorkspaceId =
     input.workspaceId ??
-    deps.readAgentNavTarget({ serverId: input.serverId, agentId: input.agentId }).agentWorkspaceId;
+    deps.readAgentNavTarget({
+      serverId: input.serverId,
+      agentId: input.agentId,
+      ...(input.authority ? { authority: input.authority } : {}),
+    }).agentWorkspaceId;
   const workspaceId = normalizeWorkspaceOpaqueId(agentWorkspaceId);
 
   if (!workspaceId) {
-    const route = buildHostAgentDetailRoute(input.serverId, input.agentId);
+    const base = buildHostAgentDetailRoute(input.serverId, input.agentId);
+    const route = input.authority ? withHostRouteAuthority(base, input.authority) : base;
     deps.navigateToHostAgent(route);
     return route;
   }
@@ -41,5 +51,6 @@ export function resolveNavigateToAgent(
     workspaceId,
     target: { kind: "agent", agentId: input.agentId },
     pin: input.pin,
+    ...(input.authority ? { authority: input.authority } : {}),
   });
 }

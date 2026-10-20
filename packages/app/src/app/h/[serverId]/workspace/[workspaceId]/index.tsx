@@ -1,7 +1,9 @@
+import { HostAuthorityRoute } from "@/runtime/host-authority-route";
+import { workspaceSelectionAuthority } from "@/stores/last-workspace-selection";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigation } from "expo-router/react-navigation";
 import { StyleSheet, View } from "react-native";
-import { useGlobalSearchParams, useLocalSearchParams, useRootNavigationState } from "expo-router";
+import { useGlobalSearchParams, useRootNavigationState } from "expo-router";
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
 import { RetainedPanel } from "@/components/retained-panel";
 import {
@@ -24,16 +26,12 @@ import {
   resolveWorkspaceDeckEntries,
   shouldKeepWorkspaceDeckEntryMounted,
 } from "@/screens/workspace/workspace-deck-retention";
-import {
-  decodeWorkspaceIdFromPathSegment,
-  parseWorkspaceOpenIntent,
-  type WorkspaceOpenIntent,
-} from "@/utils/host-routes";
+import { parseWorkspaceOpenIntent, type WorkspaceOpenIntent } from "@/utils/host-routes";
 import {
   replaceBrowserRouteWithCanonicalHostWorkspaceRoute,
   stripHostWorkspaceRouteEchoSearchFromBrowserUrlAfterCommit,
 } from "@/utils/host-route-browser";
-import { prepareWorkspaceTab } from "@/utils/workspace-navigation";
+import { useWorkspaceTabNavigation } from "@/workspace-tabs/navigation";
 import { isNative, isWeb } from "@/constants/platform";
 import { RenderProfile } from "@/utils/render-profiler";
 
@@ -94,24 +92,34 @@ export default function HostWorkspaceIndexRoute() {
 }
 
 function HostWorkspaceRouteContent() {
+  const { open } = useGlobalSearchParams<{ open?: string | string[] }>();
+  return (
+    <WorkspaceDeck
+      recoveryRequested={parseWorkspaceOpenIntent(getParamValue(open))?.kind === "agent"}
+    />
+  );
+}
+
+function WorkspaceOpenIntentBoundary({
+  selection,
+  active,
+  children,
+}: {
+  selection: ActiveWorkspaceSelection;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  const { prepareWorkspaceTab } = useWorkspaceTabNavigation();
   const navigation = useNavigation();
   const rootNavigationState = useRootNavigationState();
   const hasHydratedWorkspaceLayoutStore = useWorkspaceLayoutStoreHydrated();
   const consumedIntentRef = useRef<string | null>(null);
   const [intentConsumed, setIntentConsumed] = useState(false);
-  const params = useLocalSearchParams<{
-    serverId?: string | string[];
-    workspaceId?: string | string[];
-  }>();
   const globalParams = useGlobalSearchParams<{
     open?: string | string[];
   }>();
-  const serverId = getParamValue(params.serverId);
-  const workspaceValue = getParamValue(params.workspaceId);
-  const workspaceId = workspaceValue
-    ? (decodeWorkspaceIdFromPathSegment(workspaceValue) ?? "")
-    : "";
-  const openValue = getParamValue(globalParams.open);
+  const { serverId, workspaceId } = selection;
+  const openValue = active ? getParamValue(globalParams.open) : "";
   const hasHydratedWorkspaces = useHasHydratedWorkspaces(serverId);
   const workspaceExists = useWorkspaceExists(serverId, workspaceId);
   const openIntent = useMemo(() => parseWorkspaceOpenIntent(openValue), [openValue]);
@@ -178,6 +186,7 @@ function HostWorkspaceRouteContent() {
     openIntent,
     openValue,
     rootNavigationState?.key,
+    prepareWorkspaceTab,
     serverId,
     workspaceId,
   ]);
@@ -190,7 +199,7 @@ function HostWorkspaceRouteContent() {
     return null;
   }
 
-  return <WorkspaceDeck recoveryRequested={isAgentOpenIntent} />;
+  return children;
 }
 
 function WorkspaceDeck({ recoveryRequested }: { recoveryRequested: boolean }) {
@@ -274,7 +283,20 @@ function WorkspaceDeck({ recoveryRequested }: { recoveryRequested: boolean }) {
   );
 }
 
-function WorkspaceDeckEntry({
+function WorkspaceDeckEntry(props: {
+  selection: ActiveWorkspaceSelection;
+  active: boolean;
+  recoveryRequested: boolean;
+  onUnmountInactive: (selection: ActiveWorkspaceSelection) => void;
+}) {
+  return (
+    <HostAuthorityRoute reference={workspaceSelectionAuthority(props.selection)}>
+      <WorkspaceDeckEntryContent {...props} />
+    </HostAuthorityRoute>
+  );
+}
+
+function WorkspaceDeckEntryContent({
   selection,
   active,
   recoveryRequested,
@@ -308,12 +330,14 @@ function WorkspaceDeckEntry({
       active={active}
       testID={`workspace-deck-entry-${selection.serverId}:${selection.workspaceId}`}
     >
-      <WorkspaceScreen
-        serverId={selection.serverId}
-        workspaceId={selection.workspaceId}
-        isRouteFocused={active}
-        recoveryRequested={active && recoveryRequested}
-      />
+      <WorkspaceOpenIntentBoundary selection={selection} active={active}>
+        <WorkspaceScreen
+          serverId={selection.serverId}
+          workspaceId={selection.workspaceId}
+          isRouteFocused={active}
+          recoveryRequested={active && recoveryRequested}
+        />
+      </WorkspaceOpenIntentBoundary>
     </RetainedPanel>
   );
 }

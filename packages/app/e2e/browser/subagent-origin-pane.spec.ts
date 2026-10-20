@@ -1,3 +1,13 @@
+import { buildHostAgentDetailRoute } from "@/utils/host-routes";
+import { submitMessage } from "../support/helpers/composer";
+import { openSessions, clickSessionRow } from "../support/helpers/archive-tab";
+import {
+  seedFleetSubagents,
+  connectFleetDirectHost,
+  openFleetParentTrack,
+  readFleetAuthorityState,
+  expectFleetRouteUnavailable,
+} from "../support/helpers/subagents";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "../support/fixtures";
@@ -145,5 +155,106 @@ test("a preferred chat file link still opens beside its right-pane agent", async
     await expect(left.getByTestId("workspace-tab-file_linked.ts")).toHaveCount(0);
   } finally {
     await workspace.cleanup();
+  }
+});
+
+test("a fleet child retains its origin beside direct access through collision, catalog push, reload and revocation", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const fleet = await seedFleetSubagents();
+  try {
+    const a = fleet.parent.serverId;
+    const b = fleet.destination.serverId;
+    await connectFleetDirectHost(page, fleet);
+    await openFleetParentTrack(page);
+    const rows = page.getByTestId(`subagents-track-row-${fleet.remote.id}`);
+    await expect(rows).toHaveCount(2);
+    const remote = rows.filter({ hasText: "Fleet child on B" });
+    await expect(remote).toBeVisible();
+    await expect(remote.getByTestId(`subagents-track-row-facts-${fleet.remote.id}`)).toHaveText(
+      "Ten second stream · Low · Load test",
+    );
+    await expect
+      .poll(async () => (await readFleetAuthorityState(page, a, b)).direct.status)
+      .toBe("online");
+    await expect
+      .poll(async () => (await readFleetAuthorityState(page, a, b)).routed.catalogVersion)
+      .toBeGreaterThan(0);
+    const beforePush = await readFleetAuthorityState(page, a, b);
+    await fleet.direct.providers.refresh({ cwd: fleet.workspace.repoPath });
+    await expect
+      .poll(async () => (await readFleetAuthorityState(page, a, b)).routed.catalogVersion)
+      .toBeGreaterThan(beforePush.routed.catalogVersion);
+    await remote.click();
+    await expect(page).toHaveURL(
+      (url) => url.pathname.includes(`/h/${b}/workspace/`) && url.searchParams.get("origin") === a,
+    );
+    await submitMessage(page, "ROUTED_FLEET_PROMPT");
+    await expect
+      .poll(async () => (await fleet.remote.refresh())?.agent.lastUserMessageAt)
+      .not.toBeNull();
+    expect((await fleet.local.refresh())?.agent.lastUserMessageAt).toBeNull();
+    const routedUrl = page.url();
+    await page.reload();
+    await expect(page).toHaveURL((url) => url.searchParams.get("origin") === a);
+    await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
+    await fleet.remote.waitForFinish();
+    // Reopen direct B through ordinary history, then retain it beside the routed conversation.
+    await openSessions(page);
+    await clickSessionRow(page, "Fleet child on B");
+    await expect(page).toHaveURL(
+      (url) => url.pathname.includes(`/h/${b}/workspace/`) && !url.searchParams.has("origin"),
+    );
+    await openFleetParentTrack(page);
+    await page
+      .getByTestId(`subagents-track-row-${fleet.remote.id}`)
+      .filter({ hasText: "Fleet child on B" })
+      .click();
+    await expect
+      .poll(async () => (await readFleetAuthorityState(page, a, b)).direct.status)
+      .toBe("online");
+    await fleet.disable();
+    await expect
+      .poll(async () => (await readFleetAuthorityState(page, a, b)).routed.status)
+      .not.toBe("online");
+    const withdrawn = await readFleetAuthorityState(page, a, b);
+    expect(withdrawn.direct.status).toBe("online");
+    await fleet.direct.providers.refresh({ cwd: fleet.workspace.repoPath });
+    await expect
+      .poll(async () => (await readFleetAuthorityState(page, a, b)).direct.catalogVersion)
+      .toBeGreaterThan(withdrawn.direct.catalogVersion);
+    expect((await readFleetAuthorityState(page, a, b)).routed.catalogVersion).toBe(
+      withdrawn.routed.catalogVersion,
+    );
+    await page.reload();
+    await expect(page).toHaveURL((url) => url.searchParams.get("origin") === a);
+    expect((await fleet.local.refresh())?.agent.lastUserMessageAt).toBeNull();
+    // Direct B remains a separate usable authority; its newer evidence cannot refill A's withdrawn scope.
+    await page.goto(buildHostAgentDetailRoute(b, fleet.remote.id, fleet.workspace.workspaceId));
+    await submitMessage(page, "DIRECT_ONLY_AFTER_REVOCATION");
+    await expect(page.getByText("DIRECT_ONLY_AFTER_REVOCATION", { exact: true })).toBeVisible();
+    await page.goto(routedUrl);
+    await expect(page).toHaveURL((url) => url.searchParams.get("origin") === a);
+    await expectFleetRouteUnavailable(page, a, b);
+    await expect(page.getByText("DIRECT_ONLY_AFTER_REVOCATION", { exact: true })).toHaveCount(0);
+    const beforeRecovery = (await fleet.direct.agents.ref(fleet.remote.id).refresh())?.agent
+      .lastUserMessageAt;
+    await fleet.enable();
+    await expect
+      .poll(async () => (await readFleetAuthorityState(page, a, b)).routed.status)
+      .toBe("online");
+    await expect(page).toHaveURL((url) => url.searchParams.get("origin") === a);
+    await expect(page.getByText("DIRECT_ONLY_AFTER_REVOCATION", { exact: true })).toBeVisible();
+    await submitMessage(page, "AFTER_REENABLE_THROUGH_A");
+    await expect
+      .poll(
+        async () =>
+          (await fleet.direct.agents.ref(fleet.remote.id).refresh())?.agent.lastUserMessageAt,
+      )
+      .not.toBe(beforeRecovery);
+    expect((await fleet.local.refresh())?.agent.lastUserMessageAt).toBeNull();
+  } finally {
+    await fleet.close();
   }
 });

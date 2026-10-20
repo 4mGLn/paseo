@@ -174,3 +174,30 @@ describe("opening beside", () => {
     expect(paneIdHolding(besideTabId)).toBe("main");
   });
 });
+
+it("opens equal-address child tabs only in the captured layout owner", async () => {
+  const { createWorkspaceLayoutStore } = await import("@/stores/workspace-layout-store");
+  const { createWorkspaceTargetActions } = await import("./open-beside");
+  const direct = createWorkspaceLayoutStore();
+  const routed = createWorkspaceLayoutStore();
+  direct.getState().setLayoutMode("split-panes");
+  routed.getState().setLayoutMode("compact");
+  const actions = createWorkspaceTargetActions(routed);
+  actions.openWorkspaceTargetAtLocation({
+    workspaceKey: "B:workspace",
+    target: { kind: "agent", agentId: "child" },
+    location: "main",
+  });
+  expect(
+    routed
+      .getState()
+      .getWorkspaceTabs("B:workspace")
+      .some((tab) => tab.target.kind === "agent" && tab.target.agentId === "child"),
+  ).toBe(true);
+  expect(
+    direct
+      .getState()
+      .getWorkspaceTabs("B:workspace")
+      .some((tab) => tab.target.kind === "agent" && tab.target.agentId === "child"),
+  ).toBe(false);
+});

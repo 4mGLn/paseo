@@ -1,3 +1,4 @@
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import type { Agent } from "@/stores/session-store";
 import type { ConfirmDialogInput } from "@/utils/confirm-dialog";
 
@@ -34,23 +35,23 @@ export function resolveDetachSubagentDialog(
 }
 
 export interface DetachSubagentDeps {
-  getSubagent: (subagentId: string) => ResolveDetachSubagentDialogInput | undefined;
+  getSubagent: (child: AgentAddress) => ResolveDetachSubagentDialogInput | undefined;
   confirm: (input: ConfirmDialogInput) => Promise<boolean>;
-  detachAgent: (input: { serverId: string; agentId: string }) => Promise<void>;
-  openDetachedAgent: (input: { serverId: string; agentId: string }) => void;
+  detachAgent: (input: AgentAddress) => Promise<{ phase: string }>;
+  reportPending: () => void;
+  openDetachedAgent: (input: AgentAddress) => void;
   reportError: (error: unknown) => void;
 }
 
 export interface RequestDetachSubagentInput {
-  serverId: string;
-  subagentId: string;
+  child: AgentAddress;
 }
 
 export async function requestDetachSubagent(
   input: RequestDetachSubagentInput,
   deps: DetachSubagentDeps,
 ): Promise<void> {
-  const subagent = deps.getSubagent(input.subagentId);
+  const subagent = deps.getSubagent(input.child);
   const confirmed = await deps.confirm(
     resolveDetachSubagentDialog({
       title: subagent?.title,
@@ -60,8 +61,9 @@ export async function requestDetachSubagent(
     return;
   }
   try {
-    await deps.detachAgent({ serverId: input.serverId, agentId: input.subagentId });
-    deps.openDetachedAgent({ serverId: input.serverId, agentId: input.subagentId });
+    const result = await deps.detachAgent(input.child);
+    if (result.phase === "detached") deps.openDetachedAgent(input.child);
+    else deps.reportPending();
   } catch (error) {
     deps.reportError(error);
   }

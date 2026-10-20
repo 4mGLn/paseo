@@ -1,4 +1,4 @@
-import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
+import type { AgentSnapshotPayload, ServerInfoStatusPayload } from "@getpaseo/protocol/messages";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import {
@@ -60,6 +60,8 @@ export function derivePendingPermissionKey(
 export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
   return {
     id: agent.id,
+    parent: agent.parent,
+    managedRelationship: agent.managedRelationship,
     provider: agent.provider,
     cwd: agent.cwd,
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
@@ -88,7 +90,39 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
   };
 }
 
-export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId: string) {
+function normalizeManagedMembership(
+  snapshot: AgentSnapshotPayload,
+  serverId: string,
+  serverInfo?: Pick<ServerInfoStatusPayload, "features"> | null,
+) {
+  // COMPAT(legacyManagedMembership): added in v0.12.0, remove after 2027-04-20.
+  // A capable daemon's absent projection never grants membership from labels or a pointer.
+  const legacyParentId =
+    serverInfo &&
+    serverInfo.features?.fleetSubagents !== true &&
+    snapshot.parent === undefined &&
+    snapshot.managedRelationship === undefined
+      ? getParentAgentIdFromLabels(snapshot.labels)
+      : null;
+  const legacyParent = legacyParentId ? { serverId, agentId: legacyParentId } : null;
+  const parent = snapshot.parent === undefined ? legacyParent : snapshot.parent;
+  const managedRelationship =
+    snapshot.managedRelationship ??
+    (legacyParentId
+      ? {
+          id: `legacy:${serverId}:${snapshot.id}`,
+          parent: { serverId, agentId: legacyParentId },
+          parentWorkspace: null,
+        }
+      : null);
+  return { parent, managedRelationship };
+}
+
+export function normalizeAgentSnapshot(
+  snapshot: AgentSnapshotPayload,
+  serverId: string,
+  serverInfo?: Pick<ServerInfoStatusPayload, "features"> | null,
+) {
   const createdAt = new Date(snapshot.createdAt);
   const updatedAt = new Date(snapshot.updatedAt);
   const lastUserMessageAt = snapshot.lastUserMessageAt
@@ -98,7 +132,11 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     ? new Date(snapshot.attentionTimestamp)
     : null;
   const archivedAt = snapshot.archivedAt ? new Date(snapshot.archivedAt) : null;
-  const parentAgentId = getParentAgentIdFromLabels(snapshot.labels);
+  const { parent, managedRelationship } = normalizeManagedMembership(
+    snapshot,
+    serverId,
+    serverInfo,
+  );
   // COMPAT(agentTurnIdentity): added in v0.2.6, remove after 2027-01-31 once daemon floor >= v0.2.6.
   // Old daemons expose only status. Normalize that legacy signal once so the rest
   // of the app consumes one activity shape.
@@ -132,7 +170,8 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     attentionReason: snapshot.attentionReason ?? null,
     attentionTimestamp,
     archivedAt,
-    parentAgentId,
+    parent,
+    managedRelationship,
     labels: snapshot.labels,
   };
 }

@@ -2,13 +2,13 @@ import type { TFunction } from "i18next";
 import type { ComposerTrackPillSegment } from "@/composer/tracks";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { deriveSidebarStateBucket, STATUS_BUCKET_ORDER } from "@/utils/sidebar-agent-state";
-import type { SubagentRow } from "./select";
+import { subagentRowIdentity, type SubagentRow } from "./select";
 import { isFinishedSubagent } from "./archive-finished";
 import { providerSubagentLifecycleStatus } from "./provider-store";
 
 function presentationStatus(row: SubagentRow) {
   if (row.kind === "paseo") {
-    if (row.turn.phase === "open") return "running";
+    if (row.turn?.phase === "open") return "running";
     return row.status === "running" ? "idle" : row.status;
   }
   return providerSubagentLifecycleStatus(row.status);
@@ -33,15 +33,18 @@ export function buildSubagentRowPresentationData(row: SubagentRow): SubagentRowP
   const subtitle = providerSubtitle ?? (description ? title : null);
   const status = presentationStatus(row);
   return {
-    key: `${row.kind}_subagent_${row.id}`,
+    key: subagentRowIdentity(row),
     kind: "agent",
     label: label ?? "",
     subtitle: subtitle ?? "",
     titleState: label ? "ready" : "loading",
-    statusBucket: deriveSidebarStateBucket({
-      status,
-      requiresAttention: false,
-    }),
+    statusBucket:
+      status === null
+        ? null
+        : deriveSidebarStateBucket({
+            status,
+            requiresAttention: false,
+          }),
   };
 }
 

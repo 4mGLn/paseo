@@ -1,4 +1,10 @@
-import { Redirect } from "expo-router";
+import { useMemo } from "react";
+import { HostAuthorityRoute } from "@/runtime/host-authority-route";
+import {
+  workspaceSelectionAuthority,
+  type ActiveWorkspaceSelection,
+} from "@/stores/last-workspace-selection";
+import { Redirect, useLocalSearchParams } from "expo-router";
 import { useHostRouteServerId } from "@/navigation/host-route-context";
 import {
   resolveHostIndexRoute,
@@ -13,10 +19,31 @@ import {
 
 export default function HostIndexRoute() {
   const serverId = useHostRouteServerId();
-  const workspaceSelection = useLastWorkspaceSelection();
+  const remembered = useLastWorkspaceSelection();
+  const { origin } = useLocalSearchParams<{ origin?: string }>();
+  const selection = useMemo(
+    () =>
+      remembered?.serverId === serverId
+        ? { ...remembered, ...(origin ? { authority: { originServerId: origin } } : {}) }
+        : null,
+    [remembered, serverId, origin],
+  );
+  if (!selection) return <HostIndexContent workspaceSelection={null} />;
+  return (
+    <HostAuthorityRoute reference={workspaceSelectionAuthority(selection)}>
+      <HostIndexContent workspaceSelection={selection} />
+    </HostAuthorityRoute>
+  );
+}
+
+function HostIndexContent({
+  workspaceSelection,
+}: {
+  workspaceSelection: ActiveWorkspaceSelection | null;
+}) {
+  const serverId = useHostRouteServerId();
   const isWorkspaceSelectionLoaded = useIsLastWorkspaceSelectionHydrated();
-  const workspaceSelectionWorkspaceId =
-    workspaceSelection?.serverId === serverId ? workspaceSelection.workspaceId : null;
+  const workspaceSelectionWorkspaceId = workspaceSelection?.workspaceId ?? null;
   const hasHydratedWorkspaces = useHasHydratedWorkspaces(serverId);
   const workspaceSelectionExists = useWorkspaceExists(serverId, workspaceSelectionWorkspaceId);
 

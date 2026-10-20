@@ -854,7 +854,8 @@ async function revealCompactChanges(page: Page) {
   await expect(compactReviewSurface(page).getByTestId("diff-file-0-body")).toBeVisible();
 }
 async function expectReviewEditorBody(page: Page, body: string) {
-  await expect(page.getByRole("textbox", { name: "Review comment", exact: true })).toHaveValue(
-    body,
-  );
+  const editor = page.getByRole("textbox", { name: "Review comment", exact: true });
+  // A viewport resize starts the presentation handoff; exactly one editor must remain accessible.
+  await expect(editor).toHaveCount(1);
+  await expect(editor).toHaveValue(body);
 }

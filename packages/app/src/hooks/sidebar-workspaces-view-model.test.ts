@@ -1,3 +1,4 @@
+import { managedAgentFields } from "@/subagents/test-fixtures";
 import { describe, expect, it } from "vitest";
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
 import type { WorkspaceStructureProject } from "@/projects/workspace-structure";
@@ -769,7 +770,9 @@ function agent(input: {
     cwd: "/repo",
     workspaceId: input.workspaceId,
     model: null,
-    parentAgentId: input.parentAgentId ?? null,
+    ...managedAgentFields(
+      input.parentAgentId ? { serverId: "srv", agentId: input.parentAgentId } : null,
+    ),
     archivedAt: input.archivedAt ?? null,
     labels: {},
   };

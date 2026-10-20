@@ -1,3 +1,4 @@
+import { managedAgentFields } from "@/subagents/test-fixtures";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -7,6 +8,7 @@ import {
 } from "@/workspace-tabs/agent-visibility";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { selectSubagentsForParent } from "@/subagents/select";
+import { membershipFixture, relationshipFixture } from "@/subagents/test-fixtures";
 import { findPaneById, findPaneContainingTab } from "./workspace-layout-actions";
 import { useWorkspaceLayoutStore } from "./workspace-layout-store";
 import { useSessionStore, type Agent } from "./session-store";
@@ -67,7 +69,8 @@ const AGENT_DEFAULTS: Agent = {
   attentionReason: null,
   attentionTimestamp: null,
   archivedAt: null,
-  parentAgentId: null,
+  parent: null,
+  managedRelationship: null,
   labels: {},
   projectPlacement: null,
 };
@@ -142,7 +145,7 @@ describe("workspace subagents integration", () => {
 
     const child = makeAgent({
       id: "child-agent",
-      parentAgentId: "parent-agent",
+      ...managedAgentFields({ serverId: SERVER_ID, agentId: "parent-agent" }),
       title: "Child agent",
     });
     const parent = makeAgent({
@@ -163,13 +166,12 @@ describe("workspace subagents integration", () => {
     expect(getWorkspaceAgentTabIds(workspaceKey!)).toEqual(["agent_parent-agent"]);
     expect(
       selectSubagentsForParent(
-        useSessionStore.getState(),
-        {
-          serverId: SERVER_ID,
-          parentAgentId: "parent-agent",
-        },
+        membershipFixture({ serverId: SERVER_ID, agentId: "parent-agent" }, [
+          relationshipFixture({ serverId: SERVER_ID, agentId: "parent-agent" }, child),
+        ]),
+        { originServerId: SERVER_ID, serverId: SERVER_ID },
         new Set(),
-      ).map((row) => row.id),
+      ).map((row) => row.address.agentId),
     ).toEqual(["child-agent"]);
   });
 
@@ -186,7 +188,7 @@ describe("workspace subagents integration", () => {
     });
     const child = makeAgent({
       id: "child-agent",
-      parentAgentId: "parent-agent",
+      ...managedAgentFields({ serverId: SERVER_ID, agentId: "parent-agent" }),
       title: "Child agent",
     });
 
@@ -196,16 +198,15 @@ describe("workspace subagents integration", () => {
     expect(getWorkspaceAgentTabIds(workspaceKey!)).toEqual(["agent_parent-agent"]);
     expect(
       selectSubagentsForParent(
-        useSessionStore.getState(),
-        {
-          serverId: SERVER_ID,
-          parentAgentId: "parent-agent",
-        },
+        membershipFixture({ serverId: SERVER_ID, agentId: "parent-agent" }, [
+          relationshipFixture({ serverId: SERVER_ID, agentId: "parent-agent" }, child),
+        ]),
+        { originServerId: SERVER_ID, serverId: SERVER_ID },
         new Set(),
-      ).map((row) => row.id),
+      ).map((row) => row.address.agentId),
     ).toEqual(["child-agent"]);
 
-    appendAgent({ ...child, parentAgentId: null, labels: {} });
+    appendAgent({ ...child, parent: null, managedRelationship: null, labels: {} });
     reconcileWorkspaceTabs(workspaceKey!, deriveVisibilityFromSession());
 
     expect(getWorkspaceAgentTabIds(workspaceKey!)).toEqual([
@@ -214,11 +215,12 @@ describe("workspace subagents integration", () => {
     ]);
     expect(
       selectSubagentsForParent(
-        useSessionStore.getState(),
-        {
-          serverId: SERVER_ID,
-          parentAgentId: "parent-agent",
-        },
+        membershipFixture({ serverId: SERVER_ID, agentId: "parent-agent" }, [
+          relationshipFixture({ serverId: SERVER_ID, agentId: "parent-agent" }, child, {
+            phase: "detached",
+          }),
+        ]),
+        { originServerId: SERVER_ID, serverId: SERVER_ID },
         new Set(),
       ),
     ).toEqual([]);
@@ -238,7 +240,7 @@ describe("workspace subagents integration", () => {
     });
     const child = makeAgent({
       id: "child-agent",
-      parentAgentId: parent.id,
+      ...managedAgentFields({ serverId: SERVER_ID, agentId: parent.id }),
       title: "Cross-workspace child",
     });
 
@@ -248,13 +250,12 @@ describe("workspace subagents integration", () => {
     expect(getWorkspaceAgentTabIds(workspaceKey!)).toEqual(["agent_child-agent"]);
     expect(
       selectSubagentsForParent(
-        useSessionStore.getState(),
-        {
-          serverId: SERVER_ID,
-          parentAgentId: parent.id,
-        },
+        membershipFixture({ serverId: SERVER_ID, agentId: parent.id }, [
+          relationshipFixture({ serverId: SERVER_ID, agentId: parent.id }, child),
+        ]),
+        { originServerId: SERVER_ID, serverId: SERVER_ID },
         new Set(),
-      ).map((row) => row.id),
+      ).map((row) => row.address.agentId),
     ).toEqual([child.id]);
   });
 
@@ -271,7 +272,7 @@ describe("workspace subagents integration", () => {
     });
     const child = makeAgent({
       id: "child-agent",
-      parentAgentId: parent.id,
+      ...managedAgentFields({ serverId: SERVER_ID, agentId: parent.id }),
       title: "Child agent",
     });
 

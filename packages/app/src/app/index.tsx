@@ -39,10 +39,14 @@ export default function Index() {
     hosts,
     anyOnlineHostServerId,
     workspaceSelection,
-    workspaceSelectionStatus: resolveWorkspaceSelectionStatus({
-      hasHydratedWorkspaces: hasHydratedWorkspaceSelectionHost,
-      workspaceExists: workspaceSelectionExists,
-    }),
+    // COMPAT(unboundStartupSelection): added in v0.12, remove after 2027-04-20.
+    // Qualified restore reacquires its origin at the host boundary before proving absence.
+    workspaceSelectionStatus: workspaceSelection?.authority
+      ? "unknown"
+      : resolveWorkspaceSelectionStatus({
+          hasHydratedWorkspaces: hasHydratedWorkspaceSelectionHost,
+          workspaceExists: workspaceSelectionExists,
+        }),
     isWorkspaceSelectionLoaded,
     hasGivenUpWaitingForHost: bootstrapState.hasGivenUpWaitingForHost,
   });

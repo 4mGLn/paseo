@@ -428,3 +428,41 @@ describe("host runtime app lifecycle", () => {
     },
   );
 });
+
+it("restores a qualified destination through its saved origin host boundary", () => {
+  const selection = { serverId: "B", workspaceId: "workspace", authority: { originServerId: "A" } };
+  expect(
+    resolveStartupRoute({
+      route: { kind: "index", pathname: "/" },
+      startupBlocker: { kind: "none" },
+      hostRegistryStatus: "ready",
+      hosts: [{ serverId: "A" }],
+      anyOnlineHostServerId: "A",
+      workspaceSelection: selection,
+      workspaceSelectionStatus: "unknown",
+      isWorkspaceSelectionLoaded: true,
+      hasGivenUpWaitingForHost: false,
+    }),
+  ).toEqual({ kind: "redirect", href: "/h/B?origin=A" });
+  expect(
+    resolveHostIndexRoute({
+      serverId: "B",
+      workspaceSelection: selection,
+      workspaceSelectionStatus: "exists",
+    }),
+  ).toBe("/h/B/workspace/workspace?origin=A");
+});
+
+it("authorizes a named host route by its intended origin and never substitutes a directly connected destination", () => {
+  const route = { kind: "host" as const, serverId: "B", originServerId: "A" };
+  const base = {
+    route,
+    startupBlocker: { kind: "none" as const },
+    hostRegistryStatus: "ready" as const,
+  };
+  expect(resolveStartupRoute({ ...base, hosts: [{ serverId: "A" }] })).toEqual({ kind: "render" });
+  expect(resolveStartupRoute({ ...base, hosts: [{ serverId: "B" }] })).toEqual({
+    kind: "redirect",
+    href: "/open-project",
+  });
+});

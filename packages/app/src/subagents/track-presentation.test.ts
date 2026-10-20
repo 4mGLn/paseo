@@ -8,12 +8,17 @@ import {
   resolveRowLabel,
 } from "./track-presentation";
 
-function row(
-  overrides: Partial<PaseoSubagentRow> & Pick<PaseoSubagentRow, "id">,
-): PaseoSubagentRow {
+function row(overrides: Partial<PaseoSubagentRow> & { id: string }): PaseoSubagentRow {
   return {
     kind: "paseo",
-    id: overrides.id,
+    facts: null,
+    address: { serverId: "server-1", agentId: overrides.id },
+    authority: { originServerId: "server-1", serverId: "server-1" },
+    relationshipId: overrides.id,
+    workspace: null,
+    freshness: "current",
+    phase: "attached",
+    error: null,
     provider: overrides.provider ?? "codex",
     title: overrides.title ?? `Agent ${overrides.id}`,
     description: null,
@@ -170,7 +175,7 @@ describe("resolveRowLabel", () => {
 describe("buildSubagentRowPresentationData", () => {
   it("namespaces the key with a subagent prefix", () => {
     expect(buildSubagentRowPresentationData(row({ id: "child-a" })).key).toBe(
-      "paseo_subagent_child-a",
+      JSON.stringify(["paseo", "server-1", "child-a"]),
     );
   });
 

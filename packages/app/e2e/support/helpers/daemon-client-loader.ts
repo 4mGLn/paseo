@@ -74,3 +74,12 @@ export async function loadProtocolSchemas(): Promise<typeof import("@getpaseo/pr
   ).href;
   return import(moduleUrl);
 }
+
+export async function loadPaseoApiFactory(): Promise<
+  (typeof import("@getpaseo/client"))["createPaseoApi"]
+> {
+  const moduleUrl = pathToFileURL(
+    path.resolve(__dirname, "../../../../../packages/client/dist/index.js"),
+  ).href;
+  return (await import(moduleUrl)).createPaseoApi;
+}

@@ -5,9 +5,9 @@ import { useToast } from "@/contexts/toast-context";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { RewindMode } from "./use-rewind-capabilities";
 import { useRewindComposerRestore } from "./composer-restore";
-import { useSessionStore } from "@/stores/session-store";
+import { useSessionStoreApi } from "@/stores/session-store";
 import { shouldRestoreComposerForRewindMode } from "./rewind-mode";
-import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useHostRuntimeStore } from "@/runtime/host-runtime";
 
 interface UseRewindAgentMutationInput {
   serverId?: string;
@@ -26,6 +26,8 @@ export function useRewindAgentMutation(input: UseRewindAgentMutationInput): {
   isPending: boolean;
 } {
   const toast = useToast();
+  const sessionStore = useSessionStoreApi();
+  const runtime = useHostRuntimeStore();
   const { t } = useTranslation();
   const composerRestore = useRewindComposerRestore();
   const { isPending, mutateAsync } = useMutation({
@@ -36,12 +38,10 @@ export function useRewindAgentMutation(input: UseRewindAgentMutationInput): {
       await input.client.rewindAgent(input.agentId, input.messageId, mode);
       if (mode !== "files") {
         const cursor = input.serverId
-          ? useSessionStore
-              .getState()
-              .sessions[input.serverId]?.agentTimelineCursor.get(input.agentId)
+          ? sessionStore.getState().sessions[input.serverId]?.agentTimelineCursor.get(input.agentId)
           : undefined;
         if (!input.serverId) throw new Error(t("common.errors.daemonClientUnavailable"));
-        await getHostRuntimeStore().fetchAgentTimeline(input.serverId, input.agentId, {
+        await runtime.fetchAgentTimeline(input.serverId, input.agentId, {
           direction: "tail",
           projection: "projected",
           ...(cursor ? { cursor: { epoch: cursor.epoch, seq: cursor.endSeq } } : {}),

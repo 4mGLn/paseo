@@ -49,6 +49,8 @@ export interface PluginAgentSnapshot {
   readonly thinkingOptionId: string | null;
   readonly requiresAttention: boolean;
   readonly attentionReason: "finished" | "error" | "permission" | null;
+  readonly parent: { readonly serverId: string; readonly agentId: string } | null;
+  /** @deprecated Use the qualified parent address. */
   readonly parentAgentId: string | null;
   readonly labels: Readonly<Record<string, string>>;
 }

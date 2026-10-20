@@ -3,6 +3,20 @@ import { z } from "zod";
 export interface ActiveWorkspaceSelection {
   serverId: string;
   workspaceId: string;
+  authority?: { originServerId: string };
+}
+
+/** COMPAT(workspaceRouteOrigin): added in v0.12, remove after 2027-04-20.
+ * Pre-fleet routes and stored selections name the destination's own authority.
+ */
+export function workspaceSelectionAuthority(selection: ActiveWorkspaceSelection): {
+  originServerId: string;
+  serverId: string;
+} {
+  return {
+    originServerId: selection.authority?.originServerId ?? selection.serverId,
+    serverId: selection.serverId,
+  };
 }
 
 export const LAST_WORKSPACE_SELECTION_STORAGE_KEY = "paseo:last-workspace-route-selection";
@@ -16,6 +30,7 @@ export interface LastWorkspaceSelectionStorage {
 const ActiveWorkspaceSelectionSchema: z.ZodType<ActiveWorkspaceSelection> = z.strictObject({
   serverId: z.string().trim().min(1),
   workspaceId: z.string().trim().min(1),
+  authority: z.strictObject({ originServerId: z.string().trim().min(1) }).optional(),
 });
 
 function normalizeWorkspaceSelection(input: unknown): ActiveWorkspaceSelection | null {
@@ -54,7 +69,9 @@ export function createLastWorkspaceSelectionStore(storage: LastWorkspaceSelectio
     }
     if (
       selection?.serverId === normalized.serverId &&
-      selection.workspaceId === normalized.workspaceId
+      selection.workspaceId === normalized.workspaceId &&
+      workspaceSelectionAuthority(selection).originServerId ===
+        workspaceSelectionAuthority(normalized).originServerId
     ) {
       return;
     }

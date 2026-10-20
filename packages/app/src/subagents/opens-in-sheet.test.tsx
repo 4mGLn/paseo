@@ -9,6 +9,7 @@ import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { useSubagentOpensInSheet } from "./opens-in-sheet";
 import { selectSubagentsForParent, type SubagentRow } from "./select";
+import { managedAgentFields, membershipFixture, relationshipFixture } from "./test-fixtures";
 
 vi.mock("@react-native-async-storage/async-storage", () => {
   const storage = new Map<string, string>();
@@ -64,7 +65,8 @@ const AGENT_DEFAULTS: Agent = {
   attentionReason: null,
   attentionTimestamp: null,
   archivedAt: null,
-  parentAgentId: null,
+  parent: null,
+  managedRelationship: null,
   labels: {},
   projectPlacement: null,
 };
@@ -77,7 +79,12 @@ if (!workspaceKey) throw new Error("workspace key");
 
 function seedParentWithChild(): SubagentRow {
   const parent: Agent = { ...AGENT_DEFAULTS, id: "parent", title: "Parent" };
-  const child: Agent = { ...AGENT_DEFAULTS, id: "child", title: "Child", parentAgentId: "parent" };
+  const child: Agent = {
+    ...AGENT_DEFAULTS,
+    id: "child",
+    title: "Child",
+    ...managedAgentFields({ serverId: SERVER_ID, agentId: "parent" }),
+  };
   useSessionStore.getState().initializeSession(SERVER_ID, null as unknown as DaemonClient);
   useSessionStore.getState().setAgents(
     SERVER_ID,
@@ -87,8 +94,10 @@ function seedParentWithChild(): SubagentRow {
     ]),
   );
   const [row] = selectSubagentsForParent(
-    useSessionStore.getState(),
-    { serverId: SERVER_ID, parentAgentId: "parent" },
+    membershipFixture({ serverId: SERVER_ID, agentId: "parent" }, [
+      relationshipFixture({ serverId: SERVER_ID, agentId: "parent" }, child),
+    ]),
+    { originServerId: SERVER_ID, serverId: SERVER_ID },
     new Set(),
   );
   if (!row) throw new Error("child row");
@@ -114,7 +123,11 @@ describe("useSubagentOpensInSheet", () => {
     const target = { kind: "agent", agentId: "child" } as const;
 
     // The row renders its answer, as the track does, so a stale render is a stale answer.
-    const { result } = renderHook(() => useSubagentOpensInSheet(workspaceKey)(row));
+    const { result } = renderHook(() =>
+      useSubagentOpensInSheet(workspaceKey, { serverId: SERVER_ID, workspaceId: WORKSPACE_ID })(
+        row,
+      ),
+    );
     expect(result.current).toBe(true);
 
     let tabId: string | null = null;

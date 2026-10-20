@@ -1,3 +1,4 @@
+import type { StateStorage } from "zustand/middleware";
 import { z } from "zod";
 import type { SplitNode, WorkspaceLayout } from "./workspace-layout-actions";
 
@@ -113,3 +114,42 @@ export const WorkspaceLayoutPersistedStateSchema = z.strictObject({
   // and ignored so upgrading does not discard the layout. Remove after 2027-08-20.
   acknowledgedPullRequestByWorkspace: z.record(z.string(), z.string()).optional(),
 });
+
+// COMPAT(preFleetDirectLayout): added in v0.12, remove after 2027-04-20.
+// Only an existing self-origin layout may seed its new namespace. Once written, the namespace wins.
+export function workspaceLayoutStorageWithLegacySeed(
+  storage: StateStorage,
+  serverId: string,
+): StateStorage {
+  return {
+    setItem: (key, value) => storage.setItem(key, value),
+    removeItem: (key) => storage.removeItem(key),
+    async getItem(key) {
+      const current = await storage.getItem(key);
+      if (current !== null) return current;
+      const legacy = await storage.getItem("workspace-layout-state");
+      if (!legacy) return null;
+      try {
+        const parsed = z
+          .object({ state: WorkspaceLayoutPersistedStateSchema, version: z.number() })
+          .safeParse(JSON.parse(legacy));
+        if (!parsed.success) return null;
+        const prefix = `${serverId}:`;
+        const state = Object.fromEntries(
+          Object.entries(parsed.data.state).map(([field, records]) => [
+            field,
+            records &&
+              Object.fromEntries(
+                Object.entries(records).filter(([workspaceKey]) => workspaceKey.startsWith(prefix)),
+              ),
+          ]),
+        );
+        const seeded = JSON.stringify({ state, version: parsed.data.version });
+        await storage.setItem(key, seeded);
+        return seeded;
+      } catch {
+        return null;
+      }
+    },
+  };
+}

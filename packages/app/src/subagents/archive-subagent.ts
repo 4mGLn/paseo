@@ -1,3 +1,4 @@
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import type { Agent } from "@/stores/session-store";
 import type { ConfirmDialogInput } from "@/utils/confirm-dialog";
 
@@ -38,22 +39,21 @@ export function resolveArchiveSubagentDialog(
 }
 
 export interface ArchiveSubagentDeps {
-  getSubagent: (subagentId: string) => ResolveArchiveSubagentDialogInput | undefined;
+  getSubagent: (child: AgentAddress) => ResolveArchiveSubagentDialogInput | undefined;
   confirm: (input: ConfirmDialogInput) => Promise<boolean>;
-  archiveAgent: (input: { serverId: string; agentId: string }) => Promise<void>;
+  archiveAgent: (input: AgentAddress) => Promise<void>;
   reportError: (error: unknown) => void;
 }
 
 export interface RequestArchiveSubagentInput {
-  serverId: string;
-  subagentId: string;
+  child: AgentAddress;
 }
 
 export async function requestArchiveSubagent(
   input: RequestArchiveSubagentInput,
   deps: ArchiveSubagentDeps,
 ): Promise<void> {
-  const subagent = deps.getSubagent(input.subagentId);
+  const subagent = deps.getSubagent(input.child);
   const confirmed = await deps.confirm(
     resolveArchiveSubagentDialog({
       title: subagent?.title,
@@ -64,7 +64,7 @@ export async function requestArchiveSubagent(
     return;
   }
   try {
-    await deps.archiveAgent({ serverId: input.serverId, agentId: input.subagentId });
+    await deps.archiveAgent(input.child);
   } catch (error) {
     deps.reportError(error);
   }

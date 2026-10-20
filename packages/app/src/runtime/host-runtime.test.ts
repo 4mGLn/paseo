@@ -1,3 +1,4 @@
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import { indexedDB as fakeIndexedDb, IDBKeyRange as FakeIDBKeyRange } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryObserver } from "@tanstack/react-query";
@@ -31,6 +32,7 @@ import {
   readInitialDaemonConnectionHint,
   type HostRuntimeControllerDeps,
   type HostRuntimeStorage,
+  type HostAuthorityBinding,
 } from "./host-runtime";
 import type { ReplicaRow, ReplicaRowStore } from "./replica-cache/row-store";
 
@@ -60,6 +62,12 @@ class FakeDaemonClient {
   private readonly eventListeners = new Set<(message: SessionOutboundMessage) => void>();
   publishEvent(message: SessionOutboundMessage): void {
     for (const receive of this.eventListeners) receive(message);
+  }
+  readonly cancelCalls: string[] = [];
+  cancelResponse: Promise<void> | null = null;
+  async cancelAgent(agentId: string): Promise<void> {
+    this.cancelCalls.push(agentId);
+    await this.cancelResponse;
   }
   readonly archiveCalls: string[] = [];
   archiveResponse: Promise<{ archivedAt: string }> | null = null;
@@ -3434,7 +3442,8 @@ describe("HostRuntimeStore", () => {
         lastActivityAt: new Date(stale.updatedAt),
         archivedAt: stale.archivedAt ? new Date(stale.archivedAt) : null,
         attentionTimestamp: stale.attentionTimestamp ? new Date(stale.attentionTimestamp) : null,
-        parentAgentId: null,
+        parent: null,
+        managedRelationship: null,
       };
       return new Map([[stale.id, staleAgent]]);
     });
@@ -4484,6 +4493,14 @@ describe("HostRuntimeStore initial connection hint bootstrap", () => {
   });
 });
 
+function agentInBinding(binding: HostAuthorityBinding, address: AgentAddress): Agent {
+  const agent = binding.sessionStore
+    .getState()
+    .sessions[address.serverId]?.agents.get(address.agentId);
+  if (!agent) throw new Error(`Expected agent in binding ${binding.namespace}`);
+  return agent;
+}
+
 it("retains one authority binding for direct and routed consumers without changing a retained direct destination", async () => {
   globalThis.indexedDB = fakeIndexedDb;
   globalThis.IDBKeyRange = FakeIDBKeyRange;
@@ -4628,6 +4645,50 @@ it("retains one authority binding for direct and routed consumers without changi
       queryClient: routed.binding.queries,
       unavailableMessage: "Authority unavailable",
     });
+    const running = {
+      ...agent,
+      status: "running" as const,
+      turn: {
+        phase: "open" as const,
+        turnId: "owned-turn",
+        startedAt: new Date(),
+        cancellationRequestId: null,
+      },
+    };
+    direct.binding.runtime.acceptAgentSnapshot(bId, running);
+    routed.binding.runtime.acceptAgentSnapshot(bId, { ...running, title: "Routed" });
+    const cancelGate = createDeferred<void>();
+    routeClient.cancelResponse = cancelGate.promise;
+    const canceling = routed.binding.runtime.cancelAgent({ serverId: bId, agentId: agent.id });
+    void canceling.catch(() => {});
+    await expect.poll(() => routeClient.cancelCalls).toEqual([agent.id]);
+    expect(clients.get(bId)!.cancelCalls).toEqual([]);
+    expect(
+      agentInBinding(routed.binding, { serverId: bId, agentId: agent.id }).turn
+        .cancellationRequestId,
+    ).not.toBeNull();
+    expect(
+      agentInBinding(direct.binding, { serverId: bId, agentId: agent.id }).turn
+        .cancellationRequestId,
+    ).toBeNull();
+    cancelGate.reject(new Error("Selected cancellation rejected"));
+    await expect(canceling).rejects.toThrow("Selected cancellation rejected");
+    expect(
+      agentInBinding(routed.binding, { serverId: bId, agentId: agent.id }).turn
+        .cancellationRequestId,
+    ).toBeNull();
+    expect(agentInBinding(routed.binding, { serverId: bId, agentId: agent.id }).turn.phase).toBe(
+      "open",
+    );
+    expect(agentInBinding(direct.binding, { serverId: bId, agentId: agent.id }).turn.phase).toBe(
+      "open",
+    );
+    routeClient.cancelResponse = Promise.resolve();
+    await routed.binding.runtime.cancelAgent({ serverId: bId, agentId: agent.id });
+    expect(
+      agentInBinding(routed.binding, { serverId: bId, agentId: agent.id }).turn
+        .cancellationRequestId,
+    ).toBeNull();
     const gate = createDeferred<{ archivedAt: string }>();
     routeClient.archiveResponse = gate.promise;
     const archiving = archive({ serverId: bId, agentId: agent.id });

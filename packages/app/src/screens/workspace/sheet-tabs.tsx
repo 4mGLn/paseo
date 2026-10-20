@@ -36,7 +36,11 @@ import {
   WorkspacePaneContent,
   type WorkspacePaneContentModel,
 } from "@/screens/workspace/workspace-pane-content";
-import { useWorkspaceLayoutStore, type SheetTab } from "@/stores/workspace-layout-store";
+import {
+  useWorkspaceLayoutStore,
+  useWorkspaceLayoutStoreApi,
+  type SheetTab,
+} from "@/stores/workspace-layout-store";
 
 const SNAP_POINTS = ["92%"];
 const NO_SHEETS: readonly SheetTab[] = [];
@@ -108,6 +112,7 @@ interface SheetTabSheetProps extends Omit<SheetTabsProps, "workspaceKey" | "onCl
  * `SheetHeaderView`) keep them looking and dragging like every other sheet.
  */
 export function SheetTabs({ workspaceKey, onCloseTab, ...rest }: SheetTabsProps) {
+  const layout = useWorkspaceLayoutStoreApi();
   const sheets = useWorkspaceLayoutStore((state) =>
     workspaceKey ? (state.sheetsByWorkspace[workspaceKey] ?? NO_SHEETS) : NO_SHEETS,
   );
@@ -122,12 +127,10 @@ export function SheetTabs({ workspaceKey, onCloseTab, ...rest }: SheetTabsProps)
     async (tabId: string) => {
       await onCloseTab(tabId);
       // A declined unsaved-changes prompt leaves the tab in its sheet.
-      const open = workspaceKey
-        ? useWorkspaceLayoutStore.getState().sheetsByWorkspace[workspaceKey]
-        : undefined;
+      const open = workspaceKey ? layout.getState().sheetsByWorkspace[workspaceKey] : undefined;
       return open?.some((sheet) => sheet.tab.tabId === tabId) ?? false;
     },
-    [onCloseTab, workspaceKey],
+    [layout, onCloseTab, workspaceKey],
   );
   return (
     <>

@@ -1,17 +1,25 @@
 import type { Agent } from "@/stores/session-store";
 import { normalizeWorkspaceOpaqueId } from "@/utils/workspace-identity";
 
-type WorkspaceAgent = Pick<Agent, "parentAgentId" | "workspaceId">;
+type WorkspaceAgent = Pick<Agent, "serverId" | "workspaceId" | "managedRelationship">;
 
 export function isWorkspaceRootAgent(
   agent: WorkspaceAgent,
-  parentAgent: Pick<Agent, "workspaceId"> | undefined,
+  parentAgent?: Pick<Agent, "id" | "serverId" | "workspaceId">,
 ): boolean {
-  if (!agent.parentAgentId) {
-    return true;
-  }
-
+  const membership = agent.managedRelationship;
+  if (!membership) return true;
   const workspaceId = normalizeWorkspaceOpaqueId(agent.workspaceId);
-  const parentWorkspaceId = normalizeWorkspaceOpaqueId(parentAgent?.workspaceId);
-  return Boolean(workspaceId && parentWorkspaceId && workspaceId !== parentWorkspaceId);
+  const parentWorkspace =
+    membership.parentWorkspace ??
+    (parentAgent?.serverId === membership.parent.serverId &&
+    parentAgent.id === membership.parent.agentId &&
+    parentAgent.workspaceId
+      ? { serverId: parentAgent.serverId, workspaceId: parentAgent.workspaceId }
+      : null);
+  return Boolean(
+    workspaceId &&
+    parentWorkspace &&
+    (agent.serverId !== parentWorkspace.serverId || workspaceId !== parentWorkspace.workspaceId),
+  );
 }

@@ -1,23 +1,43 @@
-import { useEffect, useMemo } from "react";
-import { usePendingArchiveAgentIds } from "@/hooks/use-archive-agent";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import equal from "fast-deep-equal";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useSessionStore, type Agent } from "@/stores/session-store";
-import { refreshProviderSubagents, useProviderSubagentStore } from "./provider-store";
+import {
+  refreshProviderSubagents,
+  useProviderSubagentStore,
+  useProviderSubagentStoreApi,
+} from "./provider-store";
+import { useHostRuntimeStore, type HostAuthorityReference } from "@/runtime/host-runtime";
+import type { AgentAddress, WorkspaceAddress } from "@getpaseo/protocol/addresses";
+import type { ManagedSubagentState } from "./managed";
+import type { SubagentRelationship } from "@getpaseo/protocol/messages";
+import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
+import {
+  buildAgentFactsLine,
+  agentFactsSnapshot,
+  type AgentFactsSnapshot,
+} from "@/panels/agent-facts-line";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
 
 export interface PaseoSubagentRow {
   kind: "paseo";
-  id: Agent["id"];
+  address: AgentAddress;
+  authority: HostAuthorityReference;
+  relationshipId: string;
+  workspace: WorkspaceAddress | null;
+  freshness: SubagentRelationship["freshness"];
+  phase: SubagentRelationship["phase"];
+  error: SubagentRelationship["error"];
   provider: Agent["provider"];
   title: Agent["title"];
   /** Managed agents have a real title, so the union's task line is always absent for them. */
   description: null;
-  subtitle: null;
-  status: Agent["status"];
-  turn: Agent["turn"];
+  subtitle: string | null;
+  facts: AgentFactsSnapshot | null;
+  status: Agent["status"] | null;
+  turn: Agent["turn"] | null;
   requiresAttention: Agent["requiresAttention"];
-  createdAt: Agent["createdAt"];
+  createdAt: Agent["createdAt"] | null;
 }
 
 export interface ProviderSubagentRow {
@@ -39,7 +59,6 @@ export interface ProviderSubagentRow {
 
 export type SubagentRow = PaseoSubagentRow | ProviderSubagentRow;
 
-type SessionStoreSnapshot = ReturnType<typeof useSessionStore.getState>;
 type ProviderSubagentStoreSnapshot = ReturnType<typeof useProviderSubagentStore.getState>;
 
 interface SelectSubagentsParams {
@@ -49,77 +68,73 @@ interface SelectSubagentsParams {
   providerParentSubagentId?: string;
 }
 
-const EMPTY_SUBAGENT_ROWS: SubagentRow[] = [];
 const EMPTY_PROVIDER_SUBAGENT_ROWS: ProviderSubagentRow[] = [];
 
-function toSubagentRow(agent: Agent): SubagentRow {
-  return {
-    kind: "paseo",
-    id: agent.id,
-    provider: agent.provider,
-    title: agent.title,
-    description: null,
-    subtitle: null,
-    status: agent.status,
-    turn: agent.turn,
-    requiresAttention: agent.requiresAttention,
-    createdAt: agent.createdAt,
-  };
+export function subagentRowIdentity(row: SubagentRow): string {
+  return row.kind === "paseo"
+    ? JSON.stringify(["paseo", row.address.serverId, row.address.agentId])
+    : JSON.stringify(["provider", row.parentAgentId, row.id]);
 }
 
 export function selectSubagentsForParent(
-  state: SessionStoreSnapshot,
-  params: SelectSubagentsParams,
-  pendingArchiveIds: ReadonlySet<string>,
-): SubagentRow[] {
-  const agents = state.sessions[params.serverId]?.agents;
-  if (!agents || agents.size === 0) {
-    return EMPTY_SUBAGENT_ROWS;
+  state: ManagedSubagentState,
+  authority: HostAuthorityReference,
+  pendingArchiveKeys: ReadonlySet<string>,
+): PaseoSubagentRow[] {
+  const rows: PaseoSubagentRow[] = [];
+  for (const relationship of state.rows) {
+    if (["detached", "archived", "forgotten", "canceled"].includes(relationship.phase)) continue;
+    const address = relationship.child;
+    if (pendingArchiveKeys.has(JSON.stringify([address.serverId, address.agentId]))) continue;
+    const snapshot = relationship.snapshot
+      ? normalizeAgentSnapshot(relationship.snapshot, address.serverId)
+      : null;
+    rows.push({
+      kind: "paseo",
+      address,
+      authority: { originServerId: authority.originServerId, serverId: address.serverId },
+      relationshipId: relationship.id,
+      workspace: relationship.workspace ?? null,
+      phase: relationship.phase,
+      freshness: relationship.freshness,
+      error: relationship.error,
+      provider: snapshot?.provider ?? "",
+      title: snapshot?.title ?? null,
+      description: null,
+      subtitle: snapshot
+        ? buildAgentFactsLine({ ...agentFactsSnapshot(snapshot), models: null })
+        : null,
+      facts: snapshot ? agentFactsSnapshot(snapshot) : null,
+      status: snapshot?.status ?? null,
+      turn: snapshot?.turn ?? null,
+      requiresAttention: snapshot?.requiresAttention ?? false,
+      createdAt: snapshot?.createdAt ?? null,
+    });
   }
-
-  const rows: SubagentRow[] = [];
-  for (const agent of agents.values()) {
-    if (
-      agent.archivedAt ||
-      pendingArchiveIds.has(agent.id) ||
-      agent.parentAgentId !== params.parentAgentId
-    ) {
-      continue;
-    }
-    rows.push(toSubagentRow(agent));
-  }
-
-  if (rows.length === 0) {
-    return EMPTY_SUBAGENT_ROWS;
-  }
-
-  rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+  rows.sort(compareSubagentRows);
   return rows;
 }
 
-// Session-store selectors run on every store update, including every stream tick, which
-// leaves the agent map untouched. Reuse the previous rows until the map changes, and keep
-// them when a recompute yields equal rows so the hook's equality check stays O(1).
 export function createSubagentsForParentSelector(
-  params: SelectSubagentsParams,
-  pendingArchiveIds: ReadonlySet<string>,
-): (state: SessionStoreSnapshot) => SubagentRow[] {
-  let previousAgents: Map<string, Agent> | undefined;
-  let previousRows: SubagentRow[] | null = null;
-
+  authority: HostAuthorityReference,
+  pendingArchiveKeys: ReadonlySet<string>,
+): (state: ManagedSubagentState) => PaseoSubagentRow[] {
+  let previous: ManagedSubagentState | null = null;
+  let previousRows: PaseoSubagentRow[] = [];
   return (state) => {
-    const agents = state.sessions[params.serverId]?.agents;
-    if (previousRows && agents === previousAgents) {
-      return previousRows;
-    }
-
-    const rows = selectSubagentsForParent(state, params, pendingArchiveIds);
-    previousAgents = agents;
-    if (!previousRows || !equal(previousRows, rows)) {
-      previousRows = rows;
-    }
+    if (previous === state) return previousRows;
+    const rows = selectSubagentsForParent(state, authority, pendingArchiveKeys);
+    previous = state;
+    if (!equal(previousRows, rows)) previousRows = rows;
     return previousRows;
   };
+}
+
+function compareSubagentRows(left: SubagentRow, right: SubagentRow): number {
+  return (
+    (left.createdAt?.getTime() ?? 0) - (right.createdAt?.getTime() ?? 0) ||
+    subagentRowIdentity(left).localeCompare(subagentRowIdentity(right))
+  );
 }
 
 export function selectProviderSubagentsForParent(
@@ -153,18 +168,25 @@ export function selectProviderSubagentsForParent(
       createdAt: new Date(subagent.createdAt),
     });
   }
-  rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+  rows.sort(compareSubagentRows);
   return rows;
 }
 
 export function useSubagentsForParent(params: SelectSubagentsParams): SubagentRow[] {
   const { serverId, parentAgentId } = params;
-  const pendingArchiveIds = usePendingArchiveAgentIds(serverId);
-  const selectPaseoRows = useMemo(
-    () => createSubagentsForParentSelector({ serverId, parentAgentId }, pendingArchiveIds),
-    [serverId, parentAgentId, pendingArchiveIds],
+  const providerStore = useProviderSubagentStoreApi();
+  const runtime = useHostRuntimeStore();
+  const directory = runtime.subagents.directory({ serverId, agentId: parentAgentId });
+  const membership = useSyncExternalStore(
+    directory.subscribe,
+    directory.getSnapshot,
+    directory.getSnapshot,
   );
-  const paseoRows = useStoreWithEqualityFn(useSessionStore, selectPaseoRows, equal);
+  const paseoRows = useMemo(
+    () =>
+      selectSubagentsForParent(membership, runtime.authorityFor(serverId), membership.archiving),
+    [membership, runtime, serverId],
+  );
   const supported = useSessionStore(
     (state) => state.sessions[params.serverId]?.serverInfo?.features?.providerSubagents === true,
   );
@@ -173,7 +195,7 @@ export function useSubagentsForParent(params: SelectSubagentsParams): SubagentRo
       state.sessions[params.serverId]?.serverInfo?.features?.providerSubagentNesting === true,
   );
   const providerRows = useStoreWithEqualityFn(
-    useProviderSubagentStore,
+    providerStore,
     (state) => selectProviderSubagentsForParent(state, params, supported, nestingSupported),
     equal,
   );
@@ -181,16 +203,19 @@ export function useSubagentsForParent(params: SelectSubagentsParams): SubagentRo
 
   useEffect(() => {
     if (!client || !supported) return;
-    void refreshProviderSubagents(client, params.serverId, params.parentAgentId).catch(
-      () => undefined,
-    );
-  }, [client, params.parentAgentId, params.serverId, supported]);
+    void refreshProviderSubagents(
+      client,
+      params.serverId,
+      params.parentAgentId,
+      providerStore,
+    ).catch(() => undefined);
+  }, [client, params.parentAgentId, params.serverId, providerStore, supported]);
 
   return useMemo(() => {
     if (params.providerParentSubagentId) return providerRows;
     if (providerRows.length === 0) return paseoRows;
     const rows = [...paseoRows, ...providerRows];
-    rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+    rows.sort(compareSubagentRows);
     return rows;
   }, [params.providerParentSubagentId, paseoRows, providerRows]);
 }

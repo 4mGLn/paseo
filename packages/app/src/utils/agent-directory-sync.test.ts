@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DaemonClient, FetchAgentsEntry } from "@getpaseo/client/internal/daemon-client";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
-import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import { useSessionStore } from "@/stores/session-store";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
@@ -18,6 +17,8 @@ function createAgentPayload(
 ): AgentSnapshotPayload {
   return {
     id: input.id,
+    parent: input.parent,
+    managedRelationship: input.managedRelationship,
     provider: input.provider ?? "codex",
     cwd: input.cwd ?? "/repo",
     model: input.model ?? null,
@@ -156,7 +157,7 @@ describe("replaceFetchedAgentDirectory", () => {
     store.clearSession(serverId);
   });
 
-  it("re-derives parentAgentId every time an agent snapshot is ingested", () => {
+  it("replaces owner membership every time an agent snapshot is ingested", () => {
     const serverId = "server-1";
     const store = useSessionStore.getState();
     store.initializeSession(serverId, null as unknown as DaemonClient);
@@ -166,7 +167,11 @@ describe("replaceFetchedAgentDirectory", () => {
       createEntry(
         createAgentPayload({
           id: "child-1",
-          labels: { [PARENT_AGENT_ID_LABEL]: "parent-a" },
+          managedRelationship: {
+            id: "relationship",
+            parent: { serverId, agentId: "parent-a" },
+            parentWorkspace: null,
+          },
         }),
       ),
     ]);
@@ -175,14 +180,19 @@ describe("replaceFetchedAgentDirectory", () => {
       createEntry(
         createAgentPayload({
           id: "child-1",
-          labels: { [PARENT_AGENT_ID_LABEL]: "parent-b" },
+          managedRelationship: {
+            id: "relationship",
+            parent: { serverId, agentId: "parent-b" },
+            parentWorkspace: null,
+          },
         }),
       ),
     ]);
 
     expect(
-      useSessionStore.getState().sessions[serverId]?.agents.get("child-1")?.parentAgentId,
-    ).toBe("parent-b");
+      useSessionStore.getState().sessions[serverId]?.agents.get("child-1")?.managedRelationship
+        ?.parent,
+    ).toEqual({ serverId, agentId: "parent-b" });
 
     store.clearSession(serverId);
   });

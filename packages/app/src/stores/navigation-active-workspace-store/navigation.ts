@@ -5,6 +5,7 @@ import {
   buildHostWorkspaceRoute,
   decodeWorkspaceIdFromPathSegment,
   parseHostWorkspaceRouteFromPathname,
+  withHostRouteAuthority,
 } from "@/utils/host-routes";
 import {
   normalizeWorkspaceOpaqueId,
@@ -20,6 +21,7 @@ export interface RouteSelectionInput {
   params: {
     serverId?: string | string[];
     workspaceId?: string | string[];
+    origin?: string | string[];
   };
 }
 
@@ -29,6 +31,7 @@ export interface NavigateToWorkspaceInput {
   target?: WorkspaceTabTarget;
   pin?: boolean;
   placement?: WorkspaceTabPlacement;
+  authority?: { originServerId: string };
 }
 
 export interface NavigateToWorkspaceDeps extends PrepareWorkspaceTabDeps {
@@ -57,6 +60,7 @@ function getParamValue(value: string | string[] | undefined): string {
 function parseWorkspaceSelectionFromRouteParams(params: {
   serverId?: string | string[];
   workspaceId?: string | string[];
+  origin?: string | string[];
 }): ActiveWorkspaceSelection | null {
   const serverId = getParamValue(params.serverId);
   const workspaceValue = getParamValue(params.workspaceId);
@@ -64,7 +68,8 @@ function parseWorkspaceSelectionFromRouteParams(params: {
   if (!serverId || !workspaceId) {
     return null;
   }
-  return { serverId, workspaceId };
+  const originServerId = getParamValue(params.origin);
+  return { serverId, workspaceId, ...(originServerId ? { authority: { originServerId } } : {}) };
 }
 
 export function parseActiveWorkspaceSelection(
@@ -72,7 +77,10 @@ export function parseActiveWorkspaceSelection(
 ): ActiveWorkspaceSelection | null {
   const routeSelection = parseHostWorkspaceRouteFromPathname(input.pathname);
   if (routeSelection) {
-    return routeSelection;
+    const originServerId = getParamValue(input.params.origin);
+    return routeSelection.authority || !originServerId
+      ? routeSelection
+      : { ...routeSelection, authority: { originServerId } };
   }
 
   if (input.pathname !== "/" && input.pathname !== "") {
@@ -86,13 +94,16 @@ export function navigateToWorkspace(
   input: NavigateToWorkspaceInput,
   deps: NavigateToWorkspaceDeps,
 ): string {
-  const workspaces = deps.getSessionWorkspaces(input.serverId);
+  // COMPAT(unboundWorkspaceNavigation): added in v0.12, remove after 2027-04-20.
+  // Bound routes prepare their intent only after reacquiring the selected authority.
+  const workspaces = input.authority ? null : deps.getSessionWorkspaces(input.serverId);
   const resolvedWorkspaceId = resolveWorkspaceMapKeyByIdentity({
     workspaces,
     workspaceId: input.workspaceId,
   });
   const shouldDeferAgentOpen = Boolean(
-    input.target?.kind === "agent" && (!resolvedWorkspaceId || !deps.isWorkspaceLayoutHydrated()),
+    input.target?.kind === "agent" &&
+    (input.authority || !resolvedWorkspaceId || !deps.isWorkspaceLayoutHydrated()),
   );
   if (input.target) {
     if (!shouldDeferAgentOpen) {
@@ -114,7 +125,7 @@ export function navigateToWorkspace(
     }
   }
 
-  const route =
+  const baseRoute =
     input.target?.kind === "agent" && shouldDeferAgentOpen
       ? buildHostWorkspaceOpenRoute(
           input.serverId,
@@ -122,7 +133,12 @@ export function navigateToWorkspace(
           `agent:${input.target.agentId}`,
         )
       : buildHostWorkspaceRoute(input.serverId, input.workspaceId);
-  deps.rememberLastWorkspace({ serverId: input.serverId, workspaceId: input.workspaceId });
+  const route = input.authority ? withHostRouteAuthority(baseRoute, input.authority) : baseRoute;
+  deps.rememberLastWorkspace({
+    serverId: input.serverId,
+    workspaceId: input.workspaceId,
+    ...(input.authority ? { authority: input.authority } : {}),
+  });
   deps.navigateToRoute(route);
   return route;
 }

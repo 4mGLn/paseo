@@ -6,7 +6,7 @@ import {
 import type { ComposerTextSource } from "./text-source";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { useStore } from "zustand";
-import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useHostRuntimeStore } from "@/runtime/host-runtime";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   View,
@@ -55,7 +55,11 @@ import {
 } from "@/composer/agent-controls";
 import { ContextWindowMeter } from "@/components/context-window-meter";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
-import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
+import {
+  selectAgentTurnPresentation,
+  useSessionStore,
+  useSessionStoreApi,
+} from "@/stores/session-store";
 import { useFilePicker } from "@/hooks/use-file-picker";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
@@ -1264,6 +1268,8 @@ function ComposerContentImpl({
   const mode = resolveComposerInputMode(inputMode);
   const { t } = useTranslation();
   const buttonIconSize = resolveComposerButtonIconSize();
+  const sessionStore = useSessionStoreApi();
+  const runtime = useHostRuntimeStore();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
   const agentDirectoryStatus = useHostRuntimeAgentDirectoryStatus(serverId);
@@ -1560,19 +1566,27 @@ function ComposerContentImpl({
           supportsForgeAttachments: supportsForgeSearch,
         }),
         encodeImages,
-        submission: createMessageSubmissionWriter(serverId),
+        submission: createMessageSubmissionWriter(serverId, sessionStore),
         activeTurnBehavior,
         activeTurnId:
           activeTurnBehavior === "steer"
             ? (selectAgentTurnPresentation(
-                useSessionStore.getState().sessions[serverId],
+                sessionStore.getState().sessions[serverId],
                 targetAgentId,
               ).turnId ?? undefined)
             : undefined,
       });
       onAttentionPromptSend?.();
     };
-  }, [appSettings.sendBehavior, client, onAttentionPromptSend, serverId, supportsForgeSearch, t]);
+  }, [
+    appSettings.sendBehavior,
+    client,
+    onAttentionPromptSend,
+    serverId,
+    sessionStore,
+    supportsForgeSearch,
+    t,
+  ]);
 
   useEffect(() => {
     onSubmitMessageRef.current = onSubmitMessage;
@@ -1603,10 +1617,10 @@ function ComposerContentImpl({
 
   const queueWriter = useMemo<QueueWriter>(
     () => ({
-      read: (id) => useSessionStore.getState().sessions[serverId]?.queuedMessages?.get(id) ?? [],
+      read: (id) => sessionStore.getState().sessions[serverId]?.queuedMessages?.get(id) ?? [],
       write: (updater) => setQueuedMessages(serverId, updater),
     }),
-    [serverId, setQueuedMessages],
+    [serverId, sessionStore, setQueuedMessages],
   );
 
   const queueMessage = useCallback(
@@ -1875,26 +1889,23 @@ function ComposerContentImpl({
   const handleCancelAgent = useCallback(() => {
     const targetAgentId = agentIdRef.current;
     const cancellation = cancelComposerAgent({
-      client,
+      client: client
+        ? { cancelAgent: (id) => runtime.cancelAgent({ serverId, agentId: id }) }
+        : null,
       agentId: targetAgentId,
       isAgentRunning,
       isCancellingAgent,
       isConnected,
     });
     if (!cancellation) return;
-    const requestId = getHostRuntimeStore().beginAgentCancellation(serverId, targetAgentId);
-    void cancellation
-      .catch((error) => {
-        const message = resolveErrorMessage(error);
-        if (message && message.trim().length > 0) {
-          toastErrorRef.current(message);
-        }
-      })
-      .finally(() => {
-        getHostRuntimeStore().settleAgentCancellation(serverId, targetAgentId, requestId);
-      });
+    void cancellation.catch((error) => {
+      const message = resolveErrorMessage(error);
+      if (message && message.trim().length > 0) {
+        toastErrorRef.current(message);
+      }
+    });
     messageInputRef.current?.focus();
-  }, [client, isAgentRunning, isCancellingAgent, isConnected, serverId]);
+  }, [client, runtime, isAgentRunning, isCancellingAgent, isConnected, serverId]);
 
   const focusMessageInputForKeyboardAction = useCallback(() => {
     focusMessageInputWithPlatformStrategy(messageInputRef);

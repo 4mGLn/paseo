@@ -5,10 +5,11 @@ import { i18n } from "@/i18n/i18next";
 import {
   selectAgentTimelineState,
   useSessionStore,
+  useSessionStoreApi,
   type AgentTimelineCursorState,
 } from "@/stores/session-store";
 import { planTimelineOlderFetch } from "@/timeline/timeline-sync-plan";
-import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useHostRuntimeStore } from "@/runtime/host-runtime";
 
 export interface LoadOlderAgentHistoryClient {
   fetchAgentTimeline: (
@@ -78,6 +79,8 @@ export function useLoadOlderAgentHistory({
   toast?: ToastApi | null;
 }) {
   const { t } = useTranslation();
+  const sessionStore = useSessionStoreApi();
+  const runtime = useHostRuntimeStore();
   const hasOlder = useSessionStore((state) => {
     const timeline = selectAgentTimelineState(state.sessions[serverId], agentId);
     return timeline.status === "synced" && timeline.older === "available";
@@ -110,13 +113,13 @@ export function useLoadOlderAgentHistory({
   );
 
   const loadOlder = useCallback(async (): Promise<boolean> => {
-    const session = useSessionStore.getState().sessions[serverId];
+    const session = sessionStore.getState().sessions[serverId];
     const timeline = selectAgentTimelineState(session, agentId);
     return await loadOlderAgentHistory(agentId, {
       client: session?.client
         ? {
             fetchAgentTimeline: (timelineAgentId, request) =>
-              getHostRuntimeStore().fetchAgentTimeline(serverId, timelineAgentId, request),
+              runtime.fetchAgentTimeline(serverId, timelineAgentId, request),
           }
         : null,
       cursor: timeline.status === "synced" ? (timeline.range ?? undefined) : undefined,
@@ -126,7 +129,7 @@ export function useLoadOlderAgentHistory({
       toast,
       failedMessage: t("loadOlderHistory.failed"),
     });
-  }, [agentId, serverId, setInFlight, toast, t]);
+  }, [agentId, serverId, setInFlight, toast, t, runtime, sessionStore]);
 
   return {
     isLoadingOlder,

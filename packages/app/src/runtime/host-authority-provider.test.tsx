@@ -1,4 +1,12 @@
+import {
+  createWorkspaceLayoutStore,
+  useWorkspaceLayoutStoreApi,
+} from "@/stores/workspace-layout-store";
 import React from "react";
+import {
+  createProviderSubagentStore,
+  useProviderSubagentStoreApi,
+} from "@/subagents/provider-store";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
@@ -15,6 +23,8 @@ it("ordinary consumer hooks retain the runtime, store and creation owner of each
       namespace: JSON.stringify(["host-authority-v1", originServerId, "B"]),
       sessionStore,
       queries: new QueryClient(),
+      providerSubagents: createProviderSubagentStore(),
+      layout: createWorkspaceLayoutStore(),
       runtime: new HostRuntimeStore({ sessionStore }),
       ready: Promise.resolve(),
     };
@@ -26,6 +36,8 @@ it("ordinary consumer hooks retain the runtime, store and creation owner of each
     const store = useSessionStoreApi();
     const creates = useCreateFlowStoreApi();
     expect(useQueryClient()).toBe(expected.queries);
+    expect(useProviderSubagentStoreApi()).toBe(expected.providerSubagents);
+    expect(useWorkspaceLayoutStoreApi()).toBe(expected.layout);
     expect(runtime).toBe(expected.runtime);
     expect(store).toBe(expected.sessionStore);
     expect(creates).toBe(expected.sessionStore.createFlows);

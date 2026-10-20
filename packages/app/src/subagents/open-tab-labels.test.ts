@@ -1,3 +1,4 @@
+import { managedAgentFields } from "@/subagents/test-fixtures";
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@/stores/session-store";
 import type { WorkspaceTab } from "@/workspace-tabs/model";
@@ -12,7 +13,9 @@ function tab(agentId: string, createdAt: number): WorkspaceTab {
 function agent(input: { id: string; parentAgentId?: string | null; open?: boolean }): Agent {
   return {
     id: input.id,
-    parentAgentId: input.parentAgentId ?? null,
+    ...managedAgentFields(
+      input.parentAgentId ? { serverId: "server-1", agentId: input.parentAgentId } : null,
+    ),
     labels: input.open ? { [label]: "true" } : {},
   } as Agent;
 }

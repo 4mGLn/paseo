@@ -2,6 +2,7 @@ import { DaemonConnectionError } from "@getpaseo/client/internal/daemon-client";
 import { afterEach, describe, expect, test } from "vitest";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
 import {
+  createProviderSubagentStore,
   observeProviderSubagentTimeline,
   providerSubagentKey,
   refreshProviderSubagents,
@@ -823,4 +824,60 @@ describe("resyncing after the update feed resubscribes", () => {
 
     expect(daemon.requested).toEqual([PARENT_ID]);
   });
+});
+
+test("isolates equal provider identities and in-flight list ownership between authority bindings", async () => {
+  const direct = createProviderSubagentStore();
+  const routed = createProviderSubagentStore();
+  const pending: Array<
+    (value: {
+      requestId: string;
+      parentAgentId: string;
+      error: null;
+      subagents: ProviderSubagentDescriptorPayload[];
+    }) => void
+  > = [];
+  const client = {
+    listProviderSubagents: () =>
+      new Promise<{
+        requestId: string;
+        parentAgentId: string;
+        error: null;
+        subagents: ProviderSubagentDescriptorPayload[];
+      }>((resolve) => pending.push(resolve)),
+  };
+  const descriptor: ProviderSubagentDescriptorPayload = {
+    id: SUBAGENT_ID,
+    parentAgentId: PARENT_ID,
+    provider: "codex",
+    title: "Scoped",
+    description: null,
+    status: "completed",
+    createdAt: "2026-10-20T10:00:00Z",
+    updatedAt: "2026-10-20T10:00:00Z",
+    toolCallId: null,
+  };
+  const directRequest = refreshProviderSubagents(client, SERVER_ID, PARENT_ID, direct);
+  const routedRequest = refreshProviderSubagents(client, SERVER_ID, PARENT_ID, routed);
+  expect(pending).toHaveLength(2);
+  pending[0]!({
+    requestId: "direct",
+    parentAgentId: PARENT_ID,
+    error: null,
+    subagents: [{ ...descriptor, title: "Direct private title" }],
+  });
+  await directRequest;
+  expect(routed.getState().descriptors.size).toBe(0);
+  pending[1]!({
+    requestId: "routed",
+    parentAgentId: PARENT_ID,
+    error: null,
+    subagents: [descriptor],
+  });
+  await routedRequest;
+  const key = providerSubagentKey(SERVER_ID, PARENT_ID, SUBAGENT_ID);
+  expect(routed.getState().descriptors.get(key)?.title).toBe("Scoped");
+  routed.getState().hideFromTrack(SERVER_ID, PARENT_ID, [SUBAGENT_ID]);
+  expect(direct.getState().hiddenFromTrack.size).toBe(0);
+  expect(direct.getState().descriptors.get(key)?.title).toBe("Direct private title");
 });

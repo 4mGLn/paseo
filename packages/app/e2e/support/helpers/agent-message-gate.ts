@@ -1,3 +1,4 @@
+import { inspectSessionWireRequest } from "./session-wire";
 import type { Page, WebSocketRoute } from "@playwright/test";
 import { daemonWsRoutePattern } from "./daemon-port";
 
@@ -16,11 +17,7 @@ interface SendAgentMessageRequest {
 function readSendRequest(message: WebSocketMessage): SendAgentMessageRequest | null {
   if (typeof message !== "string") return null;
   try {
-    const envelope = JSON.parse(message) as {
-      type?: unknown;
-      message?: Record<string, unknown>;
-    };
-    const request = envelope.type === "session" ? envelope.message : null;
+    const request = inspectSessionWireRequest(message)?.request;
     if (
       request?.type !== "send_agent_message_request" ||
       typeof request.requestId !== "string" ||

@@ -1,3 +1,4 @@
+import { inspectSessionWireRequest } from "./session-wire";
 import type { Page, WebSocketRoute } from "@playwright/test";
 import { daemonWsRoutePattern } from "./daemon-port";
 
@@ -71,12 +72,11 @@ function readSessionMessage(message: string | Buffer): ClientRequest | null {
 
 function readClientRequest(message: string | Buffer): ClientRequest | null {
   if (typeof message !== "string") return null;
+  const session = inspectSessionWireRequest(message);
+  if (session) return session.request;
   try {
-    const envelope = JSON.parse(message) as {
-      type?: unknown;
-      message?: ClientRequest;
-    };
-    return envelope.type === "session" ? (envelope.message ?? null) : envelope;
+    const envelope = JSON.parse(message) as ClientRequest;
+    return envelope.type === "session" ? null : envelope;
   } catch {
     return null;
   }

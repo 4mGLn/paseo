@@ -1,3 +1,4 @@
+import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
 import { afterEach, expect, test } from "vitest";
 import { createPaseoApi, HostRuntime } from "@getpaseo/client";
 import { createHostClient, createHostChannelTransport } from "@getpaseo/client/node";
@@ -427,7 +428,7 @@ class RoutePeer {
   }
 }
 
-import { mkdir, writeFile, readFile, chmod, stat, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, writeFile, readFile, chmod, stat, mkdtemp, rm, realpath } from "node:fs/promises";
 import { join, dirname, basename } from "node:path";
 import { tmpdir, userInfo } from "node:os";
 import { resolveDaemonVersion } from "../daemon-version.js";
@@ -1639,6 +1640,45 @@ test("SDK creation persists a qualified parent without resolving a colliding age
   expect((await restarted.daemon.agentStorage.get(child.id))?.parent).toEqual(parent.address);
 });
 
+test("managed membership is present on the first child snapshot and clears after forget", async () => {
+  const a = await daemon();
+  const { paseo, client } = await api(a);
+  const parent = await paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const published: import("@getpaseo/protocol/messages").AgentSnapshotPayload[] = [];
+  const directory = client.observeAgents();
+  const stop = directory.subscribe({
+    snapshot(value) {
+      for (const entry of value.entries) published.push(entry.agent);
+    },
+    update(message) {
+      if (message.type === "agent_update" && message.payload.kind === "upsert")
+        published.push(message.payload.agent);
+    },
+  });
+  await directory.ready;
+  const child = await parent.subagents.create({ config: { provider: "codex/test" } });
+  await expect.poll(() => published.find((snapshot) => snapshot.id === child.id)).toBeDefined();
+  const first = published.find((snapshot) => snapshot.id === child.id)!;
+  expect(first).toMatchObject({
+    managedRelationship: {
+      parent: parent.address,
+      parentWorkspace: { serverId: parent.serverId, workspaceId: parent.current()!.workspaceId },
+    },
+  });
+  expect((await child.refresh())?.agent).toMatchObject({
+    managedRelationship: { parent: parent.address },
+  });
+  await parent.subagents.forget(child.address);
+  await expect
+    .poll(async () => (await child.refresh())?.agent)
+    .toMatchObject({ managedRelationship: null });
+  stop();
+  await directory.release();
+});
+
 test("parent capability owns local and fleet membership, idempotent creation and restart recovery", async () => {
   const root = await mkdtemp(join(tmpdir(), "paseo-subagent-owner-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
@@ -1712,7 +1752,7 @@ test("startup upgrade adopts existing ordinary local children once without treat
   const { AgentStorage } = await import("../agent/agent-storage.js");
   const { default: pino } = await import("pino");
   const root = await mkdtemp(join(tmpdir(), "paseo-legacy-membership-"));
-  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  cleanup.push(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const storage = new AgentStorage(join(root, ".paseo", "agents"), pino({ level: "silent" }));
   const parentId = crypto.randomUUID();
   const childId = crypto.randomUUID();
@@ -3092,11 +3132,11 @@ test("parented modern creation retains one reserved identity and exact child dir
 });
 
 test("parented workspace creation retains its original receipt and both resources across retry", async () => {
-  let prompts = 0;
+  const prompts: AgentPromptInput[] = [];
   const instance = await createTestPaseoDaemon({
     agentClients: createTestAgentClients({
-      onStartTurn: () => {
-        prompts++;
+      onStartTurn: (prompt, config) => {
+        if (!config.internal) prompts.push(prompt);
       },
     }),
   });
@@ -3134,7 +3174,8 @@ test("parented workspace creation retains its original receipt and both resource
   expect((await parent.subagents.list()).rows).toHaveLength(1);
   const repeated = await origin.client.createWorkspace(request);
   expect(repeated.workspace?.id).toBe(workspaceId);
-  expect(prompts).toBe(1);
+  expect(prompts).toHaveLength(1);
+  expect(JSON.stringify(prompts[0])).toContain(request.agent.initialPrompt);
   const receipt = origin.paseo.creations.observe({
     kind: "workspace",
     idempotencyKey: request.idempotencyKey,
@@ -3307,11 +3348,11 @@ test("admitted workspace cancellation returns its existing receipt and leaves it
 test.each([false, true])(
   "legacy parented creation preserves exact directory and prompt with worktree: %s",
   async (worktree) => {
-    let prompts = 0;
+    const prompts: AgentPromptInput[] = [];
     const instance = await createTestPaseoDaemon({
       agentClients: createTestAgentClients({
-        onStartTurn: () => {
-          prompts++;
+        onStartTurn: (prompt, config) => {
+          if (!config.internal) prompts.push(prompt);
         },
       }),
     });
@@ -3408,10 +3449,13 @@ test.each([false, true])(
       const { stdout } = await promisify(execFile)("git", ["rev-parse", "--show-toplevel"], {
         cwd: snapshot.cwd,
       });
-      expect(snapshot.cwd).toBe(join(stdout.trim(), "legacy-nested"));
+      expect(await realpath(snapshot.cwd)).toBe(
+        await realpath(join(stdout.trim(), "legacy-nested")),
+      );
       expect(snapshot.workspaceId).not.toBe((await parent.refresh())!.agent.workspaceId);
     } else expect(snapshot.cwd).toBe(directory);
-    expect(prompts).toBe(1);
+    expect(prompts).toHaveLength(1);
+    expect(JSON.stringify(prompts[0])).toContain(request.initialPrompt);
   },
 );
 

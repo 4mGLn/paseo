@@ -1,3 +1,5 @@
+import { HostAuthorityRoute } from "@/runtime/host-authority-route";
+import { useAgentSnapshotFactsLine } from "@/panels/agent-facts-line";
 import { useCallback, useMemo, type ReactElement, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -14,9 +16,8 @@ import {
   type WorkspaceTabPresentation,
 } from "@/screens/workspace/workspace-tab-presentation";
 import type { Theme } from "@/styles/theme";
-import { useAgentFactsLine } from "@/panels/agent-facts-line";
 import { getPanelManifest } from "@/panels/panel-manifest";
-import type { SubagentRow } from "./select";
+import { subagentRowIdentity, type SubagentRow, type PaseoSubagentRow } from "./select";
 import type { ArchiveFinishedStatus } from "./use-archive-finished";
 import {
   buildSubagentPillPresentation,
@@ -35,17 +36,17 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
 export interface SubagentsTrackProps {
   serverId: string;
   rows: SubagentRow[];
-  onOpenSubagent: (id: string) => void;
+  onOpenSubagent: (row: PaseoSubagentRow) => void;
   onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
   /**
    * Whether opening this row shows it in a sheet. A sheet stacks over the list and uncovers it on
    * close, so the list stays open; a tab replaces the list's pane, so choosing it ends the list.
    */
   opensInSheet: (row: SubagentRow) => boolean;
-  onArchiveSubagent: (id: string) => void;
+  onArchiveSubagent: (row: PaseoSubagentRow) => void;
   onArchiveFinished?: () => void;
   archiveFinishedStatus?: ArchiveFinishedStatus;
-  onDetachSubagent?: (id: string) => void;
+  onDetachSubagent?: (row: PaseoSubagentRow) => void;
 }
 
 const IDLE_ARCHIVE_FINISHED_STATUS: ArchiveFinishedStatus = { kind: "idle" };
@@ -53,7 +54,10 @@ const IDLE_ARCHIVE_FINISHED_STATUS: ArchiveFinishedStatus = { kind: "idle" };
 const ROW_ICON_SIZE = 14;
 
 function useRowPresentation(row: SubagentRow, serverId: string): WorkspaceTabPresentation {
-  const icon = useProviderIcon(row.provider, serverId);
+  const icon = useProviderIcon(
+    row.provider,
+    row.kind === "paseo" ? row.address.serverId : serverId,
+  );
   const data = buildSubagentRowPresentationData(row);
   return {
     ...data,
@@ -105,7 +109,7 @@ export function SubagentsTrack({
       ) : null}
       {rows.map((row) => (
         <SubagentsTrackRow
-          key={row.id}
+          key={subagentRowIdentity(row)}
           row={row}
           serverId={serverId}
           onOpenSubagent={onOpenSubagent}
@@ -180,11 +184,11 @@ function ArchiveFinishedRow({
 interface SubagentsTrackRowProps {
   serverId: string;
   row: SubagentRow;
-  onOpenSubagent: (id: string) => void;
+  onOpenSubagent: (row: PaseoSubagentRow) => void;
   onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
   opensInSheet: boolean;
-  onArchiveSubagent: (id: string) => void;
-  onDetachSubagent?: (id: string) => void;
+  onArchiveSubagent: (row: PaseoSubagentRow) => void;
+  onDetachSubagent?: (row: PaseoSubagentRow) => void;
 }
 
 function SubagentsTrackRow({
@@ -205,17 +209,22 @@ function SubagentsTrackRow({
     if (row.kind === "provider") {
       onOpenProviderSubagent(row.parentAgentId, row.id);
     } else {
-      onOpenSubagent(row.id);
+      onOpenSubagent(row);
     }
   }, [onOpenProviderSubagent, onOpenSubagent, row]);
   const handleArchivePress = useCallback(() => {
-    onArchiveSubagent(row.id);
-  }, [onArchiveSubagent, row.id]);
+    if (row.kind === "paseo") onArchiveSubagent(row);
+  }, [onArchiveSubagent, row]);
   const handleDetachPress = useCallback(() => {
-    onDetachSubagent?.(row.id);
-  }, [onDetachSubagent, row.id]);
+    if (row.kind === "paseo") onDetachSubagent?.(row);
+  }, [onDetachSubagent, row]);
   const actionsAlwaysVisible = isNative || isCompact;
+  const rowId = row.kind === "paseo" ? row.address.agentId : row.id;
 
+  const pendingFacts = useMemo(
+    () => <SubagentFacts rowId={rowId} text={row.subtitle} />,
+    [rowId, row.subtitle],
+  );
   const renderRow = useCallback(
     ({ active }: { active: boolean }) => (
       <>
@@ -225,14 +234,31 @@ function SubagentsTrackRow({
             {displayLabel}
           </Text>
           {row.kind === "paseo" ? (
-            <PaseoSubagentFacts serverId={serverId} agentId={row.id} />
+            <>
+              <HostAuthorityRoute reference={row.authority} pending={pendingFacts}>
+                <ManagedSubagentFacts row={row} />
+              </HostAuthorityRoute>
+              {row.freshness !== "current" ||
+              row.phase === "detach_pending" ||
+              row.phase === "lifecycle_pending" ? (
+                <SubagentFacts
+                  rowId={`${rowId}-availability`}
+                  text={
+                    row.error?.message ??
+                    (row.phase.endsWith("pending")
+                      ? t("agentList.badges.pending", { count: 1 })
+                      : t("common.errors.daemonUnavailable"))
+                  }
+                />
+              ) : null}
+            </>
           ) : (
-            <SubagentFacts rowId={row.id} text={presentation.subtitle} />
+            <SubagentFacts rowId={rowId} text={presentation.subtitle} />
           )}
         </View>
         {row.kind === "paseo" ? (
           <SubagentRowActions
-            rowId={row.id}
+            rowId={rowId}
             displayLabel={displayLabel}
             compact={isCompact}
             visible={actionsAlwaysVisible || active}
@@ -250,16 +276,17 @@ function SubagentsTrackRow({
       isCompact,
       onDetachSubagent,
       presentation,
-      row.kind,
-      row.id,
-      serverId,
+      pendingFacts,
+      row,
+      rowId,
+      t,
     ],
   );
 
   return (
     <ComposerTrackRow
       accessibilityLabel={displayLabel}
-      testID={`subagents-track-row-${row.id}`}
+      testID={`subagents-track-row-${rowId}`}
       closeOnSelect={!opensInSheet}
       onPress={handlePress}
     >
@@ -268,10 +295,9 @@ function SubagentsTrackRow({
   );
 }
 
-/** The same facts line the agent's sheet shows when it opens without its composer. */
-function PaseoSubagentFacts({ serverId, agentId }: { serverId: string; agentId: string }) {
-  const text = useAgentFactsLine(serverId, agentId);
-  return <SubagentFacts rowId={agentId} text={text} />;
+function ManagedSubagentFacts({ row }: { row: PaseoSubagentRow }) {
+  const text = useAgentSnapshotFactsLine(row.address.serverId, row.facts);
+  return <SubagentFacts rowId={row.address.agentId} text={text} />;
 }
 
 function SubagentFacts({ rowId, text }: { rowId: string; text: string | null }) {

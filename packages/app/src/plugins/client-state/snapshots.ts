@@ -47,7 +47,9 @@ export function createPluginAgentSnapshot(agent: Agent, workspaceId: string): Pl
     thinkingOptionId: agent.thinkingOptionId ?? null,
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
-    parentAgentId: agent.parentAgentId,
+    parent: agent.parent ? Object.freeze({ ...agent.parent }) : null,
+    // COMPAT(pluginParentId): added in v0.12.0, remove after 2027-04-20.
+    parentAgentId: agent.parent?.agentId ?? null,
     labels: Object.freeze({ ...agent.labels }),
   });
   const byWorkspace = agentSnapshots.get(agent) ?? new Map<string, PluginAgentSnapshot>();

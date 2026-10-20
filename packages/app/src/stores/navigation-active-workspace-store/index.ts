@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useLocalSearchParams, usePathname } from "expo-router";
+import { useGlobalSearchParams, useLocalSearchParams, usePathname } from "expo-router";
 import { useEffect, useSyncExternalStore } from "react";
 import {
   createLastWorkspaceSelectionStore,
@@ -75,15 +75,24 @@ export function useActiveWorkspaceSelection(): ActiveWorkspaceSelection | null {
     serverId?: string | string[];
     workspaceId?: string | string[];
   }>();
-  const selection = parseActiveWorkspaceSelection({ pathname: usePathname(), params });
+  const { origin } = useGlobalSearchParams<{ origin?: string | string[] }>();
+  const selection = parseActiveWorkspaceSelection({
+    pathname: usePathname(),
+    params: { ...params, origin },
+  });
   const serverId = selection?.serverId ?? null;
   const workspaceId = selection?.workspaceId ?? null;
+  const originServerId = selection?.authority?.originServerId;
   useEffect(() => {
     if (!serverId || !workspaceId) {
       return;
     }
-    lastWorkspaceSelectionStore.remember({ serverId, workspaceId });
-  }, [serverId, workspaceId]);
+    lastWorkspaceSelectionStore.remember({
+      serverId,
+      workspaceId,
+      ...(originServerId ? { authority: { originServerId } } : {}),
+    });
+  }, [serverId, workspaceId, originServerId]);
   return selection;
 }
 

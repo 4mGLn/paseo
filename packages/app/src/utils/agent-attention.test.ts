@@ -1,3 +1,4 @@
+import { managedAgentFields } from "@/subagents/test-fixtures";
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@/stores/session-store";
 import { pickAttentionAgent, shouldClearAgentAttention } from "@/utils/agent-attention";
@@ -28,7 +29,8 @@ function createAgent(input: Partial<Agent> & Pick<Agent, "id">): Agent {
     title: null,
     cwd: "/repo/worktree",
     model: null,
-    parentAgentId: null,
+    parent: null,
+    managedRelationship: null,
     labels: {},
     requiresAttention: false,
     attentionReason: null,
@@ -219,7 +221,7 @@ describe("pickAttentionAgent", () => {
       pickAttentionAgent([
         createAgent({
           id: "subagent",
-          parentAgentId: "parent-agent",
+          ...managedAgentFields({ serverId: "server-1", agentId: "parent-agent" }),
           requiresAttention: true,
           attentionReason: "permission",
           attentionTimestamp: new Date("2026-01-01T00:00:00.000Z"),
@@ -239,7 +241,7 @@ describe("pickAttentionAgent", () => {
       pickAttentionAgent([
         createAgent({
           id: "subagent",
-          parentAgentId: "parent-agent",
+          ...managedAgentFields({ serverId: "server-1", agentId: "parent-agent" }),
           requiresAttention: true,
           attentionReason: "permission",
           attentionTimestamp: new Date("2026-01-01T00:00:00.000Z"),

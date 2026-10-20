@@ -42,7 +42,7 @@ function createFakeEnv(
       subagents.set(id, snapshot);
     },
     deps: {
-      getSubagent: (id) => subagents.get(id),
+      getSubagent: (child) => subagents.get(child.agentId),
       confirm: async (dialog) => {
         recordedConfirmInputs.push(dialog);
         return options.confirmResult ?? false;
@@ -132,7 +132,10 @@ describe("requestArchiveSubagent", () => {
       ],
     });
 
-    await requestArchiveSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps);
+    await requestArchiveSubagent(
+      { child: { serverId: "server-1", agentId: "child-agent" } },
+      env.deps,
+    );
 
     expect(env.recordedArchives).toEqual([{ serverId: "server-1", agentId: "child-agent" }]);
   });
@@ -148,7 +151,10 @@ describe("requestArchiveSubagent", () => {
       ],
     });
 
-    await requestArchiveSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps);
+    await requestArchiveSubagent(
+      { child: { serverId: "server-1", agentId: "child-agent" } },
+      env.deps,
+    );
 
     expect(env.recordedArchives).toEqual([]);
   });
@@ -164,7 +170,10 @@ describe("requestArchiveSubagent", () => {
       ],
     });
 
-    await requestArchiveSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps);
+    await requestArchiveSubagent(
+      { child: { serverId: "server-1", agentId: "child-agent" } },
+      env.deps,
+    );
 
     expect(env.recordedConfirmInputs).toEqual([
       resolveArchiveSubagentDialog({ title: "Review branch", status: "running" }),
@@ -174,7 +183,7 @@ describe("requestArchiveSubagent", () => {
   it("asks with the missing-subagent dialog when the snapshot is unknown", async () => {
     const env = createFakeEnv({ confirmResult: false });
 
-    await requestArchiveSubagent({ serverId: "server-1", subagentId: "missing" }, env.deps);
+    await requestArchiveSubagent({ child: { serverId: "server-1", agentId: "missing" } }, env.deps);
 
     expect(env.recordedConfirmInputs).toEqual([
       resolveArchiveSubagentDialog({ title: undefined, status: undefined }),
@@ -198,7 +207,7 @@ describe("requestArchiveSubagent", () => {
     };
 
     await expect(
-      requestArchiveSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps),
+      requestArchiveSubagent({ child: { serverId: "server-1", agentId: "child-agent" } }, env.deps),
     ).resolves.toBeUndefined();
     expect(env.recordedErrors).toEqual([error]);
   });

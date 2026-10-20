@@ -1,7 +1,9 @@
 import { useCallback } from "react";
 import { useToast } from "@/contexts/toast-context";
 import { i18n } from "@/i18n/i18next";
-import { useSessionStore } from "@/stores/session-store";
+import { useHostRuntimeStore } from "@/runtime/host-runtime";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
+import type { PaseoSubagentRow } from "./select";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
@@ -15,30 +17,32 @@ export type {
 } from "./detach-subagent";
 
 export interface UseDetachSubagentInput {
-  serverId: string;
+  parent: AgentAddress;
 }
 
-export function useDetachSubagent(input: UseDetachSubagentInput): (subagentId: string) => void {
-  const { serverId } = input;
+export function useDetachSubagent(input: UseDetachSubagentInput): (row: PaseoSubagentRow) => void {
+  const runtime = useHostRuntimeStore();
+  const directory = runtime.subagents.directory(input.parent);
   const toast = useToast();
 
   return useCallback(
-    (subagentId: string) => {
+    (row: PaseoSubagentRow) => {
       void requestDetachSubagent(
-        { serverId, subagentId },
+        { child: row.address },
         {
-          getSubagent: (id): ResolveDetachSubagentDialogInput | undefined =>
-            useSessionStore.getState().sessions[serverId]?.agents?.get(id),
+          getSubagent: (child): ResolveDetachSubagentDialogInput | undefined =>
+            directory
+              .getSnapshot()
+              .rows.find(
+                (current) =>
+                  current.child.serverId === child.serverId &&
+                  current.child.agentId === child.agentId,
+              )?.snapshot,
           confirm: confirmDialog,
-          detachAgent: async ({ serverId: targetServerId, agentId }) => {
-            const client = useSessionStore.getState().sessions[targetServerId]?.client;
-            if (!client) {
-              throw new Error(i18n.t("workspaceSetup.errors.hostDisconnected"));
-            }
-            await client.detachAgent(agentId);
-          },
+          detachAgent: directory.detach,
+          reportPending: () => toast.show(i18n.t("agentList.badges.pending", { count: 1 })),
           openDetachedAgent: ({ serverId: targetServerId, agentId }) => {
-            navigateToAgent({ serverId: targetServerId, agentId });
+            navigateToAgent({ serverId: targetServerId, agentId, authority: row.authority });
           },
           reportError: (error) => {
             toast.error(toErrorMessage(error));
@@ -46,6 +50,6 @@ export function useDetachSubagent(input: UseDetachSubagentInput): (subagentId: s
         },
       );
     },
-    [serverId, toast],
+    [directory, toast],
   );
 }

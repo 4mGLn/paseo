@@ -1,6 +1,9 @@
 import { useLayoutEffect } from "react";
 import { supportsDesktopPaneSplits, useIsCompactFormFactor } from "@/constants/layout";
-import { useWorkspaceLayoutStore, type WorkspaceLayoutMode } from "@/stores/workspace-layout-store";
+import {
+  useWorkspaceLayoutStoreApi,
+  type WorkspaceLayoutMode,
+} from "@/stores/workspace-layout-store";
 
 function resolveWorkspaceLayoutMode(isCompact: boolean): WorkspaceLayoutMode {
   if (isCompact) return "compact";
@@ -13,9 +16,10 @@ function resolveWorkspaceLayoutMode(isCompact: boolean): WorkspaceLayoutMode {
  * sibling's subtree, so a route sees the mode even from its first layout effect.
  */
 export function WorkspaceLayoutModePublisher(): null {
+  const layout = useWorkspaceLayoutStoreApi();
   const isCompact = useIsCompactFormFactor();
   useLayoutEffect(() => {
-    useWorkspaceLayoutStore.getState().setLayoutMode(resolveWorkspaceLayoutMode(isCompact));
-  }, [isCompact]);
+    layout.getState().setLayoutMode(resolveWorkspaceLayoutMode(isCompact));
+  }, [isCompact, layout]);
   return null;
 }

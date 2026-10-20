@@ -34,8 +34,9 @@ export function deriveWorkspaceAgentVisibility(input: {
     }
     if (!agent.archivedAt) {
       activeAgentIds.add(agent.id);
-      const parentAgent = agent.parentAgentId
-        ? (sessionAgents?.get(agent.parentAgentId) ?? agentDetails?.get(agent.parentAgentId))
+      const parentAgent = agent.managedRelationship?.parent.agentId
+        ? (sessionAgents?.get(agent.managedRelationship?.parent.agentId) ??
+          agentDetails?.get(agent.managedRelationship?.parent.agentId))
         : undefined;
       if (isWorkspaceRootAgent(agent, parentAgent)) {
         autoOpenAgentIds.add(agent.id);

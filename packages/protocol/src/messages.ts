@@ -836,8 +836,16 @@ const AgentActiveTurnPayloadSchema = z.object({
   startedAt: z.string().nullable(),
 });
 
+export const ManagedAgentRelationshipSchema = z.object({
+  id: z.string(),
+  parent: AgentAddressSchema,
+  parentWorkspace: WorkspaceAddressSchema.nullable(),
+});
+export type ManagedAgentRelationship = z.infer<typeof ManagedAgentRelationshipSchema>;
+
 export const AgentSnapshotPayloadSchema = z.object({
   parent: AgentAddressSchema.nullable().optional(),
+  managedRelationship: ManagedAgentRelationshipSchema.nullable().optional(),
   id: z.string(),
   provider: AgentProviderSchema,
   cwd: z.string(),
@@ -874,6 +882,7 @@ export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
 
 export const AgentListItemPayloadSchema = z.object({
   parent: AgentAddressSchema.nullable().optional(),
+  managedRelationship: ManagedAgentRelationshipSchema.nullable().optional(),
   id: z.string(),
   shortId: z.string(),
   title: z.string().nullable(),

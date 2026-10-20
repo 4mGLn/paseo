@@ -131,6 +131,7 @@ function dispatchHostWorkspacePopTo(
           serverId: selection.serverId,
           workspaceId: encodeWorkspaceIdForPathSegment(selection.workspaceId),
           ...(open ? { open } : {}),
+          ...(selection.authority ? { origin: selection.authority.originServerId } : {}),
         },
         // React Navigation consumes this nested hint when resolving the host child screen.
         // The browser-route canonicalizer strips the resulting ?pop=true URL artifact.

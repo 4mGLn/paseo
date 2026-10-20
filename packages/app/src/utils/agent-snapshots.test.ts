@@ -10,6 +10,8 @@ function createSnapshot(
 ): AgentSnapshotPayload {
   return {
     id: input.id ?? "agent-1",
+    parent: input.parent,
+    managedRelationship: input.managedRelationship,
     provider: input.provider ?? "codex",
     cwd: input.cwd ?? "/repo",
     model: input.model ?? null,
@@ -78,15 +80,15 @@ describe("normalizeAgentSnapshot", () => {
     });
   });
 
-  it("derives parentAgentId from the parent label while preserving labels", () => {
+  it("normalizes legacy parent identity from the parent label while preserving labels", () => {
     const labels = {
       [PARENT_AGENT_ID_LABEL]: "parent-1",
       "custom.label": "still-here",
     };
 
-    const agent = normalizeAgentSnapshot(createSnapshot({ labels }), "server-1");
+    const agent = normalizeAgentSnapshot(createSnapshot({ labels }), "server-1", { features: {} });
 
-    expect(agent.parentAgentId).toBe("parent-1");
+    expect(agent.parent).toEqual({ serverId: "server-1", agentId: "parent-1" });
     expect(agent.labels).toEqual(labels);
   });
 
@@ -94,24 +96,57 @@ describe("normalizeAgentSnapshot", () => {
     const agent = normalizeAgentSnapshot(
       createSnapshot({ labels: { [PARENT_AGENT_ID_LABEL]: "  parent-1 \n" } }),
       "server-1",
+      { features: {} },
     );
 
-    expect(agent.parentAgentId).toBe("parent-1");
+    expect(agent.parent).toEqual({ serverId: "server-1", agentId: "parent-1" });
   });
 
   it("maps missing, empty, and non-string parent labels to null", () => {
-    const missing = normalizeAgentSnapshot(createSnapshot(), "server-1");
+    const missing = normalizeAgentSnapshot(createSnapshot(), "server-1", { features: {} });
     const empty = normalizeAgentSnapshot(
       createSnapshot({ labels: { [PARENT_AGENT_ID_LABEL]: "   " } }),
       "server-1",
+      { features: {} },
     );
     const nonString = normalizeAgentSnapshot(
       createSnapshot({ labels: { [PARENT_AGENT_ID_LABEL]: 42 } }),
       "server-1",
+      { features: {} },
     );
 
-    expect(missing.parentAgentId).toBeNull();
-    expect(empty.parentAgentId).toBeNull();
-    expect(nonString.parentAgentId).toBeNull();
+    expect(missing.parent).toBeNull();
+    expect(empty.parent).toBeNull();
+    expect(nonString.parent).toBeNull();
   });
+});
+
+it("capable snapshots never acquire membership from a parent pointer or injected label", () => {
+  for (const parent of [
+    { serverId: "server-1", agentId: "parent" },
+    { serverId: "other", agentId: "parent" },
+  ]) {
+    const normalized = normalizeAgentSnapshot(
+      createSnapshot({ parent, labels: { [PARENT_AGENT_ID_LABEL]: "parent" } }),
+      "server-1",
+      { features: { fleetSubagents: true } },
+    );
+    expect(normalized.parent).toEqual(parent);
+    expect(normalized.managedRelationship).toBeNull();
+    expect(projectAgentSnapshot(normalized)).toMatchObject({ parent, managedRelationship: null });
+  }
+});
+it("round trips owner membership and explicit clearing without consulting labels", () => {
+  const managedRelationship = {
+    id: "relationship",
+    parent: { serverId: "A", agentId: "parent" },
+    parentWorkspace: { serverId: "A", workspaceId: "same-workspace" },
+  };
+  const input = createSnapshot({ parent: managedRelationship.parent, managedRelationship });
+  expect(projectAgentSnapshot(normalizeAgentSnapshot(input, "A"))).toMatchObject({
+    managedRelationship,
+  });
+  expect(
+    projectAgentSnapshot(normalizeAgentSnapshot({ ...input, managedRelationship: null }, "A")),
+  ).toMatchObject({ managedRelationship: null });
 });

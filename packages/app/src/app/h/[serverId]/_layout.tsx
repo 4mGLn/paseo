@@ -19,13 +19,20 @@ export default function HostRouteLayout() {
 }
 
 function KnownHostRoute() {
-  const params = useLocalSearchParams<{ serverId?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    serverId?: string | string[];
+    origin?: string | string[];
+  }>();
   const hosts = useHosts();
   const hostRegistryStatus = useHostRegistryStatus();
   const bootstrapState = useHostRuntimeBootstrapState();
   const routeServerId = typeof params.serverId === "string" ? params.serverId : null;
   const startupRoute = resolveStartupRoute({
-    route: { kind: "host", serverId: routeServerId },
+    route: {
+      kind: "host",
+      serverId: routeServerId,
+      ...(typeof params.origin === "string" ? { originServerId: params.origin } : {}),
+    },
     startupBlocker: bootstrapState.startupBlocker,
     hostRegistryStatus,
     hosts,

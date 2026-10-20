@@ -14,7 +14,7 @@ export function getAgentTabsNeedingOpenLabel(input: {
     }
     const agent = input.getAgent(tab.target.agentId);
     if (
-      agent?.parentAgentId &&
+      agent?.managedRelationship &&
       agent.labels[input.label] !== "true" &&
       !input.pendingAgentIds.has(agent.id)
     ) {

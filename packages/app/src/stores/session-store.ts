@@ -1,3 +1,5 @@
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
+import type { ManagedAgentRelationship } from "@getpaseo/protocol/messages";
 import { createCreateFlowStore, defaultCreateFlowStore } from "@/stores/create-flow-store";
 import {
   createAgentInitializations,
@@ -103,7 +105,8 @@ export interface Agent {
   attentionReason?: "finished" | "error" | "permission" | null;
   attentionTimestamp?: Date | null;
   archivedAt?: Date | null;
-  parentAgentId: string | null;
+  parent: AgentAddress | null;
+  managedRelationship: ManagedAgentRelationship | null;
   labels: Record<string, string>;
   projectPlacement?: ProjectPlacementPayload | null;
 }

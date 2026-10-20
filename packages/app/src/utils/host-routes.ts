@@ -289,7 +289,7 @@ export function parseHostAgentRouteFromPathname(
 
 export function parseHostWorkspaceRouteFromPathname(
   pathname: string,
-): { serverId: string; workspaceId: string } | null {
+): { serverId: string; workspaceId: string; authority?: { originServerId: string } } | null {
   const pathOnly = stripSearchAndHash(pathname);
   const match = pathOnly.match(/^\/h\/([^/]+)\/workspace\/([^/]+)\/?$/);
   if (!match) {
@@ -306,7 +306,8 @@ export function parseHostWorkspaceRouteFromPathname(
   if (!workspaceId) {
     return null;
   }
-  return { serverId, workspaceId };
+  const authority = getHostRouteAuthority(pathname);
+  return { serverId, workspaceId, ...(authority ? { authority } : {}) };
 }
 
 export function stripHostWorkspaceRouteEchoSearch(route: string): string {
@@ -357,6 +358,16 @@ export function buildHostWorkspaceRoute(serverId: string, workspaceId: string) {
     return "/" as const;
   }
   return `/h/${encodeSegment(normalizedServerId)}/workspace/${encodeSegment(encodedWorkspaceId)}` as const;
+}
+
+/** Route metadata identifies the intended authority owner; restoration reacquires its grants. */
+export function withHostRouteAuthority(
+  route: string,
+  authority: { originServerId: string },
+): string {
+  const params = new URLSearchParams(extractSearch(route));
+  params.set("origin", authority.originServerId);
+  return `${stripSearchAndHash(route)}?${params.toString()}${extractHash(route)}`;
 }
 
 export function buildHostWorkspaceOpenRoute(
@@ -589,4 +600,9 @@ export function buildProjectSettingsRoute(serverId: string, projectId: string) {
 export function normalizeProjectSettingsRouteId(value: string | string[] | undefined): string {
   const id = Array.isArray(value) ? value[0] : value;
   return typeof id === "string" ? id : "";
+}
+
+export function getHostRouteAuthority(route: string): { originServerId: string } | null {
+  const originServerId = new URLSearchParams(extractSearch(route)).get("origin")?.trim();
+  return originServerId ? { originServerId } : null;
 }

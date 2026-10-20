@@ -1,3 +1,4 @@
+import { HostAuthorityRoute } from "@/runtime/host-authority-route";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocalSearchParams, useRouter, type Href } from "expo-router";
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
@@ -5,21 +6,34 @@ import { useFetchQuery } from "@/data/query";
 import { resolveAgentRoute, type AgentRouteLookup } from "@/navigation/agent-route-resolution";
 import { AgentRouteResolutionView } from "@/navigation/agent-route-resolution-view";
 import { useSessionStore } from "@/stores/session-store";
-import { getHostRuntimeStore, useHostRuntimeSnapshot, useHosts } from "@/runtime/host-runtime";
-import { buildHostRootRoute, buildSettingsHostRoute } from "@/utils/host-routes";
+import { useHostRuntimeStore, useHostRuntimeSnapshot, useHosts } from "@/runtime/host-runtime";
+import {
+  buildHostRootRoute,
+  buildSettingsHostRoute,
+  withHostRouteAuthority,
+} from "@/utils/host-routes";
 import { toErrorMessage } from "@/utils/error-messages";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 
 export default function HostAgentReadyRoute() {
+  const { serverId, origin } = useLocalSearchParams<{ serverId?: string; origin?: string }>();
+  const reference = useMemo(
+    () => ({ originServerId: origin ?? serverId ?? "", serverId: serverId ?? "" }),
+    [origin, serverId],
+  );
+  if (!serverId) return null;
   return (
     <HostRouteBootstrapBoundary>
-      <HostAgentReadyRouteContent />
+      <HostAuthorityRoute reference={reference}>
+        <HostAgentReadyRouteContent />
+      </HostAuthorityRoute>
     </HostRouteBootstrapBoundary>
   );
 }
 
 function HostAgentReadyRouteContent() {
   const router = useRouter();
+  const runtime = useHostRuntimeStore();
   const params = useLocalSearchParams<{
     serverId?: string;
     agentId?: string;
@@ -40,10 +54,8 @@ function HostAgentReadyRouteContent() {
   });
   useEffect(() => {
     if (!serverId || !agentId || agentWorkspaceId) return;
-    void getHostRuntimeStore()
-      .prepareAgentRoute(serverId, agentId)
-      .catch(() => undefined);
-  }, [agentId, agentWorkspaceId, serverId]);
+    void runtime.prepareAgentRoute(serverId, agentId).catch(() => undefined);
+  }, [agentId, agentWorkspaceId, serverId, runtime]);
   const shouldLookupAgent = Boolean(
     serverId && agentId && client && connectionStatus === "online" && !agentWorkspaceId,
   );
@@ -106,11 +118,23 @@ function HostAgentReadyRouteContent() {
     handledNavigationRef.current = navigationKey;
 
     if (resolution.kind === "resolved") {
-      navigateToAgent({ serverId, agentId, workspaceId: resolution.workspaceId });
+      navigateToAgent({
+        serverId,
+        agentId,
+        workspaceId: resolution.workspaceId,
+        authority: runtime.authorityFor(serverId),
+      });
       return;
     }
-    router.replace(resolution.kind === "invalid" ? ("/" as Href) : buildHostRootRoute(serverId));
-  }, [agentId, resolution, router, serverId]);
+    router.replace(
+      resolution.kind === "invalid"
+        ? ("/" as Href)
+        : (withHostRouteAuthority(
+            buildHostRootRoute(serverId),
+            runtime.authorityFor(serverId),
+          ) as Href),
+    );
+  }, [agentId, resolution, router, serverId, runtime]);
 
   const handleRetry = useCallback(() => {
     if (resolution.kind === "lookupError") {
@@ -118,21 +142,28 @@ function HostAgentReadyRouteContent() {
       return;
     }
     if (serverId) {
-      void getHostRuntimeStore().runProbeCycleNow(serverId);
+      void runtime.runProbeCycleNow(serverId);
     }
-  }, [lookupQuery, resolution.kind, serverId]);
+  }, [lookupQuery, resolution.kind, serverId, runtime]);
   const handleManageHost = useCallback(() => {
     if (serverId) {
-      router.push(buildSettingsHostRoute(serverId));
+      router.push(buildSettingsHostRoute(runtime.authorityFor(serverId).originServerId));
     }
-  }, [router, serverId]);
+  }, [router, serverId, runtime]);
   const handleBack = useCallback(() => {
     if (router.canGoBack()) {
       router.back();
       return;
     }
-    router.replace(serverId ? buildHostRootRoute(serverId) : ("/" as Href));
-  }, [router, serverId]);
+    router.replace(
+      serverId
+        ? (withHostRouteAuthority(
+            buildHostRootRoute(serverId),
+            runtime.authorityFor(serverId),
+          ) as Href)
+        : ("/" as Href),
+    );
+  }, [router, serverId, runtime]);
 
   if (
     resolution.kind === "waitingForHost" ||

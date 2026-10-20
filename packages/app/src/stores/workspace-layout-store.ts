@@ -1,9 +1,13 @@
+import { useSessionStore, type SessionStoreApi } from "@/stores/session-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useEffect, useState } from "react";
-import { create } from "zustand";
+import { createContext, useContext, useEffect, useState } from "react";
+import { create, useStore } from "zustand";
 import { persist, type StateStorage } from "zustand/middleware";
 import type { z } from "zod";
-import { WorkspaceLayoutPersistedStateSchema } from "./workspace-layout-storage";
+import {
+  WorkspaceLayoutPersistedStateSchema,
+  workspaceLayoutStorageWithLegacySeed,
+} from "./workspace-layout-storage";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import type { WorkspaceTab, WorkspaceTabTarget } from "@/workspace-tabs/model";
 import {
@@ -763,12 +767,13 @@ function resolveSheetPolicy(
   workspaceKey: string,
   target: WorkspaceTabTarget,
   intent: WorkspaceTabOpenIntent,
+  policy: typeof resolveCompactSheetPolicy,
 ): CompactSheetPolicy | null {
   if (state.layoutMode !== "compact" || intent === "background") return null;
   if (intent === "reveal" && isTargetOpenAsTab(state.layoutByWorkspace[workspaceKey], target)) {
     return null;
   }
-  return resolveCompactSheetPolicy(workspaceKey, target);
+  return policy(workspaceKey, target);
 }
 
 /**
@@ -880,8 +885,9 @@ function resolveSheetPlacement(
   workspaceKey: string,
   target: WorkspaceTabTarget,
   intent: WorkspaceTabOpenIntent,
+  resolvePolicy: typeof resolveCompactSheetPolicy,
 ): { policy: CompactSheetPolicy; keptIndex: number | null } | null {
-  const policy = resolveSheetPolicy(state, workspaceKey, target, intent);
+  const policy = resolveSheetPolicy(state, workspaceKey, target, intent, resolvePolicy);
   if (!policy) return null;
   if (intent !== "reveal") return { policy, keptIndex: null };
   const sheets = getSheets(state, workspaceKey);
@@ -926,10 +932,11 @@ function sheetAgentNoLongerFits(
   workspaceKey: string,
   sheet: SheetTab,
   snapshot: WorkspaceTabSnapshot,
+  policy: typeof resolveCompactSheetPolicy,
 ): boolean {
   if (sheet.tab.target.kind !== "agent" || !snapshot.agentsHydrated) return false;
   if (!new Set(snapshot.activeAgentIds).has(sheet.tab.target.agentId)) return true;
-  return resolveCompactSheetPolicy(workspaceKey, sheet.tab.target) === null;
+  return policy(workspaceKey, sheet.tab.target) === null;
 }
 
 /**
@@ -997,7 +1004,10 @@ function createPersistedStateProjection() {
 export function createWorkspaceLayoutStore(
   ids: WorkspaceLayoutIdSource = defaultWorkspaceLayoutIds,
   storage: StateStorage = AsyncStorage,
+  persistence: { namespace?: string; legacyServerId?: string; sessionStore?: SessionStoreApi } = {},
 ) {
+  const compactSheetPolicy: typeof resolveCompactSheetPolicy = (workspaceKey, target) =>
+    resolveCompactSheetPolicy(workspaceKey, target, persistence.sessionStore ?? useSessionStore);
   return create<WorkspaceLayoutStore>()(
     persist(
       (set, get) => ({
@@ -1050,6 +1060,7 @@ export function createWorkspaceLayoutStore(
                   normalizedWorkspaceKey,
                   normalizedTarget,
                   input.intent,
+                  compactSheetPolicy,
                 );
           if (sheetPlacement) {
             const sheets = getSheets(get(), normalizedWorkspaceKey);
@@ -1163,8 +1174,13 @@ export function createWorkspaceLayoutStore(
           const normalizedTarget = normalizeWorkspaceTabTarget(input.target);
           if (!normalizedWorkspaceKey || !normalizedTarget) return false;
           return (
-            resolveSheetPlacement(get(), normalizedWorkspaceKey, normalizedTarget, input.intent) !==
-            null
+            resolveSheetPlacement(
+              get(),
+              normalizedWorkspaceKey,
+              normalizedTarget,
+              input.intent,
+              compactSheetPolicy,
+            ) !== null
           );
         },
         setLayoutMode: (mode) => {
@@ -1493,7 +1509,7 @@ export function createWorkspaceLayoutStore(
           const normalizedTarget = normalizeWorkspaceTabTarget(target);
           if (!normalizedWorkspaceKey || !normalizedTabId || !normalizedTarget) return null;
           if (findSheet(get(), normalizedWorkspaceKey, normalizedTabId)) {
-            const policy = resolveCompactSheetPolicy(normalizedWorkspaceKey, normalizedTarget);
+            const policy = compactSheetPolicy(normalizedWorkspaceKey, normalizedTarget);
             const next: WorkspaceLayoutStore = {
               ...get(),
               ...withSheetTab(get(), normalizedWorkspaceKey, normalizedTabId, (sheet) => ({
@@ -1650,7 +1666,13 @@ export function createWorkspaceLayoutStore(
             }
             const sheets = getSheets(state, normalizedWorkspaceKey);
             const fittingSheets = sheets.filter(
-              (sheet) => !sheetAgentNoLongerFits(normalizedWorkspaceKey, sheet, snapshot),
+              (sheet) =>
+                !sheetAgentNoLongerFits(
+                  normalizedWorkspaceKey,
+                  sheet,
+                  snapshot,
+                  compactSheetPolicy,
+                ),
             );
             const sheetAgentGone = fittingSheets.length !== sheets.length;
             if (
@@ -2213,11 +2235,19 @@ export function createWorkspaceLayoutStore(
         },
       }),
       {
-        name: "workspace-layout-state",
+        name: persistence.namespace
+          ? `workspace-layout-state:${persistence.namespace}`
+          : "workspace-layout-state",
         version: WORKSPACE_LAYOUT_PERSIST_VERSION,
-        storage: createValidatedPersistStorage(storage, WorkspaceLayoutPersistedStateSchema, {
-          skipUnchanged: true,
-        }),
+        storage: createValidatedPersistStorage(
+          persistence.legacyServerId
+            ? workspaceLayoutStorageWithLegacySeed(storage, persistence.legacyServerId)
+            : storage,
+          WorkspaceLayoutPersistedStateSchema,
+          {
+            skipUnchanged: true,
+          },
+        ),
         migrate: (persistedState, version) =>
           migrateWorkspaceLayoutPersistedState(persistedState, version, ids),
         partialize: createPersistedStateProjection(),
@@ -2280,7 +2310,19 @@ export function createWorkspaceLayoutStore(
   );
 }
 
-export const useWorkspaceLayoutStore = createWorkspaceLayoutStore();
+export type WorkspaceLayoutStoreApi = ReturnType<typeof createWorkspaceLayoutStore>;
+export const defaultWorkspaceLayoutStore = createWorkspaceLayoutStore();
+export const WorkspaceLayoutStoreContext = createContext<WorkspaceLayoutStoreApi | null>(null);
+export function useWorkspaceLayoutStoreApi(): WorkspaceLayoutStoreApi {
+  return useContext(WorkspaceLayoutStoreContext) ?? defaultWorkspaceLayoutStore;
+}
+// COMPAT(unboundWorkspaceLayout): added in v0.12, remove after 2027-04-20.
+// Existing app-shell callers retain the default store; bound consumers capture their owner.
+export const useWorkspaceLayoutStore = Object.assign(function useWorkspaceLayoutStore<T>(
+  selector: (state: WorkspaceLayoutStore) => T,
+): T {
+  return useStore(useWorkspaceLayoutStoreApi(), selector);
+}, defaultWorkspaceLayoutStore);
 
 /**
  * The agent tabs that exist right now, including sheet tabs, across every workspace of this host,
@@ -2331,20 +2373,19 @@ export function observeOpenWorkspaceAgentIds(
 }
 
 export function useWorkspaceLayoutStoreHydrated(): boolean {
-  const [hasHydrated, setHasHydrated] = useState(() =>
-    useWorkspaceLayoutStore.persist.hasHydrated(),
-  );
+  const store = useWorkspaceLayoutStoreApi();
+  const [hasHydrated, setHasHydrated] = useState(() => store.persist.hasHydrated());
 
   useEffect(() => {
-    if (useWorkspaceLayoutStore.persist.hasHydrated()) {
+    if (store.persist.hasHydrated()) {
       setHasHydrated(true);
       return;
     }
 
-    return useWorkspaceLayoutStore.persist.onFinishHydration(() => {
+    return store.persist.onFinishHydration(() => {
       setHasHydrated(true);
     });
-  }, []);
+  }, [store]);
 
   return hasHydrated;
 }

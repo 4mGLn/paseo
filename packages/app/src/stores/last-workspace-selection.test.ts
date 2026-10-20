@@ -71,3 +71,20 @@ describe("last workspace selection", () => {
     });
   });
 });
+
+it("persists and restores selected origin independently of a destination and distinguishes authority changes", async () => {
+  const storage = new DelayedWorkspaceSelectionStorage();
+  const store = createLastWorkspaceSelectionStore(storage);
+  store.remember({ serverId: "B", workspaceId: "workspace", authority: { originServerId: "B" } });
+  store.remember({ serverId: "B", workspaceId: "workspace", authority: { originServerId: "A" } });
+  expect(store.getSelection()).toEqual({
+    serverId: "B",
+    workspaceId: "workspace",
+    authority: { originServerId: "A" },
+  });
+  const restored = createLastWorkspaceSelectionStore(storage);
+  const hydration = restored.hydrate();
+  storage.finishHydrationWith(storage.getSavedSelection());
+  await hydration;
+  expect(restored.getSelection()).toEqual(store.getSelection());
+});

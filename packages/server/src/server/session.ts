@@ -773,6 +773,7 @@ export class Session {
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
   private unsubscribeAgentEvents: (() => void) | null = null;
+  private unsubscribeMembership: (() => void) | null = null;
   private unsubscribeProjectMutations: (() => void) | null = null;
   private unsubscribePluginChanges: (() => void) | null = null;
   private unsubscribeWorkspaceMutations: (() => void) | null = null;
@@ -1713,7 +1714,20 @@ export class Session {
       this.wantsEvent("agent_permission_resolved") ||
       this.wantsEvent("agent.provider_subagents.update");
     if (agents && !this.unsubscribeAgentEvents) this.subscribeToAgentEvents();
+    if (agents && !this.unsubscribeMembership) {
+      this.unsubscribeMembership =
+        this.subagentOptions.subagents?.observeMembership((agentId) => {
+          void this.refreshMembershipProjection(agentId).catch((error) =>
+            this.sessionLogger.error(
+              { err: error, agentId },
+              "Failed to refresh managed membership",
+            ),
+          );
+        }) ?? null;
+    }
     if (!agents) {
+      this.unsubscribeMembership?.();
+      this.unsubscribeMembership = null;
       this.unsubscribeAgentEvents?.();
       this.unsubscribeAgentEvents = null;
     }
@@ -2116,10 +2130,23 @@ export class Session {
     };
   }
 
+  private async refreshMembershipProjection(agentId: string): Promise<void> {
+    const live = this.agentManager.getAgent(agentId);
+    if (live) await this.agentUpdates.forwardLiveAgent(live);
+    else {
+      const stored = await this.agentStorage.get(agentId);
+      if (stored) await this.agentUpdates.emitStoredRecord(stored);
+    }
+  }
+
   private async enrichAgentPayload(payload: AgentSnapshotPayload): Promise<AgentSnapshotPayload> {
     const storedRecord = await this.agentStorage.get(payload.id);
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
+    const { subagents, serverId } = this.subagentOptions;
+    if (subagents && serverId) {
+      payload.managedRelationship = await subagents.membership({ serverId, agentId: payload.id });
+    }
     return payload;
   }
 
@@ -2127,11 +2154,11 @@ export class Session {
     return this.enrichAgentPayload(toAgentPayload(agent));
   }
 
-  private buildStoredAgentPayload(
+  private async buildStoredAgentPayload(
     record: StoredAgentRecord,
     registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds()),
-  ): AgentSnapshotPayload {
-    return buildStoredAgentPayload(record, registeredProviderIds);
+  ): Promise<AgentSnapshotPayload> {
+    return this.enrichAgentPayload(buildStoredAgentPayload(record, registeredProviderIds));
   }
 
   private isProviderVisibleToClient(provider: string): boolean {
@@ -4628,7 +4655,7 @@ export class Session {
           );
         const record = await this.agentStorage.get(creation.agent.id);
         if (!record) throw new Error("Previously created agent no longer exists");
-        agent = this.buildStoredAgentPayload(record);
+        agent = await this.buildStoredAgentPayload(record);
       } else {
         ({ agent } = await this.createSessionAgent(msg));
       }
@@ -4713,7 +4740,7 @@ export class Session {
       );
       const record = await this.agentStorage.get(child.agentId);
       if (!record) throw new Error("Created subagent is not available");
-      const agent = this.buildStoredAgentPayload(record);
+      const agent = await this.buildStoredAgentPayload(record);
       await onAgentReady?.(agent);
       return { agent, initialPromptStarted: hasInitialCreationPrompt(msg) };
     }
@@ -5809,7 +5836,7 @@ export class Session {
     if (!settled) {
       return null;
     }
-    const payload = this.buildStoredAgentPayload(settled.record);
+    const payload = await this.buildStoredAgentPayload(settled.record);
     return this.isProviderVisibleToClient(payload.provider) ? payload : null;
   }
 
@@ -8048,7 +8075,7 @@ export class Session {
             attentionTimestamp: null,
           };
           await this.agentStorage.upsert(nextRecord);
-          const agent = this.buildStoredAgentPayload(nextRecord);
+          const agent = await this.buildStoredAgentPayload(nextRecord);
           const project = await this.buildProjectPlacementForWorkspace(workspace);
           this.emit({
             type: "agent_update",
@@ -8803,7 +8830,7 @@ export class Session {
         return;
       }
       const { record, lastMessage } = settled;
-      const final = this.buildStoredAgentPayload(record);
+      const final = await this.buildStoredAgentPayload(record);
       let status: "permission" | "error" | "idle";
       if (record.attentionReason === "permission") {
         status = "permission";
@@ -9105,6 +9132,8 @@ export class Session {
     this.unsubscribePluginChanges = null;
     this.unsubscribeWorkspaceMutations?.();
     this.unsubscribeWorkspaceMutations = null;
+    this.unsubscribeMembership?.();
+    this.unsubscribeMembership = null;
     this.agentUpdates.dispose();
     await this.hubExecutionController?.cleanup();
     if (this.unsubscribeTerminalWorkspaceContributionEvents) {

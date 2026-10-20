@@ -5,7 +5,7 @@ import {
   type InlinePathTarget,
 } from "@/assistant-file-links";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
-import { revealWorkspaceTab } from "@/workspace-tabs/navigation";
+import { useWorkspaceTabNavigation } from "@/workspace-tabs/navigation";
 import type { LayoutChangeEvent } from "react-native";
 import { ExplorerSidebarDock } from "@/screens/workspace/explorer-sidebar";
 import { ExplorerFrame } from "./explorer-sidebar/frame";
@@ -67,19 +67,17 @@ import { getOrCreateClientId } from "@/utils/client-id";
 import { selectIsAgentListOpen, usePanelStore } from "@/stores/panel-store";
 import { toggleDesktopSidebarsWithCheckoutIntent } from "@/utils/desktop-sidebar-toggle";
 import {
-  isExplorerSidebarOpen,
-  openExplorerSidebarView,
-  toggleExplorerSidebar,
+  useExplorerSidebarActions,
   useIsExplorerSidebarOpen,
 } from "@/workspace-tabs/explorer-sidebar";
-import {
-  openPreferredWorkspacePreview,
-  openPreferredWorkspaceTarget,
-  openWorkspaceTargetBeside,
-} from "@/workspace-tabs/open-beside";
-import { openWorkspacePullRequest } from "@/workspace-tabs/open-supporting-view";
+import { useWorkspaceTargetActions } from "@/workspace-tabs/open-beside";
+import { useSupportingViewActions } from "@/workspace-tabs/open-supporting-view";
 import { traceInstant } from "@/performance/native-trace";
-import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
+import {
+  useSessionStore,
+  useSessionStoreApi,
+  type WorkspaceDescriptor,
+} from "@/stores/session-store";
 import {
   canDismissPaneInLayout,
   collectAllTabs,
@@ -111,7 +109,7 @@ import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { normalizeWorkspaceTabTarget, workspaceTabTargetsEqual } from "@/workspace-tabs/identity";
 import { useVisibleAgentIds } from "./visible-agent-ids";
 import {
-  getHostRuntimeStore,
+  useHostRuntimeStore,
   useHostRuntimeClient,
   useHostRuntimeIsConnected,
   useHostRuntimeSnapshot,
@@ -680,12 +678,13 @@ function useWorkspaceRouteActions(normalizedServerId: string): {
   handleDismissMissingWorkspace: () => void;
 } {
   const router = useRouter();
+  const runtime = useHostRuntimeStore();
   const handleRetryHost = useCallback(() => {
     if (!normalizedServerId) {
       return;
     }
-    void getHostRuntimeStore().runProbeCycleNow(normalizedServerId);
-  }, [normalizedServerId]);
+    void runtime.runProbeCycleNow(normalizedServerId);
+  }, [normalizedServerId, runtime]);
   const handleManageHost = useCallback(() => {
     if (!normalizedServerId) {
       return;
@@ -1018,6 +1017,14 @@ function WorkspaceScreenContent({
   recoveryRequested,
 }: WorkspaceScreenContentProps) {
   const { t } = useTranslation();
+  const runtime = useHostRuntimeStore();
+  const sessionStore = useSessionStoreApi();
+  const { revealWorkspaceTab } = useWorkspaceTabNavigation();
+  const { openPreferredWorkspacePreview, openPreferredWorkspaceTarget, openWorkspaceTargetBeside } =
+    useWorkspaceTargetActions();
+  const { openWorkspacePullRequest } = useSupportingViewActions();
+  const { isExplorerSidebarOpen, openExplorerSidebarView, toggleExplorerSidebar } =
+    useExplorerSidebarActions();
   const _insets = useSafeAreaInsets();
   const toast = useToast();
   const isMobile = useIsCompactFormFactor();
@@ -1040,19 +1047,16 @@ function WorkspaceScreenContent({
   const workspaceDescriptor = useWorkspace(normalizedServerId, normalizedWorkspaceId);
   useEffect(() => {
     if (!normalizedServerId || !normalizedWorkspaceId || workspaceDescriptor) return;
-    void getHostRuntimeStore()
+    void runtime
       .prepareWorkspaceRoute(normalizedServerId, normalizedWorkspaceId)
       .catch(() => undefined);
-  }, [normalizedServerId, normalizedWorkspaceId, workspaceDescriptor]);
+  }, [normalizedServerId, normalizedWorkspaceId, workspaceDescriptor, runtime]);
   // The focused workspace keeps its script status live even when no sidebar or viewed agent
   // timeline demands the directory. Retained, hidden workspaces release it.
   useEffect(() => {
     if (!isRouteFocused || !normalizedServerId || !normalizedWorkspaceId) return;
-    return getHostRuntimeStore().acquireScriptStatusDemand(
-      normalizedServerId,
-      normalizedWorkspaceId,
-    );
-  }, [isRouteFocused, normalizedServerId, normalizedWorkspaceId]);
+    return runtime.acquireScriptStatusDemand(normalizedServerId, normalizedWorkspaceId);
+  }, [isRouteFocused, normalizedServerId, normalizedWorkspaceId, runtime]);
   const workspaceScripts = getWorkspaceScripts(workspaceDescriptor);
   const { handleRetryHost, handleManageHost, handleDismissMissingWorkspace } =
     useWorkspaceRouteActions(normalizedServerId);
@@ -1362,7 +1366,7 @@ function WorkspaceScreenContent({
       isCompact: isMobile,
       workspaceKey: persistenceKey,
     });
-  }, [isMobile, persistenceKey]);
+  }, [isMobile, persistenceKey, toggleExplorerSidebar]);
   const paneFocusSuppressedRef = useRef(false);
   const resizeWorkspaceSplit = useWorkspaceLayoutStore((state) => state.resizeSplit);
   const reorderWorkspaceTabsInPane = useWorkspaceLayoutStore((state) => state.reorderTabsInPane);
@@ -1428,11 +1432,9 @@ function WorkspaceScreenContent({
   });
   useEffect(() => {
     for (const agentId of visibleAgentIds) {
-      void getHostRuntimeStore()
-        .prepareAgentTimeline(normalizedServerId, agentId)
-        .catch(() => undefined);
+      void runtime.prepareAgentTimeline(normalizedServerId, agentId).catch(() => undefined);
     }
-  }, [normalizedServerId, visibleAgentIds]);
+  }, [normalizedServerId, visibleAgentIds, runtime]);
   useLayoutEffect(() => {
     if (!persistenceKey || !viewedTimelineSync) {
       return;
@@ -1586,7 +1588,7 @@ function WorkspaceScreenContent({
       }
       revealWorkspaceTab(persistenceKey, tabId);
     },
-    [persistenceKey],
+    [persistenceKey, revealWorkspaceTab],
   );
   const selectTabInPane = useCallback(
     (paneId: string, tabId: string) => {
@@ -1715,7 +1717,7 @@ function WorkspaceScreenContent({
         requestFileNavigation(tabId);
       }
     },
-    [openInSidePane, persistenceKey, requestFileNavigation],
+    [openInSidePane, persistenceKey, requestFileNavigation, openPreferredWorkspaceTarget],
   );
 
   const handleOpenWorkspaceFileFromPane = useStableEvent(function handleOpenWorkspaceFileFromPane({
@@ -1980,7 +1982,7 @@ function WorkspaceScreenContent({
         }
 
         const agent =
-          useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
+          sessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
         let closePolicy = resolveCloseAgentTabPolicy(agent);
         const isRunning = agent?.status === "running";
 
@@ -1998,7 +2000,7 @@ function WorkspaceScreenContent({
         }
 
         if (closePolicy.kind === "layout-only") {
-          const sessionClient = useSessionStore.getState().sessions[normalizedServerId]?.client;
+          const sessionClient = sessionStore.getState().sessions[normalizedServerId]?.client;
           if (!sessionClient) {
             toast.error(t("common.errors.daemonClientUnavailable"));
             return;
@@ -2009,7 +2011,7 @@ function WorkspaceScreenContent({
               labels: { [getOpenAgentTabLabel(clientId)]: "false" },
             });
             const latestAgent =
-              useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
+              sessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
             closePolicy = resolveCloseAgentTabPolicy(latestAgent);
           } catch (error) {
             console.error("[WorkspaceScreen] Failed to close subagent tab", { error, agentId });
@@ -2042,6 +2044,7 @@ function WorkspaceScreenContent({
       persistenceKey,
       t,
       toast,
+      sessionStore,
     ],
   );
 
@@ -2157,7 +2160,7 @@ function WorkspaceScreenContent({
     async (agentId: string) => {
       if (!agentId) return;
       const agent =
-        useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
+        sessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
       const providerSessionId =
         agent?.runtimeInfo?.sessionId ?? agent?.persistence?.sessionId ?? null;
       if (!agent || !providerSessionId) {
@@ -2182,7 +2185,7 @@ function WorkspaceScreenContent({
         toast.error(t("workspace.tabs.toasts.copyFailed"));
       }
     },
-    [normalizedServerId, toast, t],
+    [normalizedServerId, toast, t, sessionStore],
   );
 
   const handleReloadAgent = useCallback(
@@ -2199,9 +2202,9 @@ function WorkspaceScreenContent({
         // returns reset:true. Without a cursor, the server returns reset:false
         // and the client takes the incremental path, where new-epoch rows are
         // dropped against the stale cursor.
-        const sessionState = useSessionStore.getState().sessions[normalizedServerId];
+        const sessionState = sessionStore.getState().sessions[normalizedServerId];
         const currentCursor = sessionState?.agentTimelineCursor.get(agentId);
-        await getHostRuntimeStore().fetchAgentTimeline(normalizedServerId, agentId, {
+        await runtime.fetchAgentTimeline(normalizedServerId, agentId, {
           direction: "tail",
           projection: "projected",
           ...(currentCursor
@@ -2215,7 +2218,7 @@ function WorkspaceScreenContent({
         );
       }
     },
-    [client, isConnected, normalizedServerId, toast, t],
+    [client, isConnected, normalizedServerId, toast, t, runtime, sessionStore],
   );
 
   const handleCopyWorkspacePath = useCallback(async () => {
@@ -2272,7 +2275,7 @@ function WorkspaceScreenContent({
       }
 
       const groups = classifyBulkClosableTabs(tabsToClose, (agentId) => {
-        const agent = useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId);
+        const agent = sessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId);
         return resolveCloseAgentTabPolicy(agent).kind === "layout-only" ? "layout-only" : "archive";
       });
       const modifiedCount = tabsToClose.filter(
@@ -2311,7 +2314,7 @@ function WorkspaceScreenContent({
             labels: { [getOpenAgentTabLabel(clientId)]: "false" },
           });
           const latestAgent =
-            useSessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
+            sessionStore.getState().sessions[normalizedServerId]?.agents?.get(agentId) ?? null;
           if (resolveCloseAgentTabPolicy(latestAgent).kind === "archive-on-close") {
             await archiveAgent({ serverId: normalizedServerId, agentId });
           }
@@ -2342,6 +2345,7 @@ function WorkspaceScreenContent({
       normalizedWorkspaceId,
       persistenceKey,
       t,
+      sessionStore,
     ],
   );
 
@@ -2492,6 +2496,9 @@ function WorkspaceScreenContent({
       openWorkspaceTabFocused,
       persistenceKey,
       pullRequestOpenLocation,
+      openWorkspaceTargetBeside,
+      openWorkspacePullRequest,
+      openExplorerSidebarView,
     ],
   );
 
@@ -2651,6 +2658,7 @@ function WorkspaceScreenContent({
       isGitCheckout,
       isMobile,
       persistenceKey,
+      openExplorerSidebarView,
     ],
   );
 
@@ -2678,7 +2686,7 @@ function WorkspaceScreenContent({
       });
       return true;
     },
-    [handleToggleExplorerSidebar, isMobile, persistenceKey],
+    [handleToggleExplorerSidebar, isMobile, persistenceKey, isExplorerSidebarOpen],
   );
 
   const handleWorkspacePaneAction = useCallback(
@@ -3030,6 +3038,8 @@ function WorkspaceScreenContent({
       setWorkspaceTabState,
       explorerSidebarPaneId,
       lastMainPaneId,
+      openPreferredWorkspacePreview,
+      openWorkspaceTargetBeside,
     ],
   );
   const focusedPaneId = useMemo(

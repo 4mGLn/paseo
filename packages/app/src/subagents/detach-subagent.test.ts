@@ -46,14 +46,16 @@ function createFakeEnv(
     recordedConfirmInputs,
     recordedErrors,
     deps: {
-      getSubagent: (id) => subagents.get(id),
+      getSubagent: (child) => subagents.get(child.agentId),
       confirm: async (dialog) => {
         recordedConfirmInputs.push(dialog);
         return options.confirmResult ?? false;
       },
       detachAgent: async (input) => {
         recordedDetaches.push(input);
+        return { phase: "detached" };
       },
+      reportPending: () => undefined,
       openDetachedAgent: (input) => {
         recordedOpens.push(input);
       },
@@ -93,7 +95,10 @@ describe("requestDetachSubagent", () => {
       initialSubagents: [{ id: "child-agent", snapshot: { title: "Review branch" } }],
     });
 
-    await requestDetachSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps);
+    await requestDetachSubagent(
+      { child: { serverId: "server-1", agentId: "child-agent" } },
+      env.deps,
+    );
 
     expect(env.recordedDetaches).toEqual([{ serverId: "server-1", agentId: "child-agent" }]);
   });
@@ -104,7 +109,10 @@ describe("requestDetachSubagent", () => {
       initialSubagents: [{ id: "child-agent", snapshot: { title: "Review branch" } }],
     });
 
-    await requestDetachSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps);
+    await requestDetachSubagent(
+      { child: { serverId: "server-1", agentId: "child-agent" } },
+      env.deps,
+    );
 
     expect(env.recordedOpens).toEqual([{ serverId: "server-1", agentId: "child-agent" }]);
   });
@@ -115,7 +123,10 @@ describe("requestDetachSubagent", () => {
       initialSubagents: [{ id: "child-agent", snapshot: { title: "Review branch" } }],
     });
 
-    await requestDetachSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps);
+    await requestDetachSubagent(
+      { child: { serverId: "server-1", agentId: "child-agent" } },
+      env.deps,
+    );
 
     expect(env.recordedDetaches).toEqual([]);
     expect(env.recordedOpens).toEqual([]);
@@ -127,7 +138,10 @@ describe("requestDetachSubagent", () => {
       initialSubagents: [{ id: "child-agent", snapshot: { title: "Review branch" } }],
     });
 
-    await requestDetachSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps);
+    await requestDetachSubagent(
+      { child: { serverId: "server-1", agentId: "child-agent" } },
+      env.deps,
+    );
 
     expect(env.recordedConfirmInputs).toEqual([
       resolveDetachSubagentDialog({ title: "Review branch" }),
@@ -145,9 +159,25 @@ describe("requestDetachSubagent", () => {
     };
 
     await expect(
-      requestDetachSubagent({ serverId: "server-1", subagentId: "child-agent" }, env.deps),
+      requestDetachSubagent({ child: { serverId: "server-1", agentId: "child-agent" } }, env.deps),
     ).resolves.toBeUndefined();
     expect(env.recordedErrors).toEqual([error]);
     expect(env.recordedOpens).toEqual([]);
   });
+});
+
+it("retains pending detach without opening a standalone conversation", async () => {
+  const env = createFakeEnv({ confirmResult: true });
+  let pending = 0;
+  env.deps.detachAgent = async () => ({ phase: "detach-pending" });
+  env.deps.reportPending = () => {
+    pending += 1;
+  };
+  await requestDetachSubagent(
+    { child: { serverId: "server-2", agentId: "child-agent" } },
+    env.deps,
+  );
+  expect(pending).toBe(1);
+  expect(env.recordedOpens).toEqual([]);
+  expect(env.recordedErrors).toEqual([]);
 });

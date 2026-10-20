@@ -1124,3 +1124,28 @@ it("retains semantic agent messages across disk-cache reconstruction", async () 
   await writer.flush();
   expect(await createCache(storage).readTimeline(SERVER_ID, "agent-1")).toEqual(value);
 });
+
+it("retains owner membership and explicit clearing across disk-cache reconstruction", async () => {
+  const storage = new MemoryStorage();
+  const writer = createCache(storage);
+  const value = directory();
+  const original = agent();
+  const parent = { serverId: SERVER_ID, agentId: "parent" };
+  const managedRelationship = {
+    id: "relationship",
+    parent,
+    parentWorkspace: { serverId: SERVER_ID, workspaceId: "workspace-1" },
+  };
+  value.agents.set(original.id, { ...original, parent, managedRelationship });
+  commitDirectory(writer, SERVER_ID, value);
+  await writer.flush();
+  expect(
+    (await createCache(storage).readDirectory(SERVER_ID)).agents.get(original.id),
+  ).toMatchObject({ parent, managedRelationship });
+  value.agents.set(original.id, { ...original, parent, managedRelationship: null });
+  commitDirectory(writer, SERVER_ID, value);
+  await writer.flush();
+  expect(
+    (await createCache(storage).readDirectory(SERVER_ID)).agents.get(original.id),
+  ).toMatchObject({ parent, managedRelationship: null });
+});

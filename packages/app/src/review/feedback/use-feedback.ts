@@ -4,14 +4,18 @@ import {
   getReviewDraftComments,
   clearSentReviewDraftComments,
 } from "../store";
-import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import {
+  useWorkspaceLayoutStore,
+  useWorkspaceLayoutStoreApi,
+  type WorkspaceLayoutStoreApi,
+} from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { deriveWorkspaceTabModel } from "@/screens/workspace/workspace-tab-model";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useAppSettings } from "@/hooks/use-settings";
 import { dispatchComposerAgentMessage } from "@/composer/actions";
 import { createMessageSubmissionWriter } from "@/composer/submission/writer";
-import { useSessionStore, selectAgentTurnPresentation } from "@/stores/session-store";
+import { useSessionStoreApi, selectAgentTurnPresentation } from "@/stores/session-store";
 import { FLOATING_ACTION_BUTTON_CLEARANCE } from "@/components/ui/floating-action-button";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { buttonControlHeight } from "@/components/ui/control-geometry";
@@ -35,6 +39,8 @@ export function useReviewFeedback(input: {
 }) {
   const { serverId, reviewDraftKey, workspaceId } = input;
   const toast = useToast();
+  const layoutStore = useWorkspaceLayoutStoreApi();
+  const sessionStore = useSessionStoreApi();
   const isCompact = useIsCompactFormFactor();
   const workspaceKey = workspaceId
     ? buildWorkspaceTabPersistenceKey({ serverId, workspaceId })
@@ -68,7 +74,7 @@ export function useReviewFeedback(input: {
           comments: getReviewDraftComments(reviewDraftKey) ?? [],
           attachment: live.current.attachment,
           connected: live.current.connected,
-          recipients: readRecipients(workspaceKey),
+          recipients: readRecipients(workspaceKey, layoutStore),
         }),
         send: async (recipient, attachment) => {
           const { client: targetClient, sendBehavior } = live.current;
@@ -80,12 +86,12 @@ export function useReviewFeedback(input: {
             text: i18n.t("review.feedback.prompt"),
             attachments: [attachment],
             encodeImages: async () => [],
-            submission: createMessageSubmissionWriter(serverId),
+            submission: createMessageSubmissionWriter(serverId, sessionStore),
             activeTurnBehavior,
             activeTurnId:
               activeTurnBehavior === "steer"
                 ? (selectAgentTurnPresentation(
-                    useSessionStore.getState().sessions[serverId],
+                    sessionStore.getState().sessions[serverId],
                     recipient.agentId,
                   ).turnId ?? undefined)
                 : undefined,
@@ -103,7 +109,7 @@ export function useReviewFeedback(input: {
           clearSentReviewDraftComments({ key: reviewDraftKey, comments: sentComments }),
         failedMessage: () => i18n.t("review.feedback.failed"),
       }),
-    [reviewDraftKey, serverId, workspaceKey, workspaceId],
+    [layoutStore, sessionStore, reviewDraftKey, serverId, workspaceKey, workspaceId],
   );
   useEffect(() => {
     model.refresh();
@@ -119,10 +125,11 @@ export function useReviewFeedback(input: {
   };
 }
 
-function readRecipients(workspaceKey: string | null): FeedbackRecipient[] {
-  const tabs = workspaceKey
-    ? useWorkspaceLayoutStore.getState().getWorkspaceTabs(workspaceKey)
-    : [];
+function readRecipients(
+  workspaceKey: string | null,
+  store: WorkspaceLayoutStoreApi,
+): FeedbackRecipient[] {
+  const tabs = workspaceKey ? store.getState().getWorkspaceTabs(workspaceKey) : [];
   const descriptors = deriveWorkspaceTabModel({ tabs }).tabs;
   const recipients: FeedbackRecipient[] = [];
   for (const { descriptor } of descriptors) {

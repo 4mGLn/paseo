@@ -1,3 +1,4 @@
+import { managedAgentFields } from "@/subagents/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@react-native-async-storage/async-storage", () => {
@@ -17,7 +18,7 @@ vi.mock("@react-native-async-storage/async-storage", () => {
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { useSessionStore, type Agent } from "@/stores/session-store";
+import { createSessionStore, useSessionStore, type Agent } from "@/stores/session-store";
 import { setPanelInstanceAttributes } from "@/panels/panel-instance-attributes";
 import { createViewedTimelineSync } from "@/timeline/viewed-timeline-sync";
 import { buildWorkspaceTabPersistenceKey, type WorkspaceTab } from "@/workspace-tabs/model";
@@ -4477,7 +4478,15 @@ describe("compact workspace sheet", () => {
     );
   }
 
-  function seedAgents(agents: Array<Pick<Agent, "id" | "parentAgentId" | "workspaceId">>): void {
+  function seedAgents(
+    agents: Array<
+      Pick<Agent, "id" | "workspaceId"> & {
+        parentAgentId?: string;
+        parent?: null;
+        managedRelationship?: null;
+      }
+    >,
+  ): void {
     const timestamp = new Date("2026-04-21T10:00:00.000Z");
     useSessionStore.getState().initializeSession("server-1", null as unknown as DaemonClient);
     useSessionStore.getState().setAgents(
@@ -4521,6 +4530,9 @@ describe("compact workspace sheet", () => {
             labels: {},
             projectPlacement: null,
             ...agent,
+            ...managedAgentFields(
+              agent.parentAgentId ? { serverId: "server-1", agentId: agent.parentAgentId } : null,
+            ),
           } satisfies Agent,
         ]),
       ),
@@ -4719,7 +4731,7 @@ describe("compact workspace sheet", () => {
 
   it("opens subagents and provider subagents in the sheet but keeps root agents as tabs", () => {
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
       { id: "other-workspace-child", parentAgentId: "root", workspaceId: "other-ws" },
     ]);
@@ -4756,7 +4768,7 @@ describe("compact workspace sheet", () => {
 
   it("gives a sheet target opened from inside the sheet the sheet's own parent", () => {
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
     ]);
     const store = createCompactStore();
@@ -4785,9 +4797,9 @@ describe("compact workspace sheet", () => {
 
   it("closes the sheet and reveals the tab when a tab target is opened from inside the sheet", () => {
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
-      { id: "second-root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "second-root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
     ]);
     const store = createCompactStore();
     const rootTabId = store
@@ -4963,7 +4975,7 @@ describe("compact workspace sheet", () => {
 
   it("closes the sheet when its agent leaves the workspace", () => {
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
     ]);
     const store = createCompactStore();
@@ -4990,7 +5002,7 @@ describe("compact workspace sheet", () => {
 
   it("drops a departed agent's sheet from the middle of the stack", () => {
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
     ]);
     const store = createCompactStore();
@@ -5018,7 +5030,7 @@ describe("compact workspace sheet", () => {
 
   it("closes the sheet when its agent stops being a subagent, leaving one tab for it", () => {
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
     ]);
     const store = createCompactStore();
@@ -5041,8 +5053,8 @@ describe("compact workspace sheet", () => {
     expect(topSheet(store)?.tab.tabId).toBe(sheetTabId);
 
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
-      { id: "child", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
+      { id: "child", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
     ]);
     store.getState().reconcileTabs(workspaceKey, snapshot);
 
@@ -5057,7 +5069,7 @@ describe("compact workspace sheet", () => {
 
   it("re-resolves the sheet policy when the sheet tab gets another target", () => {
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
     ]);
     const store = createCompactStore();
@@ -5111,10 +5123,35 @@ describe("compact workspace sheet", () => {
     ).toBe(tabId);
   });
 
+  it("uses its authority's membership for compact placement beside an equal direct address", () => {
+    seedAgents([
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
+      { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
+    ]);
+    const boundStore = createSessionStore();
+    boundStore.getState().initializeSession("server-1", null as unknown as DaemonClient);
+    boundStore
+      .getState()
+      .setAgents("server-1", new Map(useSessionStore.getState().sessions["server-1"].agents));
+    const directChild = useSessionStore.getState().sessions["server-1"].agents.get("child")!;
+    useSessionStore
+      .getState()
+      .setAgents("server-1", new Map([["child", { ...directChild, managedRelationship: null }]]));
+    const layout = createWorkspaceLayoutStore(undefined, undefined, { sessionStore: boundStore });
+    layout.getState().setLayoutMode("compact");
+    const input = {
+      workspaceKey,
+      target: { kind: "agent" as const, agentId: "child" },
+      intent: "reveal" as const,
+    };
+    expect(layout.getState().opensInSheet(input)).toBe(true);
+    expect(createCompactStore().getState().opensInSheet(input)).toBe(false);
+  });
+
   it("keeps a chat shown in the sheet open for timeline sync until the sheet closes", () => {
     const store = createCompactStore();
     seedAgents([
-      { id: "root", parentAgentId: null, workspaceId: "sheet-ws" },
+      { id: "root", parent: null, managedRelationship: null, workspaceId: "sheet-ws" },
       { id: "child", parentAgentId: "root", workspaceId: "sheet-ws" },
     ]);
     const received: string[][] = [];
@@ -5130,4 +5167,106 @@ describe("compact workspace sheet", () => {
 
     expect(received).toEqual([[], ["child"], []]);
   });
+});
+
+it("persists independent layouts for equal destination workspaces under separate authority namespaces", async () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: async (key: string) => values.get(key) ?? null,
+    setItem: async (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: async (key: string) => {
+      values.delete(key);
+    },
+  };
+  const direct = createWorkspaceLayoutStore(undefined, storage, { namespace: "B-B" });
+  const routed = createWorkspaceLayoutStore(undefined, storage, { namespace: "A-B" });
+  await Promise.all([direct.persist.rehydrate(), routed.persist.rehydrate()]);
+  direct.getState().openTab({
+    workspaceKey: "B:workspace",
+    target: { kind: "agent", agentId: "direct" },
+    intent: "reveal",
+  });
+  routed.getState().openTab({
+    workspaceKey: "B:workspace",
+    target: { kind: "agent", agentId: "routed" },
+    intent: "reveal",
+  });
+  const reopenedDirect = createWorkspaceLayoutStore(undefined, storage, { namespace: "B-B" });
+  await reopenedDirect.persist.rehydrate();
+  const reopened = createWorkspaceLayoutStore(undefined, storage, { namespace: "A-B" });
+  await reopened.persist.rehydrate();
+  expect(
+    reopenedDirect
+      .getState()
+      .getWorkspaceTabs("B:workspace")
+      .filter((tab) => tab.target.kind === "agent")
+      .map((tab) => tab.target),
+  ).toEqual([{ kind: "agent", agentId: "direct" }]);
+  expect(
+    reopened
+      .getState()
+      .getWorkspaceTabs("B:workspace")
+      .filter((tab) => tab.target.kind === "agent")
+      .map((tab) => tab.target),
+  ).toEqual([{ kind: "agent", agentId: "routed" }]);
+});
+
+it("upgrades pre-feature direct layout once without importing another server's tabs", async () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: async (key: string) => values.get(key) ?? null,
+    setItem: async (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: async (key: string) => {
+      values.delete(key);
+    },
+  };
+  const legacy = createWorkspaceLayoutStore(undefined, storage);
+  await legacy.persist.rehydrate();
+  legacy.getState().openTab({
+    workspaceKey: "B:workspace",
+    target: { kind: "agent", agentId: "saved" },
+    intent: "reveal",
+  });
+  legacy.getState().openTab({
+    workspaceKey: "C:workspace",
+    target: { kind: "agent", agentId: "unrelated" },
+    intent: "reveal",
+  });
+  const upgraded = createWorkspaceLayoutStore(undefined, storage, {
+    namespace: "direct-B",
+    legacyServerId: "B",
+  });
+  await upgraded.persist.rehydrate();
+  expect(
+    upgraded
+      .getState()
+      .getWorkspaceTabs("B:workspace")
+      .some((tab) => tab.target.kind === "agent" && tab.target.agentId === "saved"),
+  ).toBe(true);
+  expect(upgraded.getState().layoutByWorkspace["C:workspace"]).toBeUndefined();
+  upgraded.getState().openTab({
+    workspaceKey: "B:workspace",
+    target: { kind: "agent", agentId: "new" },
+    intent: "reveal",
+  });
+  legacy.getState().openTab({
+    workspaceKey: "B:workspace",
+    target: { kind: "agent", agentId: "later-global" },
+    intent: "reveal",
+  });
+  const restored = createWorkspaceLayoutStore(undefined, storage, {
+    namespace: "direct-B",
+    legacyServerId: "B",
+  });
+  await restored.persist.rehydrate();
+  expect(
+    restored
+      .getState()
+      .getWorkspaceTabs("B:workspace")
+      .flatMap((tab) => (tab.target.kind === "agent" ? [tab.target.agentId] : [])),
+  ).toEqual(["saved", "new"]);
 });

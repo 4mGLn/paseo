@@ -80,7 +80,11 @@ export class AgentStoreProjection {
       this.removeFromDirectory(delta.agentId);
       return { agentId: delta.agentId, stoppedRunning: false };
     }
-    const normalized = normalizeAgentSnapshot(delta.agent, this.serverId);
+    const normalized = normalizeAgentSnapshot(
+      delta.agent,
+      this.serverId,
+      this.store.getState().sessions[this.serverId]?.serverInfo,
+    );
     const session = this.store.getState().sessions[this.serverId];
     const previous = session?.agents.get(normalized.id) ?? session?.agentDetails.get(normalized.id);
     const legacyWorkspaceId =
@@ -113,6 +117,7 @@ export class AgentStoreProjection {
     const { agents: fetched, pendingPermissions } = buildAgentDirectoryState({
       serverId: this.serverId,
       entries,
+      serverInfo: this.store.getState().sessions[this.serverId]?.serverInfo,
     });
     const store = this.store.getState();
     const current = store.sessions[this.serverId]?.agents ?? new Map<string, Agent>();

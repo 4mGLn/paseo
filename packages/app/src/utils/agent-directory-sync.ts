@@ -2,7 +2,7 @@ import type { FetchAgentsEntry } from "@getpaseo/client/internal/daemon-client";
 import type { Agent } from "@/stores/session-store";
 import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { resolveProjectPlacement } from "@/utils/project-placement";
-import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
+import type { ServerInfoStatusPayload, SessionOutboundMessage } from "@getpaseo/protocol/messages";
 
 type AgentDirectoryFetchEntry = FetchAgentsEntry;
 export type AgentDirectoryDelta = Extract<
@@ -19,6 +19,7 @@ interface PendingPermissionEntry {
 export function buildAgentDirectoryState(input: {
   serverId: string;
   entries: AgentDirectoryFetchEntry[];
+  serverInfo?: Pick<ServerInfoStatusPayload, "features"> | null;
 }): {
   agents: Map<string, Agent>;
   pendingPermissions: Map<string, PendingPermissionEntry>;
@@ -27,7 +28,7 @@ export function buildAgentDirectoryState(input: {
   const pendingPermissions = new Map<string, PendingPermissionEntry>();
 
   for (const entry of input.entries) {
-    const normalized = normalizeAgentSnapshot(entry.agent, input.serverId);
+    const normalized = normalizeAgentSnapshot(entry.agent, input.serverId, input.serverInfo);
     const projectPlacement = resolveProjectPlacement({
       projectPlacement: entry.project,
       cwd: normalized.cwd,

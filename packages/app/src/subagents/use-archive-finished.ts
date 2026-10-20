@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { useArchiveAgent } from "@/hooks/use-archive-agent";
-import { useSessionStore } from "@/stores/session-store";
+import { useHostRuntimeStore } from "@/runtime/host-runtime";
 import {
   createArchiveFinishedSubagents,
   type ArchiveFinishedOutcome,
   type ArchiveFinishedState,
   type ArchiveFinishedSubagents,
 } from "./archive-finished";
-import { useProviderSubagentStore } from "./provider-store";
+import { useProviderSubagentStoreApi } from "./provider-store";
 import type { SubagentRow } from "./select";
 
 export type { ArchiveFinishedStatus } from "./archive-finished";
@@ -27,18 +26,38 @@ export function useArchiveFinishedSubagents({
   parentAgentId,
   rows,
 }: UseArchiveFinishedSubagentsInput): ArchiveFinishedSubagentsCapability {
-  const { archiveAgent } = useArchiveAgent();
+  const runtime = useHostRuntimeStore();
+  const providerStore = useProviderSubagentStoreApi();
+  const directory = runtime.subagents.directory({ serverId, agentId: parentAgentId });
   const archiveFinished = useMemo<ArchiveFinishedSubagents>(
     () =>
       createArchiveFinishedSubagents([], {
-        parentAgentId,
-        getManagedSubagent: (id) => useSessionStore.getState().sessions[serverId]?.agents.get(id),
-        archiveManagedSubagent: (id) => archiveAgent({ serverId, agentId: id }),
+        parent: { serverId, agentId: parentAgentId },
+        getManagedSubagent: (address) => {
+          const row = directory
+            .getSnapshot()
+            .rows.find(
+              (candidate) =>
+                candidate.child.serverId === address.serverId &&
+                candidate.child.agentId === address.agentId,
+            );
+          return row && row.phase === "attached"
+            ? {
+                address: row.child,
+                parent: row.parent,
+                status: row.snapshot?.status ?? null,
+                freshness: row.freshness,
+                phase: row.phase,
+                archivedAt: row.snapshot?.archivedAt ? new Date(row.snapshot.archivedAt) : null,
+              }
+            : undefined;
+        },
+        archiveManagedSubagent: directory.archive,
         dismissProviderSubagents: (ids) => {
-          useProviderSubagentStore.getState().hideFromTrack(serverId, parentAgentId, ids);
+          providerStore.getState().hideFromTrack(serverId, parentAgentId, ids);
         },
       }),
-    [archiveAgent, parentAgentId, serverId],
+    [directory, parentAgentId, providerStore, serverId],
   );
   const state = useSyncExternalStore(
     archiveFinished.subscribe,

@@ -4,6 +4,7 @@ import { AGENT_LIFECYCLE_STATUSES } from "./agent-manager.js";
 import {
   buildStoredAgentPayload,
   toAgentPayload,
+  toAgentListItemPayload,
   toRecentProviderSessionDescriptorPayload,
   toStoredAgentRecord,
   type ManagedAgent,
@@ -537,5 +538,23 @@ describe("toRecentProviderSessionDescriptorPayload", () => {
       firstPromptPreview: null,
       lastPromptPreview: null,
     });
+  });
+});
+
+it("retains owner membership and explicit clearing in compact list projections", () => {
+  const snapshot = toAgentPayload(createManagedAgent());
+  const parent = { serverId: "A", agentId: "parent" };
+  const managedRelationship = {
+    id: "relationship",
+    parent,
+    parentWorkspace: { serverId: "A", workspaceId: "workspace" },
+  };
+  expect(toAgentListItemPayload({ ...snapshot, parent, managedRelationship })).toMatchObject({
+    parent,
+    managedRelationship,
+  });
+  expect(toAgentListItemPayload({ ...snapshot, parent, managedRelationship: null })).toMatchObject({
+    parent,
+    managedRelationship: null,
   });
 });

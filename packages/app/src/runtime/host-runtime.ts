@@ -1,9 +1,20 @@
 import {
+  createWorkspaceLayoutStore,
+  type WorkspaceLayoutStoreApi,
+} from "@/stores/workspace-layout-store";
+import { createPaseoApi, type PaseoAgentHandle } from "@getpaseo/client";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
+import {
   acquireHostConnection,
   type HostConnectionLease,
 } from "@getpaseo/client/internal/host-connection";
 import { createContext, useContext, useSyncExternalStore, useMemo } from "react";
 import { QueryClient } from "@tanstack/react-query";
+import {
+  createProviderSubagentStore,
+  type ProviderSubagentStoreApi,
+} from "@/subagents/provider-store";
+import { ManagedSubagents } from "@/subagents/managed";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import equal from "fast-deep-equal/es6";
 import {
@@ -1490,6 +1501,8 @@ export interface HostAuthorityBinding {
   readonly namespace: string;
   readonly sessionStore: SessionStoreApi;
   readonly queries: QueryClient;
+  readonly providerSubagents: ProviderSubagentStoreApi;
+  readonly layout: WorkspaceLayoutStoreApi;
   readonly runtime: HostRuntimeStore;
   /** Initial acquisition only. Current availability comes from runtime snapshots. */
   readonly ready: Promise<void>;
@@ -1523,11 +1536,18 @@ function initialAuthoritySnapshot(serverId: string): HostRuntimeSnapshot {
 }
 
 export class HostRuntimeStore {
+  readonly subagents: ManagedSubagents;
+  private readonly authority: HostAuthorityReference | null;
+  private readonly bindingOwner: HostRuntimeStore;
+  private disposed = false;
+  private readonly lifetime = new AbortController();
   private controllers = new Map<string, HostRuntimeController>();
+  private readonly controllerObservations = new WeakMap<HostRuntimeController, () => void>();
   private readonly authorityBindings = new Map<
     string,
     { binding: HostAuthorityBinding; refs: number; close(): Promise<void> }
   >();
+  private bindingSnapshot: readonly HostAuthorityBinding[] = [];
   private serverListeners = new Map<string, Set<() => void>>();
   private globalListeners = new Set<() => void>();
   private hostListListeners = new Set<() => void>();
@@ -1563,12 +1583,17 @@ export class HostRuntimeStore {
     replicaRowStore?: ReplicaRowStore;
     sessionStore?: SessionStoreApi;
     queries?: QueryClient;
+    authority?: HostAuthorityReference;
+    bindingOwner?: HostRuntimeStore;
     resolveHostConnection?: typeof acquireHostConnection;
     revokePushNotifications?: typeof revokePushNotifications;
   }) {
     this.deps = input?.deps ?? createDefaultDeps();
     this.sessionStore = input?.sessionStore ?? useSessionStore;
     this.queries = input?.queries ?? queryClient;
+    this.authority = input?.authority ?? null;
+    this.bindingOwner = input?.bindingOwner ?? this;
+    this.subagents = new ManagedSubagents(this);
     this.resolveHostConnection = input?.resolveHostConnection ?? acquireHostConnection;
     this.storage = input?.storage ?? AsyncStorage;
     this.replicaCache = new ReplicaCache(input?.replicaRowStore ?? createReplicaRowStore());
@@ -1576,6 +1601,59 @@ export class HostRuntimeStore {
   }
 
   /** A retained screen owns a lease; route identity never grants access by itself. */
+  authorityFor(serverId: string): HostAuthorityReference {
+    return { originServerId: this.authority?.originServerId ?? serverId, serverId };
+  }
+
+  /** Resolve an ordinary agent action through the retained origin, owning its entire scope. */
+  async withAgent<T>(
+    address: AgentAddress,
+    operation: (agent: PaseoAgentHandle) => Promise<T>,
+  ): Promise<T> {
+    if (this.disposed) throw new Error("Host authority binding is disposed");
+    const authority = this.authorityFor(address.serverId);
+    if (this.bindingOwner.getSnapshot(authority.originServerId)?.connectionStatus !== "online")
+      throw new Error("Selected host authority is unavailable");
+    const lease = this.bindingOwner.acquireBinding(authority);
+    let api: ReturnType<typeof createPaseoApi> | null = null;
+    try {
+      const client = await lease.binding.runtime.awaitActiveClient(
+        address.serverId,
+        this.lifetime.signal,
+      );
+      if (this.disposed) throw new Error("Host authority binding is disposed");
+      api = createPaseoApi(client);
+      return await operation(api.agents.ref(address.agentId));
+    } finally {
+      // Cleanup cannot erase the acknowledged outcome of a submitted action.
+      await Promise.allSettled([api?.dispose(), lease.release()]);
+    }
+  }
+
+  private awaitActiveClient(serverId: string, signal: AbortSignal): Promise<DaemonClient> {
+    return new Promise((resolve, reject) => {
+      let stop = () => {};
+      const finish = (failure: Error | null, client?: DaemonClient) => {
+        stop();
+        signal.removeEventListener("abort", aborted);
+        if (failure) reject(failure);
+        else resolve(client!);
+      };
+      const aborted = () => finish(new Error("Host authority binding is disposed"));
+      const changed = () => {
+        if (signal.aborted || this.disposed) return aborted();
+        const snapshot = this.getSnapshot(serverId);
+        if (snapshot?.connectionStatus === "online" && snapshot.client)
+          finish(null, snapshot.client);
+        else if (snapshot?.connectionStatus !== "connecting")
+          finish(new Error(snapshot?.lastError ?? "Selected host authority is unavailable"));
+      };
+      stop = this.subscribe(serverId, changed);
+      signal.addEventListener("abort", aborted, { once: true });
+      changed();
+    });
+  }
+
   acquireBinding(reference: HostAuthorityReference): OwnedHostAuthorityBinding {
     const normalized = { originServerId: reference.originServerId, serverId: reference.serverId };
     const namespace = authorityNamespace(normalized);
@@ -1589,6 +1667,15 @@ export class HostRuntimeStore {
           namespace,
           sessionStore: scope.runtime.sessionStore,
           queries,
+          providerSubagents: createProviderSubagentStore(),
+          layout: createWorkspaceLayoutStore(undefined, this.storage, {
+            namespace,
+            sessionStore: scope.runtime.sessionStore,
+            // COMPAT(preFleetDirectLayout): added in v0.12, remove after 2027-04-20.
+            ...(normalized.originServerId === normalized.serverId
+              ? { legacyServerId: normalized.serverId }
+              : {}),
+          }),
           runtime: scope.runtime,
           ready: scope.ready,
         },
@@ -1602,6 +1689,7 @@ export class HostRuntimeStore {
         },
       };
       this.authorityBindings.set(namespace, entry);
+      this.publishAuthorityBindings();
     }
     entry.refs++;
     const retained = entry;
@@ -1612,14 +1700,24 @@ export class HostRuntimeStore {
         if (!released) {
           retained.refs--;
           if (retained.refs === 0) {
-            if (this.authorityBindings.get(namespace) === retained)
+            if (this.authorityBindings.get(namespace) === retained) {
               this.authorityBindings.delete(namespace);
+              this.publishAuthorityBindings();
+            }
             released = retained.close();
           } else released = Promise.resolve();
         }
         return released;
       },
     };
+  }
+
+  getAuthorityBindings = (): readonly HostAuthorityBinding[] => this.bindingSnapshot;
+
+  private publishAuthorityBindings(): void {
+    this.bindingSnapshot = [...this.authorityBindings.values()].map((entry) => entry.binding);
+    this.version++;
+    for (const listener of this.globalListeners) listener();
   }
 
   private createAuthorityScope(
@@ -1634,6 +1732,8 @@ export class HostRuntimeStore {
     const scoped = new HostRuntimeStore({
       sessionStore: createSessionStore(),
       queries,
+      authority: reference,
+      bindingOwner: this.bindingOwner,
       replicaRowStore: createReplicaRowStore(namespace),
       storage: this.storage,
       deps: this.deps,
@@ -1800,6 +1900,8 @@ export class HostRuntimeStore {
       runtime: scoped,
       ready,
       close: async () => {
+        scoped.disposed = true;
+        scoped.lifetime.abort();
         stopped = true;
         generation++;
         stopOrigin();
@@ -1817,7 +1919,13 @@ export class HostRuntimeStore {
             new Error("Host authority binding is disposed"),
           );
         }
-        await Promise.allSettled([lease?.release(), directory?.release(), acquiring, ...retired]);
+        await Promise.allSettled([
+          lease?.release(),
+          directory?.release(),
+          acquiring,
+          ...retired,
+          scoped.subagents.releaseServer(serverId),
+        ]);
         await scoped.replicaCache.flush();
         scoped.sessionStore.getState().clearSession(serverId);
       },
@@ -2546,6 +2654,8 @@ export class HostRuntimeStore {
       if (nextIds.has(serverId)) {
         continue;
       }
+      this.controllerObservations.get(controller)?.();
+      this.controllerObservations.delete(controller);
       this.controllers.delete(serverId);
       this.snapshots.delete(serverId);
       this.lastConnectionStatusByServer.delete(serverId);
@@ -2587,12 +2697,13 @@ export class HostRuntimeStore {
       this.syncSessionReplica(host.serverId, initialSnapshot);
       this.lastConnectionStatusByServer.set(host.serverId, initialSnapshot.connectionStatus);
       this.connectionStatusStartedAtByServer.set(host.serverId, Date.now());
-      controller.subscribe(() => {
+      const stopObservation = controller.subscribe(() => {
         const snapshot = controller.getSnapshot();
         this.syncSessionReplica(snapshot.serverId, snapshot);
         this.syncDirectoryConnection(snapshot.serverId);
         this.emit(snapshot.serverId);
       });
+      this.controllerObservations.set(controller, stopObservation);
       void controller
         .start(
           initialConnection
@@ -2657,6 +2768,7 @@ export class HostRuntimeStore {
 
   private clearHostReplica(serverId: string): void {
     this.syncServerDataClient(serverId, null);
+    void this.subagents.releaseServer(serverId);
     this.sessionStore.getState().clearSession(serverId);
     useWorkspaceSetupStore.getState().clearServer(serverId);
   }
@@ -2733,7 +2845,7 @@ export class HostRuntimeStore {
             supportsForgeAttachments,
           }),
           encodeImages,
-          submission: createMessageSubmissionWriter(serverId),
+          submission: createMessageSubmissionWriter(serverId, this.sessionStore),
           // The queue drains when the agent goes idle, but the agent can start a turn of its own
           // in that same moment (a wake-up after background work). Steering folds the message
           // into that turn instead of interrupting it; with no turn running, the daemon starts
@@ -2765,13 +2877,29 @@ export class HostRuntimeStore {
     this.directorySyncByServer.get(serverId)?.applyAgentTurnLiveness(agentId, transition);
   }
 
-  beginAgentCancellation(serverId: string, agentId: string): number {
+  async cancelAgent(address: AgentAddress): Promise<void> {
+    const client = this.getClient(address.serverId);
+    if (
+      this.disposed ||
+      !client ||
+      this.getSnapshot(address.serverId)?.connectionStatus !== "online"
+    )
+      throw new Error("Selected host authority is unavailable");
+    const requestId = this.beginAgentCancellation(address.serverId, address.agentId);
+    try {
+      await client.cancelAgent(address.agentId);
+    } finally {
+      this.settleAgentCancellation(address.serverId, address.agentId, requestId);
+    }
+  }
+
+  private beginAgentCancellation(serverId: string, agentId: string): number {
     const requestId = ++this.nextCancellationRequestId;
     this.applyAgentTurnLiveness(serverId, agentId, { type: "cancellation_started", requestId });
     return requestId;
   }
 
-  settleAgentCancellation(serverId: string, agentId: string, requestId: number): void {
+  private settleAgentCancellation(serverId: string, agentId: string, requestId: number): void {
     this.applyAgentTurnLiveness(serverId, agentId, { type: "cancellation_settled", requestId });
   }
 
@@ -2817,6 +2945,10 @@ export class HostRuntimeStore {
 
   getVersion(): number {
     return this.version;
+  }
+
+  getServerInfo(serverId: string) {
+    return this.sessionStore.getState().sessions[serverId]?.serverInfo ?? null;
   }
 
   getClient(serverId: string): DaemonClient | null {

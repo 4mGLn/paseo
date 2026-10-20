@@ -50,7 +50,9 @@ export interface AgentUpdatesServiceDeps {
   includesWorkspace?(agent: AgentSnapshotPayload, includeBackground?: boolean): Promise<boolean>;
   emit(message: SessionOutboundMessage): void;
   enrichAgentPayload(payload: AgentSnapshotPayload): Promise<AgentSnapshotPayload>;
-  buildStoredAgentPayload(record: StoredAgentRecord): AgentSnapshotPayload;
+  buildStoredAgentPayload(
+    record: StoredAgentRecord,
+  ): AgentSnapshotPayload | Promise<AgentSnapshotPayload>;
   isProviderVisibleToClient(provider: string): boolean;
   buildProjectPlacementForWorkspaceId(workspaceId: string): Promise<ProjectPlacementPayload | null>;
   emitWorkspaceUpdateForWorkspaceId(workspaceId: string): Promise<void>;
@@ -292,7 +294,7 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
   }
 
   async function emitStoredRecord(record: StoredAgentRecord): Promise<AgentSnapshotPayload> {
-    const payload = deps.buildStoredAgentPayload(record);
+    const payload = await deps.buildStoredAgentPayload(record);
     await publishPayload(payload);
     return payload;
   }

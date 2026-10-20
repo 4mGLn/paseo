@@ -21,7 +21,9 @@ export function buildWorkspaceAgentActivityIndex(
   const latestActivityAtByWorkspaceId = new Map<string, Date>();
 
   for (const agent of agents.values()) {
-    const parentAgent = agent.parentAgentId ? agents.get(agent.parentAgentId) : undefined;
+    const parentAgent = agent.managedRelationship?.parent.agentId
+      ? agents.get(agent.managedRelationship?.parent.agentId)
+      : undefined;
     if (agent.archivedAt || !agent.workspaceId || !isWorkspaceRootAgent(agent, parentAgent)) {
       continue;
     }

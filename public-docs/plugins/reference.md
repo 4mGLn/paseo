@@ -1754,24 +1754,25 @@ Workspace snapshot fields:
 
 Agent snapshot fields:
 
-| Field               | Type                                                           |
-| ------------------- | -------------------------------------------------------------- |
-| `id`                | `string`                                                       |
-| `workspaceId`       | `string`                                                       |
-| `provider`          | `string`                                                       |
-| `status`            | `"initializing" \| "idle" \| "running" \| "error" \| "closed"` |
-| `createdAt`         | ISO timestamp                                                  |
-| `updatedAt`         | ISO timestamp                                                  |
-| `lastActivityAt`    | ISO timestamp                                                  |
-| `title`             | `string \| null`                                               |
-| `cwd`               | `string`                                                       |
-| `model`             | `string \| null`                                               |
-| `currentModeId`     | `string \| null`                                               |
-| `thinkingOptionId`  | `string \| null`                                               |
-| `requiresAttention` | `boolean`                                                      |
-| `attentionReason`   | `"finished" \| "error" \| "permission" \| null`                |
-| `parentAgentId`     | `string \| null`                                               |
-| `labels`            | `Record<string, string>`                                       |
+| Field               | Type                                                             |
+| ------------------- | ---------------------------------------------------------------- |
+| `id`                | `string`                                                         |
+| `workspaceId`       | `string`                                                         |
+| `provider`          | `string`                                                         |
+| `status`            | `"initializing" \| "idle" \| "running" \| "error" \| "closed"`   |
+| `createdAt`         | ISO timestamp                                                    |
+| `updatedAt`         | ISO timestamp                                                    |
+| `lastActivityAt`    | ISO timestamp                                                    |
+| `title`             | `string \| null`                                                 |
+| `cwd`               | `string`                                                         |
+| `model`             | `string \| null`                                                 |
+| `currentModeId`     | `string \| null`                                                 |
+| `thinkingOptionId`  | `string \| null`                                                 |
+| `requiresAttention` | `boolean`                                                        |
+| `attentionReason`   | `"finished" \| "error" \| "permission" \| null`                  |
+| `parent`            | `{ serverId: string; agentId: string } \| null`                  |
+| `parentAgentId`     | Deprecated compatibility ID; use `parent` for complete identity. |
+| `labels`            | `Record<string, string>`                                         |
 
 Paseo owns tab focus, splitting, closing, persistence, query state, the API/RPC providers, and the render error boundary. A restored tab whose plugin, panel, context, workspace, or agent is unavailable stays open with an unavailable message instead of crashing the workspace.
 

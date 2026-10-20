@@ -25,6 +25,7 @@ import {
   refreshProviderSubagents,
   observeProviderSubagentTimeline,
   useProviderSubagentStore,
+  useProviderSubagentStoreApi,
 } from "@/subagents/provider-store";
 import { useTranslation } from "react-i18next";
 import type { PendingPermission } from "@/types/shared";
@@ -114,6 +115,7 @@ function useProviderSubagentDescriptor(
 }
 
 function ProviderSubagentPanel() {
+  const providerStore = useProviderSubagentStoreApi();
   const { t } = useTranslation();
   const { serverId, workspaceId, target, openFileInWorkspace, openTab } = usePaneContext();
   invariant(target.kind === "provider_subagent", "ProviderSubagentPanel requires provider target");
@@ -145,6 +147,7 @@ function ProviderSubagentPanel() {
   const childTrackClearance = resolveChildTrackClearance(childRows.length, isCompact);
   const opensInSheet = useSubagentOpensInSheet(
     buildWorkspaceTabPersistenceKey({ serverId, workspaceId }),
+    { serverId, workspaceId },
   );
   const openProviderChild = useCallback(
     (parentAgentId: string, subagentId: string) => {
@@ -155,13 +158,16 @@ function ProviderSubagentPanel() {
 
   useEffect(() => {
     if (!client || !supported) return;
-    void refreshProviderSubagents(client, serverId, target.parentAgentId).catch(() => undefined);
-  }, [client, serverId, supported, target.parentAgentId]);
+    void refreshProviderSubagents(client, serverId, target.parentAgentId, providerStore).catch(
+      () => undefined,
+    );
+  }, [client, providerStore, serverId, supported, target.parentAgentId]);
 
   useEffect(() => {
     if (!client || !supported) return;
     return observeProviderSubagentTimeline({
       client,
+      store: providerStore,
       serverId,
       parentAgentId: target.parentAgentId,
       subagentId: target.subagentId,
@@ -175,7 +181,7 @@ function ProviderSubagentPanel() {
         });
       },
     });
-  }, [client, supported, serverId, target.parentAgentId, target.subagentId]);
+  }, [client, providerStore, supported, serverId, target.parentAgentId, target.subagentId]);
 
   const loadOlder = useCallback((): boolean => {
     if (!client || !supported || isLoadingOlder || !timeline?.hasOlder || !timeline.epoch) {
@@ -191,7 +197,7 @@ function ProviderSubagentPanel() {
         limit: TIMELINE_FETCH_PAGE_SIZE,
       })
       .then((payload) => {
-        useProviderSubagentStore.getState().replaceTimeline(serverId, payload);
+        providerStore.getState().replaceTimeline(serverId, payload);
         return undefined;
       })
       .catch(() => undefined)
@@ -199,6 +205,7 @@ function ProviderSubagentPanel() {
     return true;
   }, [
     client,
+    providerStore,
     isLoadingOlder,
     serverId,
     supported,

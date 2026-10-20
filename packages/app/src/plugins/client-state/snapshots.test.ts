@@ -49,7 +49,8 @@ const agent: Agent = {
   thinkingOptionId: "high",
   requiresAttention: true,
   attentionReason: "permission",
-  parentAgentId: null,
+  parent: null,
+  managedRelationship: null,
   labels: { phase: "implementation" },
 };
 
@@ -103,6 +104,7 @@ describe("plugin context snapshots", () => {
       thinkingOptionId: "high",
       requiresAttention: true,
       attentionReason: "permission",
+      parent: null,
       parentAgentId: null,
       labels: { phase: "implementation" },
     });

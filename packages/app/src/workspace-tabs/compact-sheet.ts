@@ -1,11 +1,14 @@
 import { getWorkspacePanelAttributes } from "@/panels/panel-instance-attributes";
 import { panelCompactSheetPolicy, type CompactSheetPolicy } from "@/panels/panel-manifest";
-import { useSessionStore, type Agent } from "@/stores/session-store";
+import { useSessionStore, type SessionStoreApi, type Agent } from "@/stores/session-store";
 import { isWorkspaceRootAgent } from "@/subagents/policies";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 
-function workspaceAgentLookup(workspaceKey: string): (agentId: string) => Agent | null {
-  const sessions = useSessionStore.getState().sessions;
+function workspaceAgentLookup(
+  workspaceKey: string,
+  store: SessionStoreApi,
+): (agentId: string) => Agent | null {
+  const sessions = store.getState().sessions;
   const serverId = Object.keys(sessions)
     .filter((candidate) => workspaceKey.startsWith(`${candidate}:`))
     .sort((left, right) => right.length - left.length)[0];
@@ -20,13 +23,16 @@ function workspaceAgentLookup(workspaceKey: string): (agentId: string) => Agent 
 export function resolveCompactSheetPolicy(
   workspaceKey: string,
   target: WorkspaceTabTarget,
+  store: SessionStoreApi = useSessionStore,
 ): CompactSheetPolicy | null {
   return panelCompactSheetPolicy(target, {
     isWorkspaceRootAgent: (agentId) => {
-      const getAgent = workspaceAgentLookup(workspaceKey);
+      const getAgent = workspaceAgentLookup(workspaceKey, store);
       const agent = getAgent(agentId);
       if (!agent) return true;
-      const parent = agent.parentAgentId ? (getAgent(agent.parentAgentId) ?? undefined) : undefined;
+      const parent = agent.managedRelationship?.parent.agentId
+        ? (getAgent(agent.managedRelationship?.parent.agentId) ?? undefined)
+        : undefined;
       return isWorkspaceRootAgent(agent, parent);
     },
   });

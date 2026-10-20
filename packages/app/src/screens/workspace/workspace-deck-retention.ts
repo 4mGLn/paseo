@@ -1,3 +1,4 @@
+import { workspaceSelectionAuthority } from "@/stores/last-workspace-selection";
 import type { ActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 
 export const WORKSPACE_DECK_MAX_MOUNTED_WORKSPACES = 10;
@@ -39,14 +40,19 @@ interface ResolveWorkspaceDeckEntriesInput {
 }
 
 export function getWorkspaceSelectionKey(selection: ActiveWorkspaceSelection): string {
-  return `${selection.serverId}:${selection.workspaceId}`;
+  return JSON.stringify([
+    workspaceSelectionAuthority(selection).originServerId,
+    selection.serverId,
+    selection.workspaceId,
+  ]);
 }
 
 export function areWorkspaceSelectionsEqual(
   left: ActiveWorkspaceSelection | null,
   right: ActiveWorkspaceSelection | null,
 ): boolean {
-  return left?.serverId === right?.serverId && left?.workspaceId === right?.workspaceId;
+  if (!left || !right) return left === right;
+  return getWorkspaceSelectionKey(left) === getWorkspaceSelectionKey(right);
 }
 
 export function areRetainedWorkspaceSelectionListsEqual(

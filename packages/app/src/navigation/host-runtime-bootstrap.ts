@@ -1,4 +1,5 @@
 import type { AppState } from "react-native";
+import { workspaceSelectionAuthority } from "@/stores/last-workspace-selection";
 import type { ActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import type {
   DaemonStartCondition,
@@ -10,6 +11,7 @@ import {
   buildHostRootRoute,
   buildHostWorkspaceRoute,
   buildOpenProjectRoute,
+  withHostRouteAuthority,
 } from "@/utils/host-routes";
 
 export interface HostRuntimeBootstrapStore {
@@ -100,6 +102,7 @@ export interface IndexStartupRouteTarget {
 export interface HostStartupRouteTarget {
   kind: "host";
   serverId: string | null;
+  originServerId?: string;
 }
 
 export type StartupRouteTarget = IndexStartupRouteTarget | HostStartupRouteTarget;
@@ -161,7 +164,10 @@ export function resolveHostIndexRoute(input: {
     input.workspaceSelection?.serverId === input.serverId &&
     shouldRestoreWorkspaceSelection(input)
   ) {
-    return buildHostWorkspaceRoute(input.serverId, input.workspaceSelection.workspaceId);
+    const route = buildHostWorkspaceRoute(input.serverId, input.workspaceSelection.workspaceId);
+    return input.workspaceSelection.authority
+      ? (withHostRouteAuthority(route, input.workspaceSelection.authority) as Href)
+      : route;
   }
   return buildOpenProjectRoute();
 }
@@ -188,13 +194,18 @@ function resolveReadyIndexStartupRoute(input: ResolveIndexStartupRouteInput): St
 
   if (
     shouldRestoreWorkspaceSelection(input) &&
-    hostExists(input.hosts, input.workspaceSelection.serverId)
+    hostExists(input.hosts, workspaceSelectionAuthority(input.workspaceSelection).originServerId)
   ) {
     // Native cold launch must enter the host boundary first. The host index
     // owns workspace restore after its local dynamic params exist.
     return {
       kind: "redirect",
-      href: buildHostRootRoute(input.workspaceSelection.serverId),
+      href: (input.workspaceSelection.authority
+        ? withHostRouteAuthority(
+            buildHostRootRoute(input.workspaceSelection.serverId),
+            input.workspaceSelection.authority,
+          )
+        : buildHostRootRoute(input.workspaceSelection.serverId)) as Href,
     };
   }
 
@@ -215,7 +226,7 @@ function resolveReadyIndexStartupRoute(input: ResolveIndexStartupRouteInput): St
 }
 
 function resolveReadyHostStartupRoute(input: ResolveHostStartupRouteInput): StartupRouteDecision {
-  if (hostExists(input.hosts, input.route.serverId)) {
+  if (hostExists(input.hosts, input.route.originServerId ?? input.route.serverId)) {
     return { kind: "render" };
   }
 

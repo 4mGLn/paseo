@@ -1,7 +1,10 @@
 import { useRef, ReactNode, useCallback, useEffect } from "react";
 import { Buffer } from "buffer";
 import { AppState } from "react-native";
-import { observeOpenWorkspaceAgentIds } from "@/stores/workspace-layout-store";
+import {
+  observeOpenWorkspaceAgentIds,
+  useWorkspaceLayoutStoreApi,
+} from "@/stores/workspace-layout-store";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useClientActivity } from "@/hooks/use-client-activity";
@@ -45,7 +48,7 @@ import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { showProviderNoticeToast } from "@/utils/provider-notice-toast";
 import { applyCheckoutStatusUpdateFromEvent } from "@/git/checkout-status-cache";
-import { resyncProviderSubagents, useProviderSubagentStore } from "@/subagents/provider-store";
+import { resyncProviderSubagents, useProviderSubagentStoreApi } from "@/subagents/provider-store";
 
 // Re-export types from session-store and draft-store for backward compatibility
 export type { DraftInput } from "@/stores/draft-store";
@@ -198,6 +201,8 @@ export function SessionProvider(props: SessionProviderProps) {
 
 function SessionProviderInternal({ children, serverId, client }: SessionProviderClientProps) {
   const sessionStore = useSessionStoreApi();
+  const providerStore = useProviderSubagentStoreApi();
+  const layoutStore = useWorkspaceLayoutStoreApi();
   const runtime = useHostRuntimeStore();
   const { t } = useTranslation();
   const voiceRuntime = useVoiceRuntimeOptional();
@@ -476,8 +481,10 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     viewedTimelineSyncRef.current = sync;
     setViewedTimelineSync(serverId, sync);
     sync.setActive(getIsAppVisible(appStateRef.current));
-    const stopObservingOpenChats = observeOpenWorkspaceAgentIds(serverId, (agentIds) =>
-      sync.replaceOpenTabAgentIds(agentIds),
+    const stopObservingOpenChats = observeOpenWorkspaceAgentIds(
+      serverId,
+      (agentIds) => sync.replaceOpenTabAgentIds(agentIds),
+      layoutStore,
     );
 
     return () => {
@@ -494,6 +501,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     sessionStore,
     runtime,
     sessionStore.initializations,
+    layoutStore,
     setInitializingAgents,
     setViewedTimelineSync,
     voiceRuntime,
@@ -538,11 +546,11 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
 
     const unsubProviderSubagentUpdate = feeds.subscribe({
       snapshot: () => {
-        void resyncProviderSubagents(client, serverId);
+        void resyncProviderSubagents(client, serverId, providerStore);
       },
       update: (message) => {
         if (message.type !== "agent.provider_subagents.update") return;
-        useProviderSubagentStore.getState().applyUpdate(serverId, message.payload);
+        providerStore.getState().applyUpdate(serverId, message.payload);
       },
     });
 
@@ -728,6 +736,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     clearAgentStreamHead,
     setInitializingAgents,
     setAgents,
+    providerStore,
     setPendingPermissions,
     notifyAgentAttention,
     updateSessionServerInfo,

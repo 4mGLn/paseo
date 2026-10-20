@@ -38,7 +38,7 @@ export function pickAttentionAgent(agents: Agent[]): string | null {
       continue;
     }
 
-    if (agent.parentAgentId) {
+    if (agent.managedRelationship) {
       continue;
     }
 

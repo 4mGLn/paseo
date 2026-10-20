@@ -1,3 +1,15 @@
+import type { HostRuntimeStore } from "@/runtime/host-runtime";
+import { addConnectedHostAndReload } from "./hosts";
+import { buildSeededHost } from "./daemon-registry";
+import { openAgentRoute } from "./mock-agent";
+import { openSessions, clickSessionRow } from "./archive-tab";
+import { buildHostAgentDetailRoute } from "@/utils/host-routes";
+import { randomUUID } from "node:crypto";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { connectDaemonClient, loadPaseoApiFactory } from "./daemon-client-loader";
+import { startIsolatedHostDaemon } from "./isolated-host-daemon";
+import { seedWorkspace } from "./seed-client";
+import { inspectSessionWireRequest } from "./session-wire";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { expect, type Page } from "@playwright/test";
 import { daemonWsRoutePattern } from "./daemon-port";
@@ -251,22 +263,19 @@ export async function rejectNextManagedSubagentArchiveRequest(
   await page.routeWebSocket(daemonWsRoutePattern(), (ws) => {
     const server = ws.connectToServer();
     ws.onMessage((message) => {
-      const requestId = archiveRequestId(message, subagentId);
-      if (requestId && !rejected) {
+      const intercepted = archiveRequest(message, subagentId);
+      if (intercepted && !rejected) {
         rejected = true;
         // A daemon-rejected archive RPC: the request never reaches the daemon, and its normal
         // correlated error travels back through the real browser client and mutation rollback.
         ws.send(
-          JSON.stringify({
-            type: "session",
-            message: {
-              type: "rpc_error",
-              payload: {
-                requestId,
-                requestType: "archive_agent_request",
-                error: "Archive rejected for test",
-                code: "archive_rejected",
-              },
+          intercepted.reply({
+            type: "rpc_error",
+            payload: {
+              requestId: intercepted.request.requestId,
+              requestType: "archive_agent_request",
+              error: "Archive rejected for test",
+              code: "archive_rejected",
             },
           }),
         );
@@ -282,28 +291,18 @@ export async function rejectNextManagedSubagentArchiveRequest(
 }
 
 function isArchiveRequestForSubagent(message: WebSocketMessage, subagentId: string): boolean {
-  return archiveRequestId(message, subagentId) !== null;
+  return archiveRequest(message, subagentId) !== null;
 }
 
-function archiveRequestId(message: WebSocketMessage, subagentId: string): string | null {
-  const rawMessage = typeof message === "string" ? message : message.toString("utf8");
-  try {
-    const envelope = JSON.parse(rawMessage) as {
-      type?: unknown;
-      message?: { type?: unknown; agentId?: unknown; requestId?: unknown };
-    };
-    if (
-      envelope.type === "session" &&
-      envelope.message?.type === "archive_agent_request" &&
-      envelope.message.agentId === subagentId &&
-      typeof envelope.message.requestId === "string"
-    ) {
-      return envelope.message.requestId;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+function archiveRequest(message: WebSocketMessage, subagentId: string) {
+  const inspected = inspectSessionWireRequest(message);
+  if (
+    inspected?.request.type === "archive_agent_request" &&
+    inspected.request.agentId === subagentId &&
+    typeof inspected.request.requestId === "string"
+  )
+    return inspected;
+  return null;
 }
 
 export async function detachSubagentFromTrack(page: Page, childId: string): Promise<void> {
@@ -319,4 +318,162 @@ export async function detachSubagentFromTrack(page: Page, childId: string): Prom
   const detachButton = page.getByTestId(`subagents-track-detach-${childId}`);
   await expect(detachButton).toBeVisible({ timeout: 30_000 });
   await detachButton.click();
+}
+
+/** Real equal-ID children in equal-ID workspaces, with both route authorities independently live. */
+export async function seedFleetSubagents() {
+  const workspace = await seedWorkspace({ repoPrefix: "fleet-track-" });
+  const destination = await startIsolatedHostDaemon(`fleet_${randomUUID()}`);
+  const clients: DaemonClient[] = [];
+  const apis: ReturnType<Awaited<ReturnType<typeof loadPaseoApiFactory>>>[] = [];
+  const close = async () => {
+    await Promise.allSettled(apis.map((api) => api.dispose()));
+    await Promise.allSettled(clients.map((client) => client.close()));
+    await destination.close();
+    await workspace.cleanup();
+  };
+  try {
+    const createApi = await loadPaseoApiFactory();
+    const aClient = await connectDaemonClient<DaemonClient>({ clientIdPrefix: "fleet-origin" });
+    clients.push(aClient);
+    const bClient = await connectDaemonClient<DaemonClient>({
+      clientIdPrefix: "fleet-destination",
+      port: destination.port,
+    });
+    clients.push(bClient);
+    const origin = createApi(aClient);
+    const direct = createApi(bClient);
+    apis.push(origin, direct);
+    const registered = await origin.hosts.add({ connection: `127.0.0.1:${destination.port}` });
+    await expect
+      .poll(
+        async () =>
+          (await origin.hosts.list()).hosts.find(
+            (host) => host.registrationId === registered.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    const destinationWorkspace = await direct.workspaces.create({
+      workspaceId: workspace.workspaceId,
+      source: { kind: "directory", path: workspace.repoPath },
+    });
+    expect(destinationWorkspace.id).toBe(workspace.workspaceId);
+    const config = { provider: "mock/ten-second-stream", modeId: "load-test" };
+    const parent = await origin.workspaces
+      .ref(workspace.workspaceId)
+      .agents.create({ title: "Fleet parent", config });
+    const agentId = randomUUID();
+    const local = await parent.subagents.create({ agentId, title: "Fleet child on A", config });
+    const remote = await parent.subagents.create({
+      agentId,
+      serverId: destination.serverId,
+      workspaceId: destinationWorkspace.id,
+      title: "Fleet child on B",
+      config,
+    });
+    return {
+      workspace,
+      destination,
+      origin,
+      direct,
+      parent,
+      local,
+      remote,
+      disable: () => origin.hosts.update(registered.registrationId, { enabled: false }),
+      enable: () => origin.hosts.update(registered.registrationId, { enabled: true }),
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+export async function connectFleetDirectHost(
+  page: Page,
+  fleet: Awaited<ReturnType<typeof seedFleetSubagents>>,
+) {
+  await openAgentRoute(page, {
+    workspaceId: fleet.workspace.workspaceId,
+    agentId: fleet.parent.id,
+  });
+  await addConnectedHostAndReload(page, {
+    serverId: fleet.destination.serverId,
+    port: fleet.destination.port,
+    label: "Fleet B",
+  });
+  await page.evaluate(
+    (host) => localStorage.setItem("@paseo:e2e-extra-hosts", JSON.stringify([host])),
+    buildSeededHost({
+      serverId: fleet.destination.serverId,
+      endpoint: `127.0.0.1:${fleet.destination.port}`,
+      nowIso: new Date().toISOString(),
+      label: "Fleet B",
+    }),
+  );
+  await page.goto(
+    buildHostAgentDetailRoute(
+      fleet.destination.serverId,
+      fleet.remote.id,
+      fleet.workspace.workspaceId,
+    ),
+  );
+  await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
+}
+
+export async function openFleetParentTrack(page: Page) {
+  await openSessions(page);
+  await clickSessionRow(page, "Fleet parent");
+  await openSubagentsTrack(page);
+}
+
+export async function readFleetAuthorityState(
+  page: Page,
+  originServerId: string,
+  serverId: string,
+) {
+  return page.evaluate(
+    ({ originServerId: sourceId, serverId: destinationId }) => {
+      const runtime = Reflect.get(globalThis, "__paseoHostRuntimeStore") as HostRuntimeStore;
+      const read = (origin: string) => {
+        const binding = runtime
+          .getAuthorityBindings()
+          .find(
+            (candidate) =>
+              candidate.reference.originServerId === origin &&
+              candidate.reference.serverId === destinationId,
+          );
+        const queries =
+          binding?.queries
+            .getQueryCache()
+            .findAll({ queryKey: ["providersSnapshot", destinationId] }) ?? [];
+        return {
+          status: binding?.runtime.getSnapshot(destinationId)?.connectionStatus ?? "absent",
+          catalogVersion: Math.max(0, ...queries.map((query) => query.state.dataUpdatedAt)),
+        };
+      };
+      return { direct: read(destinationId), routed: read(sourceId) };
+    },
+    { originServerId, serverId },
+  );
+}
+
+export async function expectFleetRouteUnavailable(
+  page: Page,
+  originServerId: string,
+  serverId: string,
+) {
+  await expect
+    .poll(async () => (await readFleetAuthorityState(page, originServerId, serverId)).routed.status)
+    .toMatch(/^(offline|error)$/);
+  const unavailable = page.getByText(/^(Cannot reach .+|.+ is offline)$/).filter({ visible: true });
+  const composer = page.getByRole("textbox", { name: "Message agent..." });
+  await expect(unavailable.or(composer)).toBeVisible();
+  if (await composer.isVisible()) {
+    if (await composer.isEditable()) {
+      await composer.fill("MUST_NOT_USE_DIRECT_AUTHORITY");
+      await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+    } else await expect(composer).toBeDisabled();
+  } else
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toHaveCount(0);
 }

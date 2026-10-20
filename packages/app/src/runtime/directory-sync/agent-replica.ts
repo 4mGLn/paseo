@@ -38,7 +38,7 @@ export class AgentDirectoryReplica {
     private readonly serverId: string,
     private readonly onStoppedRunning: (agentId: string) => void,
     private readonly persist: (mutations: readonly DirectoryReplicaMutation[]) => void,
-    store: SessionStoreApi = useSessionStore,
+    private readonly store: SessionStoreApi = useSessionStore,
   ) {
     this.storeProjection = new AgentStoreProjection(serverId, store);
   }
@@ -81,7 +81,11 @@ export class AgentDirectoryReplica {
     const existing = this.storeProjection.get(token.agentId);
     const timelineAgent = applyLegacyDaemonWorkspaceOwnership({
       serverId: this.serverId,
-      agent: normalizeAgentSnapshot(payload, this.serverId),
+      agent: normalizeAgentSnapshot(
+        payload,
+        this.serverId,
+        this.store.getState().sessions[this.serverId]?.serverInfo,
+      ),
     });
     const normalized: Agent = {
       ...timelineAgent,

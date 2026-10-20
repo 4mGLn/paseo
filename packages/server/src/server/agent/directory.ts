@@ -11,7 +11,9 @@ export class AgentDirectory {
       storage: AgentStorage;
       workspaces: Pick<WorkspaceRegistry, "get" | "list">;
       projectLive(agent: ManagedAgent): Promise<AgentSnapshotPayload>;
-      projectStored(record: StoredAgentRecord): AgentSnapshotPayload;
+      projectStored(
+        record: StoredAgentRecord,
+      ): AgentSnapshotPayload | Promise<AgentSnapshotPayload>;
       isProviderVisible(provider: string): boolean;
       isStoredProviderAvailable(record: StoredAgentRecord): boolean;
     },
@@ -60,6 +62,8 @@ export class AgentDirectory {
     const active = await Promise.all(
       live.filter(matches).map((agent) => this.deps.projectLive(agent)),
     );
-    return [...active, ...stored].filter((agent) => this.deps.isProviderVisible(agent.provider));
+    return [...active, ...(await Promise.all(stored))].filter((agent) =>
+      this.deps.isProviderVisible(agent.provider),
+    );
   }
 }

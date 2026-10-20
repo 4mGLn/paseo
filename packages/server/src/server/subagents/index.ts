@@ -2,7 +2,11 @@ import type { HostDirectory } from "@getpaseo/protocol/hosts";
 import { shouldDetachFromArchivedParent } from "@getpaseo/protocol/agent-lifecycle";
 import { hasOpenAgentTab, getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { WorkspaceAddressSchema, type WorkspaceAddress } from "@getpaseo/protocol/addresses";
-import type { AgentSnapshotPayload, CreationSnapshot } from "@getpaseo/protocol/messages";
+import type {
+  AgentSnapshotPayload,
+  CreationSnapshot,
+  ManagedAgentRelationship,
+} from "@getpaseo/protocol/messages";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -67,6 +71,8 @@ const LedgerSchema = z.object({
 export class Subagents {
   private readonly records = new Map<string, RelationshipRecord>();
   private readonly listeners = new Set<() => void>();
+  private readonly membershipListeners = new Set<(agentId: string) => void>();
+  private readonly publishedMembership = new Map<string, string>();
   private readonly settling = new Map<string, Promise<void>>();
   private readonly startingObservers = new Map<string, Promise<void>>();
   private readonly running = new Map<string, Promise<AgentAddress>>();
@@ -213,6 +219,7 @@ export class Subagents {
       records: [...this.records.values()],
       legacyUpgrade: this.legacyUpgrade,
     });
+    this.publishMembershipChanges();
     for (const changed of this.listeners) changed();
   }
   async assertHostRemovable(serverId: string): Promise<void> {
@@ -243,6 +250,53 @@ export class Subagents {
         .map(({ row }) => structuredClone(row)),
     };
   }
+  /** Only the relationship owner attests membership; a destination's parent pointer is metadata. */
+  async membership(child: AgentAddress): Promise<ManagedAgentRelationship | null> {
+    await this.ready;
+    if (child.serverId !== this.options.serverId) return null;
+    const record = [...this.records.values()].find(
+      (candidate) => sameAddress(candidate.row.child, child) && this.attestsMembership(candidate),
+    );
+    if (!record) return null;
+    const intent = record.intent;
+    const parent = await this.options.agents.get(record.row.parent.agentId);
+    if (record.intent !== intent || !this.attestsMembership(record)) return null;
+    return {
+      id: record.row.id,
+      parent: { ...record.row.parent },
+      parentWorkspace: parent?.workspaceId
+        ? { serverId: record.row.parent.serverId, workspaceId: parent.workspaceId }
+        : null,
+    };
+  }
+
+  observeMembership(changed: (agentId: string) => void): () => void {
+    this.membershipListeners.add(changed);
+    return () => {
+      this.membershipListeners.delete(changed);
+    };
+  }
+
+  private attestsMembership(record: RelationshipRecord): boolean {
+    return (
+      record.row.parent.serverId === this.options.serverId &&
+      record.row.child.serverId === this.options.serverId &&
+      record.intent.kind !== "forgotten" &&
+      (record.confirmed === null || record.confirmed === "attached")
+    );
+  }
+
+  private publishMembershipChanges(): void {
+    for (const record of this.records.values()) {
+      if (record.row.child.serverId !== this.options.serverId) continue;
+      const key = this.attestsMembership(record) ? JSON.stringify(record.row.parent) : "";
+      const id = record.row.child.agentId;
+      if (this.publishedMembership.get(id) === key) continue;
+      this.publishedMembership.set(id, key);
+      for (const changed of this.membershipListeners) changed(id);
+    }
+  }
+
   private authorityKey(authority: SubagentAuthority): string {
     return JSON.stringify([
       authority.principalId,
@@ -911,6 +965,7 @@ export class Subagents {
     );
     this.observers.clear();
     this.listeners.clear();
+    this.membershipListeners.clear();
     await Promise.allSettled(this.running.values());
     await this.mutation;
   }

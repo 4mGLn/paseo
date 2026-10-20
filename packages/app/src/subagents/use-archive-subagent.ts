@@ -1,7 +1,8 @@
 import { useCallback } from "react";
 import { useToast } from "@/contexts/toast-context";
-import { useArchiveAgent } from "@/hooks/use-archive-agent";
-import { useSessionStore } from "@/stores/session-store";
+import { useHostRuntimeStore } from "@/runtime/host-runtime";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
+import type { PaseoSubagentRow } from "./select";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
 import { requestArchiveSubagent, type ResolveArchiveSubagentDialogInput } from "./archive-subagent";
@@ -14,29 +15,37 @@ export type {
 } from "./archive-subagent";
 
 export interface UseArchiveSubagentInput {
-  serverId: string;
+  parent: AgentAddress;
 }
 
-export function useArchiveSubagent(input: UseArchiveSubagentInput): (subagentId: string) => void {
-  const { archiveAgent } = useArchiveAgent();
-  const { serverId } = input;
+export function useArchiveSubagent(
+  input: UseArchiveSubagentInput,
+): (row: PaseoSubagentRow) => void {
+  const runtime = useHostRuntimeStore();
+  const directory = runtime.subagents.directory(input.parent);
   const toast = useToast();
 
   return useCallback(
-    (subagentId: string) => {
+    (row: PaseoSubagentRow) => {
       void requestArchiveSubagent(
-        { serverId, subagentId },
+        { child: row.address },
         {
-          getSubagent: (id): ResolveArchiveSubagentDialogInput | undefined =>
-            useSessionStore.getState().sessions[serverId]?.agents?.get(id),
+          getSubagent: (child): ResolveArchiveSubagentDialogInput | undefined =>
+            directory
+              .getSnapshot()
+              .rows.find(
+                (current) =>
+                  current.child.serverId === child.serverId &&
+                  current.child.agentId === child.agentId,
+              )?.snapshot,
           confirm: confirmDialog,
-          archiveAgent,
+          archiveAgent: directory.archive,
           reportError: (error) => {
             toast.error(toErrorMessage(error));
           },
         },
       );
     },
-    [archiveAgent, serverId, toast],
+    [directory, toast],
   );
 }

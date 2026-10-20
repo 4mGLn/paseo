@@ -219,3 +219,15 @@ describe("shouldKeepWorkspaceDeckEntryMounted", () => {
     ).toBe(true);
   });
 });
+
+it("retains separate screens for the same destination workspace under distinct origins", () => {
+  const direct = { serverId: "B", workspaceId: "workspace", authority: { originServerId: "B" } };
+  const throughA = { serverId: "B", workspaceId: "workspace", authority: { originServerId: "A" } };
+  const entries = reconcileRetainedWorkspaceSelections({
+    currentEntries: [{ selection: direct, inactiveSince: null }],
+    activeSelection: throughA,
+    now: 10,
+  });
+  expect(entries).toHaveLength(2);
+  expect(entries.map((entry) => entry.selection)).toEqual([throughA, direct]);
+});

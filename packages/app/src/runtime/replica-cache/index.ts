@@ -1,6 +1,8 @@
+import { AgentAddressSchema } from "@getpaseo/protocol/addresses";
 import { z } from "zod";
 import {
   AgentStatusSchema,
+  ManagedAgentRelationshipSchema,
   AgentTimelineItemPayloadSchema,
   WorkspaceGitHubRuntimePayloadSchema,
 } from "@getpaseo/protocol/messages";
@@ -221,6 +223,8 @@ const StoredProjectPlacementSchema = z.strictObject({
 });
 
 const StoredAgentSnapshotSchema = z.strictObject({
+  parent: AgentAddressSchema.nullable().optional(),
+  managedRelationship: ManagedAgentRelationshipSchema.nullable().optional(),
   id: z.string(),
   provider: AgentProviderSchema,
   cwd: z.string(),
@@ -611,6 +615,8 @@ function serializeAgentTurn(agent: Agent): NonNullable<StoredAgent["turn"]> {
 function serializeAgent(agent: Agent): StoredAgent {
   const snapshot = {
     id: agent.id,
+    parent: agent.parent,
+    managedRelationship: agent.managedRelationship,
     provider: agent.provider,
     cwd: agent.cwd,
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),

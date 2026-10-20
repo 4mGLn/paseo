@@ -4,7 +4,7 @@ import { formatAgentModeLabel } from "@/agent-controls/labels";
 import { formatTokenCount } from "@/components/context-window-meter.utils";
 import { resolveAgentModelSelection } from "@/composer/agent-controls/utils";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { useSessionStore } from "@/stores/session-store";
+import { useSessionStore, type Agent } from "@/stores/session-store";
 
 export interface AgentFactsInput {
   models: AgentModelDefinition[] | null;
@@ -36,30 +36,45 @@ export function buildAgentFactsLine(input: AgentFactsInput): string | null {
   return parts.join(" · ");
 }
 
+export interface AgentFactsSnapshot extends Omit<AgentFactsInput, "models"> {
+  provider: string;
+  cwd: string;
+}
+
+export function agentFactsSnapshot(agent: Agent): AgentFactsSnapshot {
+  return {
+    provider: agent.provider,
+    cwd: agent.cwd,
+    runtimeModelId: agent.runtimeInfo?.model ?? null,
+    configuredModelId: agent.model,
+    runtimeThinkingOptionId: agent.runtimeInfo?.thinkingOptionId ?? null,
+    explicitThinkingOptionId: agent.thinkingOptionId ?? null,
+    availableModes: agent.availableModes,
+    currentModeId: agent.currentModeId,
+    contextWindowUsedTokens: agent.lastUsage?.contextWindowUsedTokens ?? null,
+    contextWindowMaxTokens: agent.lastUsage?.contextWindowMaxTokens ?? null,
+  };
+}
+
+/** Uses the destination binding's catalog query and push owner for the supplied snapshot. */
+export function useAgentSnapshotFactsLine(
+  serverId: string,
+  agent: AgentFactsSnapshot | null,
+): string | null {
+  const { entries } = useProvidersSnapshot(serverId, { cwd: agent?.cwd });
+  const models = entries?.find((entry) => entry.provider === agent?.provider)?.models ?? null;
+  return agent ? buildAgentFactsLine({ ...agent, models }) : null;
+}
+
 /** The facts line for a Paseo agent in the session store, kept current as the agent reports. */
 export function useAgentFactsLine(serverId: string, agentId: string): string | null {
   const agent = useSessionStore(
     useShallow((state) => {
       const current = state.sessions[serverId]?.agents.get(agentId);
-      return current
-        ? {
-            provider: current.provider,
-            cwd: current.cwd,
-            runtimeModelId: current.runtimeInfo?.model ?? null,
-            configuredModelId: current.model ?? null,
-            runtimeThinkingOptionId: current.runtimeInfo?.thinkingOptionId ?? null,
-            explicitThinkingOptionId: current.thinkingOptionId ?? null,
-            availableModes: current.availableModes,
-            currentModeId: current.currentModeId,
-            contextWindowUsedTokens: current.lastUsage?.contextWindowUsedTokens ?? null,
-            contextWindowMaxTokens: current.lastUsage?.contextWindowMaxTokens ?? null,
-          }
-        : null;
+      return current ? agentFactsSnapshot(current) : null;
     }),
   );
-  const { entries } = useProvidersSnapshot(serverId, { cwd: agent?.cwd });
-  const models = entries?.find((entry) => entry.provider === agent?.provider)?.models ?? null;
-  return agent ? buildAgentFactsLine({ ...agent, models }) : null;
+  return useAgentSnapshotFactsLine(serverId, agent);
 }
 
 /** The mode control shows the current mode, or the provider's first one until the agent reports. */

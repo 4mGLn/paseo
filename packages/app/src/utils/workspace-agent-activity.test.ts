@@ -1,3 +1,4 @@
+import { managedAgentFields } from "@/subagents/test-fixtures";
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@/stores/session-store";
 import { buildWorkspaceAgentActivityIndex } from "./workspace-agent-activity";
@@ -60,7 +61,9 @@ function agent(input: {
     attentionReason: input.attentionReason,
     attentionTimestamp: input.attentionTimestamp ? new Date(input.attentionTimestamp) : null,
     archivedAt: input.archivedAt ? new Date(input.archivedAt) : null,
-    parentAgentId: input.parentAgentId ?? null,
+    ...managedAgentFields(
+      input.parentAgentId ? { serverId: "host-a", agentId: input.parentAgentId } : null,
+    ),
     labels: {},
   };
 }

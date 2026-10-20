@@ -7,6 +7,8 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { usePaneContext } from "@/panels/pane-context";
 import { useSettings } from "@/hooks/use-settings";
 import { PluginComposerPills } from "@/plugins";
+import { subagentRowBelongsToWorkspace } from "@/subagents/opens-in-sheet";
+import type { PaseoSubagentRow } from "@/subagents/select";
 import { useSessionStore } from "@/stores/session-store";
 import {
   type ArchiveFinishedStatus,
@@ -19,8 +21,8 @@ import { SubagentsTrack } from "@/subagents/track";
 import type { TodoEntry } from "@/types/stream";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { buildWorkspaceTabPersistenceKey, type WorkspaceTabTarget } from "@/workspace-tabs/model";
-import { openPreferredWorkspaceTarget } from "@/workspace-tabs/open-beside";
-import { openComposerChanges } from "@/workspace-tabs/open-supporting-view";
+import { useWorkspaceTargetActions } from "@/workspace-tabs/open-beside";
+import { useSupportingViewActions } from "@/workspace-tabs/open-supporting-view";
 
 /**
  * The pane's ambient context — workspace changes, subagents, and tasks — as a row of pills above
@@ -49,6 +51,8 @@ export const AgentTracks = memo(function AgentTracks({
   hasPluginComposerPills: boolean;
 }): ReactElement | null {
   const { tabId } = usePaneContext();
+  const { openPreferredWorkspaceTarget } = useWorkspaceTargetActions();
+  const { openComposerChanges } = useSupportingViewActions();
   const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
   const isCompact = useIsCompactFormFactor();
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
@@ -56,8 +60,8 @@ export const AgentTracks = memo(function AgentTracks({
   const canDetachSubagents = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.agentDetach === true,
   );
-  const archiveSubagent = useArchiveSubagent({ serverId });
-  const detachSubagent = useDetachSubagent({ serverId });
+  const archiveSubagent = useArchiveSubagent({ parent: { serverId, agentId } });
+  const detachSubagent = useDetachSubagent({ parent: { serverId, agentId } });
   const openSubagentTarget = useCallback(
     (target: WorkspaceTabTarget) => {
       openPreferredWorkspaceTarget({
@@ -68,18 +72,19 @@ export const AgentTracks = memo(function AgentTracks({
         parentTabId: tabId,
       });
     },
-    [openInSidePane, tabId, workspaceKey],
+    [openInSidePane, openPreferredWorkspaceTarget, tabId, workspaceKey],
   );
   const handleOpenSubagent = useCallback(
-    (subagentId: string) => {
-      const session = useSessionStore.getState().sessions[serverId];
-      const agent = session?.agents.get(subagentId) ?? session?.agentDetails.get(subagentId);
-      // A subagent in another workspace lives in that workspace's tabs.
-      if (agent?.workspaceId && agent.workspaceId !== workspaceId) {
-        navigateToAgent({ serverId, agentId: subagentId });
+    (row: PaseoSubagentRow) => {
+      if (!subagentRowBelongsToWorkspace(row, { serverId, workspaceId })) {
+        navigateToAgent({
+          ...row.address,
+          workspaceId: row.workspace?.workspaceId,
+          authority: row.authority,
+        });
         return;
       }
-      openSubagentTarget({ kind: "agent", agentId: subagentId });
+      openSubagentTarget({ kind: "agent", agentId: row.address.agentId });
     },
     [openSubagentTarget, serverId, workspaceId],
   );
@@ -89,7 +94,7 @@ export const AgentTracks = memo(function AgentTracks({
     },
     [openSubagentTarget],
   );
-  const opensInSheet = useSubagentOpensInSheet(workspaceKey);
+  const opensInSheet = useSubagentOpensInSheet(workspaceKey, { serverId, workspaceId });
   const handleOpenChanges = useCallback(() => {
     if (!workspaceKey) {
       return;
@@ -99,7 +104,7 @@ export const AgentTracks = memo(function AgentTracks({
       workspaceKey,
       preferences: openInSidePane,
     });
-  }, [isCompact, openInSidePane, workspaceKey]);
+  }, [isCompact, openComposerChanges, openInSidePane, workspaceKey]);
 
   if (
     !hasWorkspaceDiffStat &&

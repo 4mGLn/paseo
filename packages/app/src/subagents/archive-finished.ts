@@ -1,4 +1,6 @@
 import type { Agent } from "@/stores/session-store";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
+import type { SubagentRelationship } from "@getpaseo/protocol/messages";
 import type { SubagentRow } from "./select";
 
 export type ArchiveFinishedStatus =
@@ -12,18 +14,25 @@ export interface ArchiveFinishedState {
 }
 
 export interface ArchiveFinishedOutcome {
-  archivedPaseoIds: string[];
+  archivedPaseoAgents: AgentAddress[];
   dismissedProviderIds: string[];
-  skippedPaseoIds: string[];
-  failures: Array<{ id: string; error: unknown }>;
+  skippedPaseoAgents: AgentAddress[];
+  failures: Array<{ address: AgentAddress; error: unknown }>;
 }
 
-export type ManagedSubagentSnapshot = Pick<Agent, "id" | "status" | "parentAgentId" | "archivedAt">;
+export interface ManagedSubagentSnapshot {
+  address: AgentAddress;
+  parent: AgentAddress;
+  status: Agent["status"] | null;
+  freshness: SubagentRelationship["freshness"];
+  phase: SubagentRelationship["phase"];
+  archivedAt: Agent["archivedAt"];
+}
 
 export interface ArchiveFinishedSubagentsDeps {
-  parentAgentId: string;
-  getManagedSubagent: (id: string) => ManagedSubagentSnapshot | undefined;
-  archiveManagedSubagent: (id: string) => Promise<void>;
+  parent: AgentAddress;
+  getManagedSubagent: (address: AgentAddress) => ManagedSubagentSnapshot | undefined;
+  archiveManagedSubagent: (address: AgentAddress) => Promise<void>;
   dismissProviderSubagents: (ids: string[]) => void;
 }
 
@@ -35,18 +44,26 @@ export interface ArchiveFinishedSubagents {
 }
 
 export function isFinishedSubagent(row: SubagentRow): boolean {
-  if (row.kind === "paseo") return row.status === "idle" || row.status === "error";
+  if (row.kind === "paseo")
+    return (
+      row.freshness === "current" &&
+      row.phase === "attached" &&
+      (row.status === "idle" || row.status === "error")
+    );
   return row.status === "completed" || row.status === "failed" || row.status === "canceled";
 }
 
 function canArchiveManagedSubagent(
   agent: ManagedSubagentSnapshot | undefined,
-  parentAgentId: string,
+  parent: AgentAddress,
 ): boolean {
   return Boolean(
     agent &&
+    agent.freshness === "current" &&
+    agent.phase === "attached" &&
     !agent.archivedAt &&
-    agent.parentAgentId === parentAgentId &&
+    agent.parent.serverId === parent.serverId &&
+    agent.parent.agentId === parent.agentId &&
     (agent.status === "idle" || agent.status === "error"),
   );
 }
@@ -55,12 +72,12 @@ function eligibleSignature(rows: readonly SubagentRow[]): string {
   return identitySignature(rowIdentities(rows));
 }
 
-function managedRowIdentity(id: string): string {
-  return `paseo:${id}`;
+function managedRowIdentity(address: AgentAddress): string {
+  return JSON.stringify(["paseo", address.serverId, address.agentId]);
 }
 
 function rowIdentity(row: SubagentRow): string {
-  return row.kind === "paseo" ? managedRowIdentity(row.id) : `provider:${row.id}`;
+  return row.kind === "paseo" ? managedRowIdentity(row.address) : `provider:${row.id}`;
 }
 
 function rowIdentities(rows: readonly SubagentRow[]): Set<string> {
@@ -73,9 +90,9 @@ function identitySignature(ids: ReadonlySet<string>): string {
 
 function emptyOutcome(): ArchiveFinishedOutcome {
   return {
-    archivedPaseoIds: [],
+    archivedPaseoAgents: [],
     dismissedProviderIds: [],
-    skippedPaseoIds: [],
+    skippedPaseoAgents: [],
     failures: [],
   };
 }
@@ -169,7 +186,7 @@ async function runArchiveFinished(
   reportProgress: (completedCount: number) => void,
 ): Promise<{ outcome: ArchiveFinishedOutcome; retryableFailureIds: Set<string> }> {
   const providerIds = rows.filter((row) => row.kind === "provider").map((row) => row.id);
-  const paseoIds = rows.filter((row) => row.kind === "paseo").map((row) => row.id);
+  const paseoAddresses = rows.filter((row) => row.kind === "paseo").map((row) => row.address);
   let completedCount = 0;
   const outcome = emptyOutcome();
   const retryableFailureIds = new Set<string>();
@@ -181,19 +198,19 @@ async function runArchiveFinished(
     reportProgress(completedCount);
   }
 
-  for (const id of paseoIds) {
-    if (canArchiveManagedSubagent(deps.getManagedSubagent(id), deps.parentAgentId)) {
+  for (const address of paseoAddresses) {
+    if (canArchiveManagedSubagent(deps.getManagedSubagent(address), deps.parent)) {
       try {
-        await deps.archiveManagedSubagent(id);
-        outcome.archivedPaseoIds.push(id);
+        await deps.archiveManagedSubagent(address);
+        outcome.archivedPaseoAgents.push(address);
       } catch (error) {
-        outcome.failures.push({ id, error });
-        if (canArchiveManagedSubagent(deps.getManagedSubagent(id), deps.parentAgentId)) {
-          retryableFailureIds.add(managedRowIdentity(id));
+        outcome.failures.push({ address, error });
+        if (canArchiveManagedSubagent(deps.getManagedSubagent(address), deps.parent)) {
+          retryableFailureIds.add(managedRowIdentity(address));
         }
       }
     } else {
-      outcome.skippedPaseoIds.push(id);
+      outcome.skippedPaseoAgents.push(address);
     }
     completedCount += 1;
     reportProgress(completedCount);
