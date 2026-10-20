@@ -449,6 +449,10 @@ export async function readFleetAuthorityState(
             .findAll({ queryKey: ["providersSnapshot", destinationId] }) ?? [];
         return {
           status: binding?.runtime.getSnapshot(destinationId)?.connectionStatus ?? "absent",
+          hydrated: binding?.sessionStore.getState().sessions[destinationId]?.hasHydratedWorkspaces,
+          workspaceIds: [
+            ...(binding?.sessionStore.getState().sessions[destinationId]?.workspaces.keys() ?? []),
+          ],
           catalogVersion: Math.max(0, ...queries.map((query) => query.state.dataUpdatedAt)),
         };
       };
@@ -476,4 +480,193 @@ export async function expectFleetRouteUnavailable(
     } else await expect(composer).toBeDisabled();
   } else
     await expect(page.getByRole("button", { name: "Send message", exact: true })).toHaveCount(0);
+}
+
+/** Primary children are created by the agent's real MCP endpoint, never the seed SDK. */
+export async function delegateFleetThroughMcp() {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } =
+    await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const { getE2EDaemonPort } = await import("./daemon-port");
+  const { z } = await import("zod");
+  const workspace = await seedWorkspace({ repoPrefix: "mcp-fleet-journey-" });
+  const destination = await startIsolatedHostDaemon(`fleet_${randomUUID()}`);
+  const createApi = await loadPaseoApiFactory();
+  const aClient = await connectDaemonClient<DaemonClient>({ clientIdPrefix: "mcp-fleet-origin" });
+  const bClient = await connectDaemonClient<DaemonClient>({
+    clientIdPrefix: "mcp-fleet-observer",
+    port: destination.port,
+  });
+  const origin = createApi(aClient);
+  const direct = createApi(bClient);
+  const mcp = new Client({ name: "fleet-delegating-agent", version: "1.0.0" });
+  const close = async () => {
+    await mcp.close();
+    await Promise.allSettled([origin.dispose(), direct.dispose()]);
+    await Promise.allSettled([aClient.close(), bClient.close()]);
+    await destination.close();
+    await workspace.cleanup();
+  };
+  const call = async (name: string, args: Record<string, unknown> = {}) => {
+    const result = await mcp.callTool({ name, arguments: args });
+    expect(result, `${name} result`).not.toMatchObject({ isError: true });
+    return z.record(z.string(), z.unknown()).parse(result.structuredContent);
+  };
+  try {
+    const config = { provider: "mock/ten-second-stream", modeId: "load-test" };
+    const parent = await origin.workspaces
+      .ref(workspace.workspaceId)
+      .agents.create({ title: "Fleet MCP parent", config });
+    const registered = await origin.hosts.add({
+      connection: `127.0.0.1:${destination.port}`,
+      label: "Fleet B",
+    });
+    await expect
+      .poll(
+        async () =>
+          (await origin.hosts.list()).hosts.find(
+            (host) => host.registrationId === registered.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    await mcp.connect(
+      new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${getE2EDaemonPort()}/mcp/agents?callerAgentId=${parent.id}`),
+      ),
+    );
+    const hosts = await call("list_hosts");
+    expect(hosts).toMatchObject({
+      hosts: expect.arrayContaining([
+        expect.objectContaining({ serverId: destination.serverId, label: "Fleet B" }),
+      ]),
+    });
+    const target = await call("create_workspace", {
+      serverId: destination.serverId,
+      isolation: "local",
+      path: workspace.repoPath,
+      title: "Fleet B workspace",
+    });
+    const targetWorkspaceId = z.string().parse(target.workspaceId);
+    expect(await call("list_workspaces", { serverId: destination.serverId })).toMatchObject({
+      workspaces: expect.arrayContaining([
+        expect.objectContaining({ workspaceId: targetWorkspaceId }),
+      ]),
+    });
+    const createChild = async (serverId: string, workspaceId: string, title: string) => {
+      const result = await call("create_agent", {
+        serverId,
+        workspaceId,
+        title,
+        provider: config.provider,
+        settings: { modeId: config.modeId },
+        initialPrompt: `Complete ${title}`,
+        notifyOnFinish: true,
+      });
+      const agentId = z.string().parse(result.agentId);
+      const submissionId = z.string().parse(result.submissionId);
+      expect(await call("get_agent_status", { serverId, agentId })).toMatchObject({ serverId });
+      expect(await call("get_agent_activity", { serverId, agentId })).toMatchObject({ serverId });
+      expect(await call("list_agents", { serverId })).toMatchObject({
+        serverId,
+        agents: expect.arrayContaining([expect.objectContaining({ id: agentId })]),
+      });
+      return { id: agentId, serverId, workspaceId, submissionId, title };
+    };
+    const local = await createChild(parent.serverId, workspace.workspaceId, "MCP child on A");
+    const remote = await createChild(destination.serverId, targetWorkspaceId, "MCP child on B");
+    // Opposite-host collisions are unrelated fixture agents. Neither primary child is seeded.
+    await direct.agents.create({
+      agentId: local.id,
+      cwd: workspace.repoPath,
+      title: "Unrelated collision on B",
+      config,
+    });
+    await origin.agents.create({
+      agentId: remote.id,
+      cwd: workspace.repoPath,
+      title: "Unrelated collision on A",
+      config,
+    });
+    expect((await parent.subagents.list()).rows.map((row) => row.child)).toEqual(
+      expect.arrayContaining([
+        { serverId: local.serverId, agentId: local.id },
+        { serverId: remote.serverId, agentId: remote.id },
+      ]),
+    );
+    return {
+      workspace,
+      destination,
+      parent,
+      local,
+      remote,
+      origin,
+      direct,
+      close,
+      async expectCompletion(child: typeof local) {
+        await expect
+          .poll(
+            async () => {
+              const timeline = await parent.timeline.refetch();
+              return timeline.entries
+                .flatMap(({ item }) =>
+                  item.type === "tool_call" && item.agentMessage ? [item.agentMessage] : [],
+                )
+                .filter(
+                  (message) =>
+                    message.event === "finished" &&
+                    message.sender.address?.serverId === child.serverId &&
+                    message.text.includes(child.submissionId),
+                );
+            },
+            { timeout: 30000 },
+          )
+          .toHaveLength(1);
+      },
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+export async function readFleetCompletion(
+  page: Page,
+  child: { title: string; submissionId: string },
+) {
+  await expect(
+    page.getByRole("button", { name: new RegExp(`Agent finished.*${child.title}`) }),
+  ).toBeVisible();
+}
+
+/** Records observed requests and runtime-owned sessions without opening extra scopes. */
+export function observeFleetRouteOwnership(page: Page) {
+  const requests: Record<string, number> = {};
+  let sockets = 0;
+  page.on("websocket", (socket) => {
+    sockets++;
+    socket.on("framesent", ({ payload }) => {
+      const request = inspectSessionWireRequest(payload)?.request;
+      if (!request || typeof request.type !== "string") return;
+      if (request.subscribe !== undefined || request.type === "hosts.route.open.request")
+        requests[request.type] = (requests[request.type] ?? 0) + 1;
+    });
+  });
+  return async () => ({
+    sockets,
+    cumulativeRequests: { ...requests },
+    bindings: await page.evaluate(() => {
+      const registry = Reflect.get(globalThis, "__paseoHostRuntimeStore") as HostRuntimeStore;
+      return registry.getAuthorityBindings().map((binding) => {
+        const id = binding.reference.serverId;
+        const session = binding.sessionStore.getState().sessions[id];
+        return {
+          reference: binding.reference,
+          status: binding.runtime.getSnapshot(id)?.connectionStatus,
+          session: session?.client !== null && session?.client !== undefined,
+          workspaceReplica: session?.hasHydratedWorkspaces === true,
+          timelineReplica: session?.viewedTimelineSync !== undefined,
+        };
+      });
+    }),
+  });
 }

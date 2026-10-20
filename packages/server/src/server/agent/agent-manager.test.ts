@@ -8633,7 +8633,7 @@ test("archiveAgent persists archivedAt and updatedAt before emitting closed stat
   expect(lifecycles.slice(-2)).toEqual(["idle", "closed"]);
 });
 
-test("fires onAgentArchived for archived parent and cascaded children", async () => {
+test("fires onAgentArchived for archived parent and cascaded children for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-archived-hook-cascade-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -8655,7 +8655,10 @@ test("fires onAgentArchived for archived parent and cascaded children", async ()
       title: "Parent",
     },
     undefined,
-    { workspaceId: undefined },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: undefined,
+    },
   );
   const liveChild = await manager.createAgent(
     { provider: "codex", cwd: workdir, title: "Child" },
@@ -8884,7 +8887,7 @@ test("unarchiveSnapshot keeps the stored record archived when native unarchive f
   expect(client.unarchivedHandles).toHaveLength(1);
 });
 
-test("archiveAgent cascade archives in-memory children with the full archive contract", async () => {
+test("archiveAgent cascade archives in-memory children with the full archive contract for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-contract-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -8904,7 +8907,10 @@ test("archiveAgent cascade archives in-memory children with the full archive con
       title: "Parent",
     },
     undefined,
-    { workspaceId: undefined },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: undefined,
+    },
   );
   const child = await manager.createAgent(
     {
@@ -8936,7 +8942,7 @@ test("archiveAgent cascade archives in-memory children with the full archive con
   expect(storedUnrelated?.archivedAt).toBeUndefined();
 });
 
-test("archiveAgent detaches an open same-workspace child instead of cascading", async () => {
+test("archiveAgent detaches an open same-workspace child instead of cascading for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-open-child-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
@@ -8946,9 +8952,16 @@ test("archiveAgent detaches an open same-workspace child instead of cascading", 
     logger,
   });
   const parent = await manager.createAgent(
-    { provider: "codex", cwd: workdir, title: "Parent" },
+    {
+      provider: "codex",
+      cwd: workdir,
+      title: "Parent",
+    },
     undefined,
-    { workspaceId: "workspace-a" },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: "workspace-a",
+    },
   );
   const child = await manager.createAgent(
     { provider: "codex", cwd: workdir, title: "Open child" },
@@ -8973,7 +8986,7 @@ test("archiveAgent detaches an open same-workspace child instead of cascading", 
   expect(manager.getAgent(child.id)?.id).toBe(child.id);
 });
 
-test("archiveAgent detaches a cross-workspace child even when its tab is closed", async () => {
+test("archiveAgent detaches a cross-workspace child even when its tab is closed for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-cross-workspace-child-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
@@ -8983,9 +8996,16 @@ test("archiveAgent detaches a cross-workspace child even when its tab is closed"
     logger,
   });
   const parent = await manager.createAgent(
-    { provider: "codex", cwd: workdir, title: "Parent" },
+    {
+      provider: "codex",
+      cwd: workdir,
+      title: "Parent",
+    },
     undefined,
-    { workspaceId: "workspace-a" },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: "workspace-a",
+    },
   );
   const child = await manager.createAgent(
     { provider: "codex", cwd: workdir, title: "Cross-workspace child" },
@@ -9007,7 +9027,7 @@ test("archiveAgent detaches a cross-workspace child even when its tab is closed"
   expect(storedChild?.labels[PARENT_AGENT_ID_LABEL]).toBeUndefined();
 });
 
-test("archiveAgent re-reads a child before deciding whether to cascade", async () => {
+test("archiveAgent re-reads a child before deciding whether to cascade for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-fresh-child-"));
 
   class ChildOpensAfterCascadeListStorage extends AgentStorage {
@@ -9037,9 +9057,16 @@ test("archiveAgent re-reads a child before deciding whether to cascade", async (
     logger,
   });
   const parent = await manager.createAgent(
-    { provider: "codex", cwd: workdir, title: "Parent" },
+    {
+      provider: "codex",
+      cwd: workdir,
+      title: "Parent",
+    },
     undefined,
-    { workspaceId: "workspace-a" },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: "workspace-a",
+    },
   );
   const child = await manager.createAgent(
     { provider: "codex", cwd: workdir, title: "Late-open child" },
@@ -9061,7 +9088,7 @@ test("archiveAgent re-reads a child before deciding whether to cascade", async (
   expect(storedChild?.labels[PARENT_AGENT_ID_LABEL]).toBeUndefined();
 });
 
-test("archiveAgent cannot overtake a received child open-tab update", async () => {
+test("archiveAgent cannot overtake a received child open-tab update for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-open-race-"));
   const markerWriteStarted = deferred<void>();
   const releaseMarkerWrite = deferred<void>();
@@ -9089,9 +9116,16 @@ test("archiveAgent cannot overtake a received child open-tab update", async () =
     logger,
   });
   const parent = await manager.createAgent(
-    { provider: "codex", cwd: workdir, title: "Parent" },
+    {
+      provider: "codex",
+      cwd: workdir,
+      title: "Parent",
+    },
     undefined,
-    { workspaceId: "workspace-a" },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: "workspace-a",
+    },
   );
   const child = await manager.createAgent(
     { provider: "codex", cwd: workdir, title: "Opening child" },
@@ -9116,7 +9150,7 @@ test("archiveAgent cannot overtake a received child open-tab update", async () =
   expect(storedChild?.labels[PARENT_AGENT_ID_LABEL]).toBeUndefined();
 });
 
-test("archiveAgent cascade closes a running child runtime", async () => {
+test("archiveAgent cascade closes a running child runtime for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-running-child-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -9166,7 +9200,10 @@ test("archiveAgent cascade closes a running child runtime", async () => {
       title: "Parent",
     },
     undefined,
-    { workspaceId: undefined },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: undefined,
+    },
   );
   const child = await manager.createAgent(
     {
@@ -9206,7 +9243,7 @@ test("archiveAgent cascade closes a running child runtime", async () => {
   expect(childLifecycleEvents).toContain("closed");
 });
 
-test("archiveAgent cascade archives off-memory children with the full archive contract", async () => {
+test("archiveAgent cascade archives off-memory children with the full archive contract for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-off-memory-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -9225,7 +9262,10 @@ test("archiveAgent cascade archives off-memory children with the full archive co
       title: "Parent",
     },
     undefined,
-    { workspaceId: undefined },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: undefined,
+    },
   );
   const child = await manager.createAgent(
     {
@@ -9246,7 +9286,7 @@ test("archiveAgent cascade archives off-memory children with the full archive co
   expectArchivedAgentRecord(await storage.get(child.id), "idle");
 });
 
-test("archiveAgent cascade notifies subscribers for in-memory and off-memory children", async () => {
+test("archiveAgent cascade notifies subscribers for in-memory and off-memory children for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-notifications-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -9265,7 +9305,10 @@ test("archiveAgent cascade notifies subscribers for in-memory and off-memory chi
       title: "Parent",
     },
     undefined,
-    { workspaceId: undefined },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: undefined,
+    },
   );
   const inMemoryChild = await manager.createAgent(
     {
@@ -9314,7 +9357,7 @@ test("archiveAgent cascade notifies subscribers for in-memory and off-memory chi
   });
 });
 
-test("archiveAgent cascade surfaces partial child archive failures", async () => {
+test("archiveAgent cascade surfaces partial child archive failures for an execution-owned parent", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-partial-failure-"));
   const storagePath = join(workdir, "agents");
   let failingChildId: string | null = null;
@@ -9344,7 +9387,10 @@ test("archiveAgent cascade surfaces partial child archive failures", async () =>
       title: "Parent",
     },
     undefined,
-    { workspaceId: undefined },
+    {
+      owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+      workspaceId: undefined,
+    },
   );
   const child = await manager.createAgent(
     {
@@ -10242,7 +10288,7 @@ test("idle agents remain resident until an explicit lifecycle action closes them
   }
 });
 
-test("archiving a closed parent still cascades to its managed children", async () => {
+test("archiving a closed parent still cascades to its execution-owned children", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-closed-parent-archive-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
@@ -10254,9 +10300,16 @@ test("archiving a closed parent still cascades to its managed children", async (
 
   try {
     const parent = await manager.createAgent(
-      { provider: "codex", cwd: workdir, title: "Closed parent" },
+      {
+        provider: "codex",
+        cwd: workdir,
+        title: "Closed parent",
+      },
       undefined,
-      { workspaceId: undefined },
+      {
+        owner: { kind: "daemon", daemonId: "hub", executionId: "archive-test" },
+        workspaceId: undefined,
+      },
     );
     const child = await manager.createAgent(
       { provider: "codex", cwd: workdir, title: "Managed child" },

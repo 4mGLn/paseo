@@ -10,12 +10,14 @@ export async function executeHostTool(
     api: PaseoApi,
     identity: { serverId: string; originServerId: string },
   ) => Promise<PaseoToolResult>,
+  validate?: (identity: { serverId: string; originServerId: string }) => void,
 ): Promise<PaseoToolResult> {
   let serverId = requestedServerId;
   try {
     const runtime = await resolveRuntime();
     const originServerId = (await runtime.directory()).self.serverId;
     serverId ??= originServerId;
+    validate?.({ serverId, originServerId });
     const api = await runtime.client(serverId);
     let result: PaseoToolResult;
     let payload: Record<string, unknown>;

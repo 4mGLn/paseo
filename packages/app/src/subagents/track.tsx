@@ -1,6 +1,13 @@
+import { useHostRuntimeStore } from "@/runtime/host-runtime";
 import { HostAuthorityRoute } from "@/runtime/host-authority-route";
 import { useAgentSnapshotFactsLine } from "@/panels/agent-facts-line";
-import { useCallback, useMemo, type ReactElement, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  useSyncExternalStore,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Archive, Unlink } from "lucide-react-native";
@@ -297,7 +304,22 @@ function SubagentsTrackRow({
 
 function ManagedSubagentFacts({ row }: { row: PaseoSubagentRow }) {
   const text = useAgentSnapshotFactsLine(row.address.serverId, row.facts);
-  return <SubagentFacts rowId={row.address.agentId} text={text} />;
+  const runtime = useHostRuntimeStore();
+  const subscribe = useCallback(
+    (changed: () => void) => runtime.subscribe(row.address.serverId, changed),
+    [runtime, row.address.serverId],
+  );
+  const read = useCallback(
+    () => runtime.getHostLabel(row.address.serverId),
+    [runtime, row.address.serverId],
+  );
+  const host = useSyncExternalStore(subscribe, read, read);
+  return (
+    <>
+      <SubagentFacts rowId={`${row.address.agentId}-host`} text={host} />
+      <SubagentFacts rowId={row.address.agentId} text={text} />
+    </>
+  );
 }
 
 function SubagentFacts({ rowId, text }: { rowId: string; text: string | null }) {

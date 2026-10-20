@@ -1715,7 +1715,10 @@ export class DaemonClient {
   }
   observeAgentRun(agentId: string, submissionId: string) {
     this.requireFleetSubagents();
-    return this.owned.observe(async (accept) => {
+    return this.owned.observe<{
+      run: import("@getpaseo/protocol/agent-runs").AgentRunRecord | null;
+      subscriptionId: string;
+    }>(async (accept) => {
       const result = await this.sendCorrelatedSessionRequest({
         message: { type: "agent.runs.get.request", agentId, submissionId, observe: true },
         responseType: "agent.runs.get.response",

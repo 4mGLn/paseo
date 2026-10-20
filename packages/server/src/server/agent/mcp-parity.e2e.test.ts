@@ -316,6 +316,402 @@ afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true });
 });
 
+test("agent MCP delegates to self and selected host and receives qualified run completion", async () => {
+  const { createHostClient } = await import("@getpaseo/client/node");
+  const { createPaseoApi } = await import("@getpaseo/client");
+  const parentPrompts: string[] = [];
+  const a = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      onStartTurn(prompt, config) {
+        if (config.title === "Fleet MCP parent" && typeof prompt === "string")
+          parentPrompts.push(prompt);
+      },
+    }),
+  });
+  const b = await createTestPaseoDaemon();
+  const client = createHostClient(`127.0.0.1:${a.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  await client.connect();
+  const api = createPaseoApi(client);
+  let scoped: McpClient | undefined;
+  try {
+    const parent = await api.agents.create({
+      cwd: a.staticDir,
+      config: { provider: "claude/claude-test-model" },
+      title: "Fleet MCP parent",
+    });
+    const registration = await api.hosts.add({
+      connection: `127.0.0.1:${b.port}`,
+      label: "Worker B",
+    });
+    await expect
+      .poll(
+        async () =>
+          (await api.hosts.list()).hosts.find(
+            (host) => host.registrationId === registration.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    scoped = await createMcpClient(
+      buildExpectedAgentMcpUrl({ host: "127.0.0.1", port: a.port, agentId: parent.id }),
+    );
+    const hosts = await callToolStructured(scoped, "list_hosts");
+    expect(hosts).toMatchObject({
+      self: { serverId: a.daemon.getServerId() },
+      hosts: expect.arrayContaining([
+        expect.objectContaining({ serverId: b.daemon.getServerId() }),
+      ]),
+    });
+    const serverId = b.daemon.getServerId();
+    const workspace = await callToolStructured(scoped, "create_workspace", {
+      serverId,
+      isolation: "local",
+      path: b.staticDir,
+    });
+    expect(await callToolStructured(scoped, "list_workspaces", { serverId })).toMatchObject({
+      serverId,
+      workspaces: expect.arrayContaining([
+        expect.objectContaining({ workspaceId: workspace.workspaceId }),
+      ]),
+    });
+    const children: StructuredContent[] = [];
+    for (const destination of [
+      { serverId: a.daemon.getServerId() },
+      { serverId, workspaceId: workspace.workspaceId },
+    ]) {
+      const child = await callToolStructured(scoped, "create_agent", {
+        ...destination,
+        title: "Fleet MCP child",
+        provider: "claude/claude-test-model",
+        initialPrompt: "Finish delegated fleet work",
+      });
+      expect(child).toMatchObject({
+        serverId: destination.serverId,
+        submissionId: expect.any(String),
+      });
+      children.push(child);
+      expect(
+        await callToolStructured(scoped, "get_agent_status", {
+          serverId: destination.serverId,
+          agentId: child.agentId,
+        }),
+      ).toMatchObject({ serverId: destination.serverId });
+      expect(
+        await callToolStructured(scoped, "get_agent_activity", {
+          serverId: destination.serverId,
+          agentId: child.agentId,
+        }),
+      ).toMatchObject({ serverId: destination.serverId, content: expect.any(String) });
+      expect(
+        await callToolStructured(scoped, "list_agents", { serverId: destination.serverId }),
+      ).toMatchObject({
+        serverId: destination.serverId,
+        agents: expect.arrayContaining([expect.objectContaining({ id: child.agentId })]),
+      });
+    }
+    expect((await parent.subagents.list()).rows.map((row) => row.child)).toEqual(
+      expect.arrayContaining(
+        children.map((child) => ({ serverId: child.serverId, agentId: child.agentId })),
+      ),
+    );
+    await expect.poll(() => parentPrompts.length).toBe(2);
+    for (const child of children) {
+      const notification = parentPrompts
+        .map((text) => parseAgentMessage(text))
+        .find((message) => message?.source?.serverId === child.serverId);
+      expect(notification?.source).toMatchObject({
+        kind: "agent-notification",
+        serverId: child.serverId,
+        agentId: child.agentId,
+        event: "finished",
+      });
+      expect(notification?.text).toContain(str(child.submissionId));
+      expect(notification?.text).toContain("checkpoint");
+    }
+  } finally {
+    await scoped?.close();
+    await api.dispose();
+    await client.close();
+    await a.close();
+    await b.close();
+  }
+});
+
+test("fleet MCP rejects missing destination placement and disabled or offline hosts without local effects", async () => {
+  const { createHostClient } = await import("@getpaseo/client/node");
+  const { createPaseoApi } = await import("@getpaseo/client");
+  const b = await createTestPaseoDaemon();
+  const sourceClient = createHostClient(`127.0.0.1:${daemonHandle.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  const targetClient = createHostClient(`127.0.0.1:${b.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  await Promise.all([sourceClient.connect(), targetClient.connect()]);
+  const source = createPaseoApi(sourceClient);
+  const target = createPaseoApi(targetClient);
+  try {
+    const registration = await source.hosts.add({ connection: `127.0.0.1:${b.port}` });
+    await expect
+      .poll(
+        async () =>
+          (await source.hosts.list()).hosts.find(
+            (host) => host.registrationId === registration.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    const serverId = b.daemon.getServerId();
+    const workspace = await callToolStructured(agentScopedClient, "create_workspace", {
+      serverId,
+      isolation: "local",
+      path: b.staticDir,
+    });
+    const input = {
+      serverId,
+      workspaceId: workspace.workspaceId,
+      title: "Must not fall back",
+      provider: "claude/claude-test-model",
+      initialPrompt: "Never execute rejected work",
+    };
+    const counts = async () => [
+      (await source.agents.list()).entries.length,
+      (await target.agents.list()).entries.length,
+    ];
+    const before = await counts();
+    const noWorkspace = await agentScopedClient.callTool({
+      name: "create_agent",
+      args: { ...input, workspaceId: undefined },
+    });
+    expect(noWorkspace).toMatchObject({
+      isError: true,
+      structuredContent: { serverId, code: "workspace_required" },
+    });
+    await expectToolError(
+      agentScopedClient,
+      "create_agent",
+      { ...input, provider: undefined },
+      /provider/,
+    );
+    expect(await counts()).toEqual(before);
+    const unparented = await callToolStructured(topLevelClient, "create_agent", {
+      ...input,
+      title: "Top level fleet root",
+    });
+    const snapshot = (await target.agents.ref(str(unparented.agentId)).refresh())?.agent;
+    expect(snapshot?.parent ?? null).toBeNull();
+    expect(snapshot?.managedRelationship).toBeNull();
+    await source.hosts.update(registration.registrationId, { enabled: false });
+    expect(await agentScopedClient.callTool({ name: "create_agent", args: input })).toMatchObject({
+      isError: true,
+      structuredContent: { serverId, code: "host_disabled" },
+    });
+    expect(await counts()).toEqual([before[0], before[1]! + 1]);
+    await source.hosts.update(registration.registrationId, { enabled: true });
+    await expect
+      .poll(
+        async () =>
+          (await source.hosts.list()).hosts.find(
+            (host) => host.registrationId === registration.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    await b.close();
+    await expect
+      .poll(
+        async () =>
+          (await source.hosts.list()).hosts.find(
+            (host) => host.registrationId === registration.registrationId,
+          )?.status,
+      )
+      .not.toBe("online");
+    expect(await agentScopedClient.callTool({ name: "create_agent", args: input })).toMatchObject({
+      isError: true,
+      structuredContent: { serverId },
+    });
+    expect((await source.agents.list()).entries.length).toBe(before[0]);
+  } finally {
+    await source.dispose();
+    await target.dispose();
+    await sourceClient.close();
+    await targetClient.close();
+    await b.close();
+  }
+});
+
+test("agent MCP tool policy rejects fleet creation before effects", async () => {
+  const { createHostClient } = await import("@getpaseo/client/node");
+  const { createPaseoApi } = await import("@getpaseo/client");
+  const a = await createTestPaseoDaemon({
+    providerOverrides: {
+      codex: { paseoTools: { disabledTools: ["create_agent", "create_workspace"] } },
+    },
+  });
+  const b = await createTestPaseoDaemon();
+  const client = createHostClient(`127.0.0.1:${a.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  await client.connect();
+  const source = createPaseoApi(client);
+  let restricted: McpClient | undefined;
+  try {
+    const parent = await source.agents.create({
+      cwd: a.staticDir,
+      title: "Restricted caller",
+      config: { provider: "codex/gpt-5.4" },
+    });
+    await source.hosts.add({ connection: `127.0.0.1:${b.port}` });
+    await expect.poll(async () => (await source.hosts.list()).hosts[0]?.status).toBe("online");
+    restricted = await createMcpClient(
+      buildExpectedAgentMcpUrl({ host: "127.0.0.1", port: a.port, agentId: parent.id }),
+    );
+    await expectToolError(
+      restricted,
+      "create_workspace",
+      { serverId: b.daemon.getServerId(), isolation: "local", path: b.staticDir },
+      /not found|unknown/i,
+    );
+    await expectToolError(
+      restricted,
+      "create_agent",
+      {
+        serverId: b.daemon.getServerId(),
+        workspaceId: "not-authority",
+        title: "Denied child",
+        provider: "claude/claude-test-model",
+        initialPrompt: "Must not execute",
+      },
+      /not found|unknown/i,
+    );
+    // The voice caller context is an injected public tool-host seam; the
+    // actual MCP server and target daemon remain ordinary real dependencies.
+    const { createAgentMcpServer } = await import("./mcp-server.js");
+    const { ProviderSnapshotManager } = await import("./provider-snapshot-manager.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { default: pino } = await import("pino");
+    const logger = pino({ level: "silent" });
+    const runtime = source.hosts.runtime();
+    const server = await createAgentMcpServer({
+      agentManager: a.daemon.agentManager,
+      agentStorage: a.daemon.agentStorage,
+      providerSnapshotManager: new ProviderSnapshotManager({
+        logger,
+        extraClients: createTestAgentClients(),
+      }),
+      callerAgentId: parent.id,
+      resolveCallerContext: () => ({ lockedCwd: a.staticDir, allowCustomCwd: false }),
+      hostRuntime: async () => runtime,
+      logger,
+    });
+    const locked = new Client({ name: "locked-workspace-caller", version: "1.0.0" });
+    const [callerTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), locked.connect(callerTransport)]);
+      expect(
+        await locked.callTool({
+          name: "create_agent",
+          arguments: {
+            serverId: b.daemon.getServerId(),
+            workspaceId: "must-not-resolve",
+            title: "Denied placement",
+            provider: "claude/claude-test-model",
+            initialPrompt: "Must not execute",
+          },
+        }),
+      ).toMatchObject({
+        isError: true,
+        structuredContent: { serverId: b.daemon.getServerId(), code: "access_denied" },
+      });
+      expect(
+        await locked.callTool({
+          name: "create_workspace",
+          arguments: { serverId: b.daemon.getServerId(), isolation: "local", path: b.staticDir },
+        }),
+      ).toMatchObject({
+        isError: true,
+        structuredContent: { serverId: b.daemon.getServerId(), code: "access_denied" },
+      });
+    } finally {
+      await locked.close();
+      await server.close();
+      await runtime.dispose();
+    }
+    expect((await parent.subagents.list()).rows).toEqual([]);
+    expect(await b.daemon.agentStorage.list()).toEqual([]);
+  } finally {
+    await restricted?.close();
+    await source.dispose();
+    await client.close();
+    await a.close();
+    await b.close();
+  }
+});
+
+test("MCP-created managed child belongs to the parent ledger and archives with its parent", async () => {
+  const { createHostClient } = await import("@getpaseo/client/node");
+  const { createPaseoApi } = await import("@getpaseo/client");
+  const client = createHostClient(`127.0.0.1:${daemonHandle.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  await client.connect();
+  const api = createPaseoApi(client);
+  const archived: string[] = [];
+  const releaseArchived = daemonHandle.daemon.agentManager.onAgentArchived((id) => {
+    archived.push(id);
+  });
+  let scoped: McpClient | undefined;
+  try {
+    const parentId = await createTopLevelAgent({ title: "Ledger MCP parent" });
+    scoped = await createMcpClient(
+      buildExpectedAgentMcpUrl({ host: "127.0.0.1", port: daemonHandle.port, agentId: parentId }),
+    );
+    const child = await callToolStructured(scoped, "create_agent", {
+      title: "Ledger MCP child",
+      provider: "claude/claude-test-model",
+      initialPrompt: "Finish the delegated task",
+      notifyOnFinish: false,
+    });
+    const childId = str(child.agentId);
+    expect((await api.agents.ref(parentId).subagents.list()).rows).toEqual([
+      expect.objectContaining({
+        child: { serverId: daemonHandle.daemon.getServerId(), agentId: childId },
+      }),
+    ]);
+    const childStates: string[] = [];
+    const releaseStates = daemonHandle.daemon.agentManager.subscribe(
+      (event) => {
+        if (event.type === "agent_state" && event.agent.id === childId)
+          childStates.push(event.agent.lifecycle);
+      },
+      { agentId: childId, replayState: false },
+    );
+    try {
+      await callToolStructured(topLevelClient, "archive_agent", { agentId: parentId });
+      await expect
+        .poll(async () => (await api.agents.ref(childId).refresh())?.agent.archivedAt)
+        .toBeTruthy();
+      expect(archived.filter((id) => id === parentId || id === childId).sort()).toEqual(
+        [parentId, childId].sort(),
+      );
+      expect(childStates).toContain("closed");
+      expect(daemonHandle.daemon.agentManager.getAgent(childId)).toBeNull();
+    } finally {
+      releaseStates();
+    }
+  } finally {
+    releaseArchived();
+    await scoped?.close();
+    await api.dispose();
+    await client.close();
+  }
+});
+
 describe("Suite A: Core Fixes", () => {
   test.each([
     ["Stop", "cancelAgent"],
@@ -402,6 +798,7 @@ describe("Suite A: Core Fixes", () => {
         expect(terminalEvents).toEqual(["turn_canceled"]);
         expect(notification.source).toEqual({
           kind: "agent-notification",
+          serverId: client.getLastServerInfoMessage()!.serverId,
           agentId: childId,
           title: "Watched child",
           event: "errored",

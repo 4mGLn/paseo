@@ -1,13 +1,15 @@
+/** @vitest-environment jsdom */
 import {
   createWorkspaceLayoutStore,
   useWorkspaceLayoutStoreApi,
 } from "@/stores/workspace-layout-store";
-import React from "react";
+import React, { act } from "react";
+import { useHasHydratedWorkspaces } from "@/stores/session-store-hooks";
 import {
   createProviderSubagentStore,
   useProviderSubagentStoreApi,
 } from "@/subagents/provider-store";
-import { renderToStaticMarkup } from "react-dom/server";
+import { createRoot } from "react-dom/client";
 import { expect, it } from "vitest";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 import { createSessionStore, useSessionStoreApi } from "@/stores/session-store";
@@ -15,7 +17,7 @@ import { useCreateFlowStoreApi } from "@/stores/create-flow-store";
 import { HostRuntimeStore, useHostRuntimeStore, type HostAuthorityBinding } from "./host-runtime";
 import { HostAuthorityProvider } from "./host-authority-provider";
 
-it("ordinary consumer hooks retain the runtime, store and creation owner of each authority", () => {
+it("ordinary consumer hooks retain the runtime, store and creation owner of each authority", async () => {
   const binding = (originServerId: string): HostAuthorityBinding => {
     const sessionStore = createSessionStore();
     return {
@@ -31,7 +33,12 @@ it("ordinary consumer hooks retain the runtime, store and creation owner of each
   };
   const direct = binding("B");
   const routed = binding("A");
+  for (const owner of [direct, routed]) {
+    owner.sessionStore.getState().initializeSession("B", null);
+    owner.sessionStore.getState().setHasHydratedWorkspaces("B", owner === routed);
+  }
   function OrdinaryConsumer({ expected }: { expected: HostAuthorityBinding }) {
+    expect(useHasHydratedWorkspaces("B")).toBe(expected === routed);
     const runtime = useHostRuntimeStore();
     const store = useSessionStoreApi();
     const creates = useCreateFlowStoreApi();
@@ -43,14 +50,22 @@ it("ordinary consumer hooks retain the runtime, store and creation owner of each
     expect(creates).toBe(expected.sessionStore.createFlows);
     return null;
   }
-  renderToStaticMarkup(
-    <>
-      <HostAuthorityProvider binding={direct}>
-        <OrdinaryConsumer expected={direct} />
-      </HostAuthorityProvider>
-      <HostAuthorityProvider binding={routed}>
-        <OrdinaryConsumer expected={routed} />
-      </HostAuthorityProvider>
-    </>,
-  );
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <>
+          <HostAuthorityProvider binding={direct}>
+            <OrdinaryConsumer expected={direct} />
+          </HostAuthorityProvider>
+          <HostAuthorityProvider binding={routed}>
+            <OrdinaryConsumer expected={routed} />
+          </HostAuthorityProvider>
+        </>,
+      ),
+    );
+  } finally {
+    await act(async () => root.unmount());
+  }
 });

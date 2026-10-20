@@ -14,7 +14,6 @@ export interface CreateAgentPlacement {
 export interface CreateAgentIntent {
   workspaceId: string;
   cwd: string;
-  parentAgentId: string | null;
   labels: Record<string, string>;
 }
 
@@ -27,12 +26,10 @@ export async function resolveCreateAgentIntent(input: {
   createWorkspace: () => Promise<CreateAgentPlacement>;
   legacyDetached?: boolean;
 }): Promise<CreateAgentIntent> {
-  const parentAgentId = input.legacyDetached ? null : (input.caller?.id ?? null);
   const placement = await resolvePlacement(input);
   const labels = {
     ...input.childAgentDefaultLabels,
     ...input.labels,
-    ...(parentAgentId ? { [PARENT_AGENT_ID_LABEL]: parentAgentId } : {}),
   };
 
   // COMPAT(detachedCreate): legacy callers may still request detached creation.
@@ -42,7 +39,7 @@ export async function resolveCreateAgentIntent(input: {
     delete labels[PARENT_AGENT_ID_LABEL];
   }
 
-  return { ...placement, parentAgentId, labels };
+  return { ...placement, labels };
 }
 
 async function resolvePlacement(input: {

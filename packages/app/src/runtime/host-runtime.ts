@@ -1,3 +1,4 @@
+import type { HostDirectory } from "@getpaseo/protocol/hosts";
 import {
   createWorkspaceLayoutStore,
   type WorkspaceLayoutStoreApi,
@@ -1548,6 +1549,7 @@ export class HostRuntimeStore {
     { binding: HostAuthorityBinding; refs: number; close(): Promise<void> }
   >();
   private bindingSnapshot: readonly HostAuthorityBinding[] = [];
+  private fleetDirectory: HostDirectory | null = null;
   private serverListeners = new Map<string, Set<() => void>>();
   private globalListeners = new Set<() => void>();
   private hostListListeners = new Set<() => void>();
@@ -1764,6 +1766,9 @@ export class HostRuntimeStore {
           agentDirectoryError: failure,
         }),
     });
+    // A bound workspace needs its own directory, including destinations absent
+    // from the global sidebar host list. DirectorySync shares all demand sources.
+    const releaseDirectoryDemand = scoped.acquireDirectoryDemand(serverId);
     let stopped = false;
     let origin: DaemonClient | null = null;
     let controller = new AbortController();
@@ -1876,11 +1881,18 @@ export class HostRuntimeStore {
       if (origin && origin.getConnectionState().status === "connected" && !directory) {
         try {
           directory = origin.observeHosts();
-          const changed = () => {
+          const changed = (value: HostDirectory) => {
+            scoped.fleetDirectory = value;
+            scoped.emit(serverId);
             directoryRevision++;
             acquire();
           };
-          directory.subscribe({ snapshot: changed, update: changed });
+          directory.subscribe({
+            snapshot: changed,
+            update: (message) => {
+              if (message.type === "hosts.changed") changed(message.payload.directory);
+            },
+          });
           void directory.ready.catch(() => {});
         } catch (failure) {
           publish(null, { status: "disconnected" }, toErrorMessage(failure));
@@ -1909,6 +1921,7 @@ export class HostRuntimeStore {
         stopTarget?.();
         rejectReady(new Error("Host authority binding is disposed"));
         scoped.syncServerDataClient(serverId, null);
+        releaseDirectoryDemand();
         scoped.directorySyncByServer.get(serverId)?.dispose();
         scoped.sessionStore.getState().sessions[serverId]?.viewedTimelineSync?.dispose();
         for (const agentId of scoped.sessionStore
@@ -1933,6 +1946,12 @@ export class HostRuntimeStore {
   }
 
   // --- Host registry ---
+
+  getHostLabel(serverId: string): string {
+    const directory = this.fleetDirectory;
+    if (directory?.self.serverId === serverId) return directory.self.label;
+    return directory?.hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
+  }
 
   getHosts(): HostProfile[] {
     return this.hosts;

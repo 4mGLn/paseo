@@ -1,8 +1,6 @@
 import { executeHostTool } from "./host-tool.js";
-import { AgentDirectory } from "../directory.js";
 import type { HostRuntime, PaseoApi } from "@getpaseo/client";
 import { HostDirectorySchema } from "@getpaseo/protocol/hosts";
-import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
@@ -20,23 +18,18 @@ import {
   WorkspaceScriptPayloadSchema,
 } from "../../messages.js";
 import type { AgentListItemPayload } from "../../messages.js";
-import {
-  buildStoredAgentPayload,
-  toAgentListItemPayload,
-  toAgentPayload,
-} from "../agent-projections.js";
+import { toAgentListItemPayload, toAgentPayload } from "../agent-projections.js";
 import { curateAgentActivity } from "../activity-curator.js";
 import { selectItemsByProjectedLimit } from "../timeline-projection.js";
 import type { AgentStorage } from "../agent-storage.js";
-import { AgentNotFoundError, ensureAgentLoaded } from "../agent-loading.js";
-import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
+import { AgentNotFoundError } from "../agent-loading.js";
 import {
   archiveByScope,
   killTerminalsForWorkspace,
   requireActiveWorkspaceForArchive,
   type ArchiveDependencies,
 } from "../../workspace-archive-service.js";
-import { createAgentCommand, type CreateAgentFromMcpInput } from "../create-agent/create.js";
+import { type CreateAgentFromMcpInput } from "../create-agent/create.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "../../voice-types.js";
 import type { FirstAgentContext } from "../../messages.js";
 import { everyMsToFiveFieldCron } from "@getpaseo/protocol/schedule/cadence";
@@ -68,7 +61,6 @@ import {
   parseDurationString,
   resolveRequiredProviderModel,
   sanitizePermissionRequest,
-  serializeSnapshotWithMetadata,
   toScheduleSummary,
 } from "../mcp-shared.js";
 import {
@@ -85,12 +77,10 @@ import type {
   ProjectRegistry,
   WorkspaceRegistry,
 } from "../../workspace-registry.js";
-import { resolveWorktreeSourceCwd } from "../../workspace-source.js";
 import type { WorkspaceScriptsService } from "../../session/workspace-scripts/workspace-scripts-service.js";
 import {
   type ArchiveCommandDependencies,
   type CreatePaseoWorktreeCommandInput,
-  createPaseoWorktreeCommand,
 } from "../../worktree/commands.js";
 import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
@@ -200,13 +190,13 @@ const WorkspaceAutomationSummarySchema = z.object({
   background: z.boolean().optional(),
 });
 
-function toWorkspaceAutomationSummary(workspace: PersistedWorkspaceRecord) {
+function workspaceSummary(workspace: import("@getpaseo/client").PaseoWorkspace) {
   return {
-    workspaceId: workspace.workspaceId,
+    workspaceId: workspace.id,
     projectId: workspace.projectId,
-    cwd: workspace.cwd,
-    isolation: workspace.kind === "worktree" ? ("worktree" as const) : ("local" as const),
-    kind: workspace.kind,
+    cwd: workspace.workspaceDirectory,
+    isolation: workspace.workspaceKind === "worktree" ? "worktree" : "local",
+    kind: workspace.workspaceKind,
     title: workspace.title,
     background: workspace.background,
   };
@@ -236,20 +226,6 @@ function assertOptionsAbsent(
   if (options.some(([, value]) => value !== undefined)) {
     throw new PaseoToolInputError(message);
   }
-}
-
-async function isExistingDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch (error) {
-    if (isMissingPathError(error)) return false;
-    throw error;
-  }
-}
-
-function isMissingPathError(error: unknown): boolean {
-  if (typeof error !== "object" || error === null || !("code" in error)) return false;
-  return error.code === "ENOENT" || error.code === "ENOTDIR";
 }
 
 function resolveWorkspaceWorktreeTarget(input: WorkspaceWorktreeOptions): WorkspaceWorktreeTarget {
@@ -654,7 +630,6 @@ function createToolCatalog(
     terminalManager,
     workspaceScripts,
     scheduleService,
-    providerSnapshotManager,
     callerAgentId,
     resolveSpeakHandler,
     resolveCallerContext,
@@ -702,11 +677,18 @@ function createToolCatalog(
   };
   const registerHostTool = <T extends z.ZodRawShape>(
     name: string,
-    config: Omit<PaseoToolConfig, "inputSchema"> & { inputSchema: T },
+    config: Omit<PaseoToolConfig, "inputSchema"> & {
+      inputSchema: T;
+      validateTarget?: (
+        input: z.output<z.ZodObject<T>>,
+        identity: { serverId: string; originServerId: string },
+      ) => void;
+    },
     handler: (
       input: z.output<z.ZodObject<T>>,
       api: PaseoApi,
       context: PaseoToolExecutionContext,
+      identity: { serverId: string; originServerId: string },
     ) => Promise<PaseoToolResult>,
   ) => {
     registerTool(
@@ -725,17 +707,28 @@ function createToolCatalog(
       },
       async ({ serverId, ...input }, context) => {
         if (!options.hostRuntime) throw new Error("Host runtime is not configured");
-        return executeHostTool(options.hostRuntime, serverId, (api, identity) => {
-          const normalized = { ...input };
-          if (identity.originServerId !== identity.serverId && callerContext?.lockedCwd)
-            throw Object.assign(
-              new PaseoToolInputError("This caller is restricted to its origin workspace"),
-              { code: "access_denied" },
-            );
-          if ("cwd" in config.inputSchema && identity.originServerId === identity.serverId)
-            normalized.cwd = resolveScopedCwd(normalized.cwd);
-          return handler(normalized as z.output<z.ZodObject<T>>, api, context);
-        });
+        return executeHostTool(
+          options.hostRuntime,
+          serverId,
+          (api, identity) => {
+            const normalized = { ...input };
+            if (
+              "cwd" in config.inputSchema &&
+              identity.originServerId === identity.serverId &&
+              (normalized.cwd !== undefined || callerAgentId)
+            )
+              normalized.cwd = resolveScopedCwd(normalized.cwd);
+            return handler(normalized as z.output<z.ZodObject<T>>, api, context, identity);
+          },
+          (identity) => {
+            if (identity.originServerId !== identity.serverId && callerContext?.lockedCwd)
+              throw Object.assign(
+                new PaseoToolInputError("This caller is restricted to its origin workspace"),
+                { code: "access_denied" },
+              );
+            config.validateTarget?.(input as z.output<z.ZodObject<T>>, identity);
+          },
+        );
       },
     );
   };
@@ -1385,7 +1378,7 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "create_workspace",
     {
       title: "Create workspace",
@@ -1440,93 +1433,63 @@ function createToolCatalog(
       },
       outputSchema: WorkspaceAutomationSummarySchema.shape,
     },
-    async ({
-      isolation,
-      path,
-      projectId,
-      title,
-      background,
-      mode,
-      worktreeSlug,
-      branchName,
-      baseBranch,
-      branch,
-      prNumber,
-      forge,
-    }) => {
-      let workspace: PersistedWorkspaceRecord;
-      if (isolation === "local") {
-        const cwd = resolveScopedCwd(path, { required: true });
-        if (!(await isExistingDirectory(cwd))) {
-          throw new PaseoToolInputError(`Directory not found: ${cwd}`);
-        }
-        assertOptionsAbsent(
-          [
-            ["mode", mode],
-            ["worktreeSlug", worktreeSlug],
-            ["branchName", branchName],
-            ["baseBranch", baseBranch],
-            ["branch", branch],
-            ["prNumber", prNumber],
-            ["forge", forge],
-          ],
-          "Worktree options require isolation worktree",
-        );
-        if (!options.createDirectoryWorkspace) {
-          throw new Error("Workspace provisioning is not configured");
-        }
-        workspace = await options.createDirectoryWorkspace(cwd, title, projectId, {
-          background,
-          callerWorkspaceId: resolveCallerAgent()?.workspaceId,
-        });
-      } else {
-        let cwd =
-          path !== undefined || !projectId ? resolveScopedCwd(path, { required: true }) : null;
-        if (!cwd) {
-          if (!options.projectRegistry) {
-            throw new Error("Project registry is not configured");
-          }
-          cwd = await resolveWorktreeSourceCwd({ projectId }, options.projectRegistry);
-        }
-        const worktreeTarget = resolveWorkspaceWorktreeTarget({
-          mode,
-          worktreeSlug,
-          branchName,
-          baseBranch,
-          branch,
-          prNumber,
-          forge,
-        });
-        const result = await createPaseoWorktreeCommand(
-          {
-            paseoHome: options.paseoHome,
-            worktreesRoot: options.worktreesRoot,
-            createPaseoWorktreeWorkflow: options.createPaseoWorktree,
-          },
-          {
-            cwd,
-            ...(projectId ? { projectId } : {}),
-            ...(worktreeSlug ? { worktreeSlug } : {}),
-            ...worktreeTarget,
-            ...(title ? { title } : {}),
-            background,
-            callerWorkspaceId: resolveCallerAgent()?.workspaceId,
-          },
-        );
-        if (!result.ok) {
-          throw result.cause;
-        }
-        workspace = result.createdWorktree.workspace;
-      }
-
-      return {
-        content: [],
-        structuredContent: ensureValidJson(toWorkspaceAutomationSummary(workspace)),
-      };
+    async (
+      {
+        isolation,
+        path,
+        projectId,
+        title,
+        background,
+        mode,
+        worktreeSlug,
+        branchName,
+        baseBranch,
+        branch,
+        prNumber,
+        forge,
+      },
+      api,
+      _context,
+      identity,
+    ) => {
+      const caller = resolveCallerAgent();
+      const sourcePath =
+        identity.serverId === identity.originServerId
+          ? resolveScopedCwd(path, { required: !projectId })
+          : path;
+      const source =
+        isolation === "local"
+          ? { kind: "directory" as const, path: sourcePath!, projectId }
+          : {
+              kind: "worktree" as const,
+              cwd: sourcePath,
+              projectId,
+              worktreeSlug,
+              ...resolveWorkspaceWorktreeTarget({
+                mode,
+                worktreeSlug,
+                branchName,
+                baseBranch,
+                branch,
+                prNumber,
+                forge,
+              }),
+            };
+      if (isolation === "local" && !sourcePath)
+        throw new PaseoToolInputError("path is required on the destination host");
+      const workspace = await api.workspaces.create({
+        source,
+        title,
+        background,
+        ...(identity.serverId === identity.originServerId ? { callerAgentId: caller?.id } : {}),
+      });
+      const snapshot = workspace.current();
+      if (!snapshot) throw new Error("Workspace creation omitted its snapshot");
+      return { content: [], structuredContent: workspaceSummary(snapshot) };
     },
   );
 
-  registerTool(
+  registerHostTool(
     "list_workspaces",
     {
       title: "List workspaces",
@@ -1534,19 +1497,18 @@ function createToolCatalog(
       inputSchema: { includeBackground: z.boolean().optional().default(false) },
       outputSchema: { workspaces: z.array(WorkspaceAutomationSummarySchema) },
     },
-    async ({ includeBackground = false }) => {
-      if (!options.workspaceRegistry) {
-        throw new Error("Workspace registry is not configured");
-      }
-      const workspaces = (await options.workspaceRegistry.list())
-        .filter(
-          (workspace) => !workspace.archivedAt && (includeBackground || !workspace.background),
-        )
-        .map(toWorkspaceAutomationSummary);
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ workspaces }),
-      };
+    async ({ includeBackground = false }, api) => {
+      const workspaces = [];
+      let cursor: string | undefined;
+      do {
+        const page = await api.workspaces.list({
+          filter: { includeBackground },
+          page: { limit: 200, cursor },
+        });
+        workspaces.push(...page.entries.map(workspaceSummary));
+        cursor = page.pageInfo.nextCursor ?? undefined;
+      } while (cursor);
+      return { content: [], structuredContent: { workspaces } };
     },
   );
 
@@ -1593,15 +1555,23 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "create_agent",
     {
       title: "Create agent",
       description:
         "Create an agent. Agent-scoped creation defaults to your workspace and creates your subagent. Top-level creation without workspaceId creates a new local workspace. Requires provider/model (for example codex/gpt-5.4) and an initial prompt. Do not guess; call list_providers and list_models first if uncertain.",
-      inputSchema: createAgentInputSchema,
+      inputSchema: createAgentInputSchema.shape,
+      validateTarget: (input, identity) => {
+        if (identity.serverId !== identity.originServerId && !input.workspaceId)
+          throw Object.assign(
+            new PaseoToolInputError("workspaceId is required on the destination host"),
+            { code: "workspace_required" },
+          );
+      },
       outputSchema: {
         agentId: z.string(),
+        submissionId: z.string(),
         type: AgentProviderEnum,
         status: AgentStatusEnum,
         cwd: z.string(),
@@ -1611,74 +1581,159 @@ function createToolCatalog(
         guidance: z.string().optional(),
       },
     },
-    async (args: unknown) => {
-      const resolvedArgs = await resolveCreateAgentToolArgs(args);
-      const { parsedArgs, worktree } = resolvedArgs;
-      let notifyOnFinish: boolean;
-      if (resolvedArgs.kind === "agent-scoped") {
-        notifyOnFinish = parsedArgs.notifyOnFinish;
+    async (args, api, _context, identity) => {
+      // Compatibility placement is normalized here; parentage is always the caller's
+      // qualified capability and is never inferred from destination metadata.
+      const resolvedArgs = await normalizeAgentCreation(args, identity);
+      const { parsedArgs } = resolvedArgs;
+      const { provider, model } = resolveRequiredProviderModel(parsedArgs.provider);
+      const config = {
+        provider: `${provider}/${model}`,
+        ...(identity.serverId === identity.originServerId
+          ? { options: resolveInheritedProviderConfig(provider)?.providerOptions }
+          : {}),
+        modeId: parsedArgs.settings?.modeId,
+        thinkingOptionId: parsedArgs.settings?.thinkingOptionId,
+        featureValues: parsedArgs.settings?.features,
+      };
+      const labels = { ...callerContext?.childAgentDefaultLabels, ...parsedArgs.labels };
+      delete labels["paseo.parent-agent-id"];
+      const submissionId = crypto.randomUUID();
+      const input = {
+        clientMessageId: submissionId,
+        config,
+        title: parsedArgs.title,
+        prompt: parsedArgs.initialPrompt,
+        labels,
+        ...(resolvedArgs.cwd ? { cwd: resolvedArgs.cwd } : {}),
+      };
+      let workspaceId = resolvedArgs.workspaceId;
+      const caller = resolveCallerAgent();
+      await validateAgentPlacement(api, workspaceId, input.cwd);
+      const workspaceRecipe = creationWorkspaceRecipe(resolvedArgs);
+      let child;
+      let snapshot;
+      if (callerAgentId && !resolvedArgs.detached) {
+        const origin = await (await options.hostRuntime!()).client(identity.originServerId);
+        try {
+          child = await origin.agents.ref(callerAgentId).subagents.create({
+            ...input,
+            cwd:
+              input.cwd ??
+              (identity.serverId === identity.originServerId ? caller?.cwd : undefined),
+            serverId: identity.serverId,
+            workspaceId,
+            workspace: workspaceRecipe,
+            notifyOnFinish: parsedArgs.notifyOnFinish,
+          });
+          snapshot = (await child.refresh())?.agent;
+        } finally {
+          await origin
+            .dispose()
+            .catch((error) => childLogger.warn({ error }, "Parent capability cleanup failed"));
+        }
       } else {
-        notifyOnFinish = resolvedArgs.parsedArgs.notifyOnFinish ?? false;
+        if (workspaceRecipe) {
+          const agentId = crypto.randomUUID();
+          await api.workspaces.create({
+            ...workspaceRecipe,
+            agent: { ...input, agentId, cwd: input.cwd! },
+          });
+          child = api.agents.ref(agentId);
+        } else {
+          if (!workspaceId)
+            workspaceId = (
+              await api.workspaces.create({ source: { kind: "directory", path: process.cwd() } })
+            ).id;
+          child = await api.workspaces.ref(workspaceId).agents.create(input);
+        }
+        snapshot = (await child.refresh())?.agent;
       }
-      const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
-      const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
-      const { snapshot, initialPromptStarted } = await createAgentCommand(
-        {
-          agentManager,
-          agentStorage,
-          logger: childLogger,
-          paseoHome: options.paseoHome,
-          worktreesRoot: options.worktreesRoot,
-          terminalManager,
-          providerSnapshotManager,
-          createPaseoWorktree: options.createPaseoWorktree,
-          ...(options.ensureWorkspaceForCreate
-            ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
-            : {}),
-        },
-        {
-          kind: "mcp",
-          provider: parsedArgs.provider,
-          title: parsedArgs.title,
-          initialPrompt: parsedArgs.initialPrompt,
-          config: inheritedConfig,
-          cwd: resolvedArgs.cwd,
-          workspaceId: resolvedArgs.workspaceId,
-          thinking: parsedArgs.settings?.thinkingOptionId,
-          features: parsedArgs.settings?.features,
-          labels: parsedArgs.labels,
-          mode: parsedArgs.settings?.modeId,
-          promptFailure: "throw",
-          notifyOnFinish,
-          detached: resolvedArgs.detached,
-          callerAgentId,
-          callerContext,
-          worktree,
-        },
-      );
-
-      // Return immediately for async creation.
-      const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
-      const guidance =
-        callerAgentId && notifyOnFinish && initialPromptStarted
-          ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
-          : "Creation acknowledged. Observe completion using get_agent_status/get_agent_activity or SDK/RPC subscriptions and wait APIs.";
-      const response = {
+      if (!snapshot) throw new Error("Created agent is not available");
+      return {
         content: [],
         structuredContent: ensureValidJson({
-          agentId: currentSnapshot.id,
+          agentId: child.id,
+          submissionId,
           type: snapshot.provider,
-          status: currentSnapshot.lifecycle,
-          cwd: currentSnapshot.cwd,
-          ...(currentSnapshot.workspaceId ? { workspaceId: currentSnapshot.workspaceId } : {}),
-          currentModeId: currentSnapshot.currentModeId,
-          availableModes: currentSnapshot.availableModes,
-          ...(guidance ? { guidance } : {}),
+          status: snapshot.status,
+          cwd: snapshot.cwd,
+          workspaceId: snapshot.workspaceId,
+          currentModeId: snapshot.currentModeId,
+          availableModes: snapshot.availableModes,
+          guidance:
+            caller && parsedArgs.notifyOnFinish
+              ? PROMPTED_AGENT_NOTIFICATION_GUIDANCE
+              : "Creation acknowledged. Observe completion using get_agent_status/get_agent_activity or SDK/RPC subscriptions and wait APIs.",
         }),
       };
-      return response;
     },
   );
+
+  async function validateAgentPlacement(
+    api: PaseoApi,
+    workspaceId: string | undefined,
+    cwd: string | undefined,
+  ) {
+    // Validate placement restrictions before creation/reservation on either host.
+    if (workspaceId) {
+      const workspace = await api.workspaces.ref(workspaceId).refresh();
+      if (!workspace?.workspaceDirectory)
+        throw new PaseoToolInputError(`Workspace ${workspaceId} not found`);
+      if (
+        callerContext?.lockedCwd &&
+        !isSameOrDescendantPath(
+          expandUserPath(callerContext.lockedCwd),
+          cwd ?? workspace.workspaceDirectory,
+        )
+      )
+        throw new PaseoToolInputError(`Workspace ${workspaceId} is outside the allowed cwd`);
+    }
+  }
+
+  function creationWorkspaceRecipe(resolvedArgs: {
+    worktree: CreateAgentFromMcpInput["worktree"];
+    cwd: string | undefined;
+  }) {
+    return resolvedArgs.worktree
+      ? {
+          source: {
+            kind: "worktree" as const,
+            cwd: resolvedArgs.cwd!,
+            action: resolvedArgs.worktree.action,
+            worktreeSlug: resolvedArgs.worktree.worktreeName,
+            branchName: resolvedArgs.worktree.branchName,
+            baseBranch: resolvedArgs.worktree.baseBranch,
+            refName: resolvedArgs.worktree.refName,
+            githubPrNumber: resolvedArgs.worktree.githubPrNumber,
+          },
+        }
+      : undefined;
+  }
+
+  async function normalizeAgentCreation(
+    args: z.output<typeof createAgentInputSchema>,
+    identity: { serverId: string; originServerId: string },
+  ) {
+    return hasLegacyCreateAgentPlacement(args)
+      ? await resolveCreateAgentToolArgs(args)
+      : {
+          parsedArgs: parseToolArguments(
+            callerAgentId
+              ? agentToAgentCreateAgentArgsSchema
+              : canonicalTopLevelCreateAgentArgsSchema,
+            args,
+          ),
+          workspaceId:
+            args.workspaceId ??
+            (identity.serverId === identity.originServerId
+              ? resolveCallerAgent()?.workspaceId
+              : undefined),
+          cwd: undefined,
+          worktree: undefined,
+          detached: false,
+        };
+  }
 
   type ResolvedCreateAgentToolArgs =
     | {
@@ -2156,7 +2211,7 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "list_agents",
     {
       title: "List agents",
@@ -2179,39 +2234,32 @@ function createToolCatalog(
         agents: z.array(AgentListItemPayloadSchema),
       },
     },
-    async ({
-      includeBackground = false,
-      includeArchived = false,
-      cwd,
-      sinceHours = 48,
-      statuses,
-      limit = 50,
-    }) => {
-      const callerCwd = callerAgentId ? resolveCallerAgent()?.cwd : undefined;
-      const requestedCwd = cwd?.trim() ? expandUserPath(cwd) : callerCwd;
+    async (
+      {
+        includeBackground = false,
+        includeArchived = false,
+        cwd,
+        sinceHours = 48,
+        statuses,
+        limit = 50,
+      },
+      api,
+    ) => {
+      const requestedCwd = cwd?.trim() ? expandUserPath(cwd) : undefined;
       const statusFilter = statuses && statuses.length > 0 ? new Set(statuses) : null;
       const sinceMs = Date.now() - sinceHours * 60 * 60 * 1000;
-      if (!options.workspaceRegistry) throw new Error("Workspace registry is not configured");
-      const directory = new AgentDirectory({
-        manager: agentManager,
-        storage: agentStorage,
-        workspaces: options.workspaceRegistry,
-        projectLive: (snapshot) =>
-          serializeSnapshotWithMetadata(agentStorage, snapshot, childLogger),
-        projectStored: (record) =>
-          buildStoredAgentPayload(
-            record,
-            new Set(providerSnapshotManager.listRegisteredProviderIds()),
-          ),
-        isProviderVisible: () => true,
-        isStoredProviderAvailable: (record) =>
-          isStoredAgentProviderAvailable(
-            record,
-            new Set(providerSnapshotManager.listRegisteredProviderIds()),
-          ),
-      });
-      const agents = (await directory.list({ includeBackground, includeArchived }))
-        .map(toAgentListItemPayload)
+      const entries = [];
+      let cursor: string | undefined;
+      do {
+        const page = await api.agents.list({
+          filter: { includeBackground, includeArchived },
+          page: { limit: 200, cursor },
+        });
+        entries.push(...page.entries);
+        cursor = page.pageInfo.nextCursor ?? undefined;
+      } while (cursor);
+      const agents = entries
+        .map((entry) => toAgentListItemPayload(entry.agent))
         .filter((agent) => !requestedCwd || isSameOrDescendantPath(requestedCwd, agent.cwd))
         .filter((agent) => !statusFilter || statusFilter.has(agent.status))
         .filter((agent) => !agent.archivedAt || resolveAgentListActivityTime(agent) >= sinceMs)
@@ -3135,7 +3183,7 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "get_agent_activity",
     {
       title: "Get agent activity",
@@ -3154,14 +3202,11 @@ function createToolCatalog(
         content: z.string(),
       },
     },
-    async ({ agentId, limit }) => {
-      await ensureAgentLoaded(agentId, {
-        agentManager,
-        agentStorage,
-        logger: childLogger,
-      });
-      const timeline = agentManager.getTimeline(agentId);
-      const snapshot = agentManager.getAgent(agentId);
+    async ({ agentId, limit }, api) => {
+      const agent = api.agents.ref(agentId);
+      const payload = await agent.timeline.refetch();
+      const timeline = payload.entries.map((entry) => entry.item);
+      const snapshot = (await agent.refresh())?.agent;
 
       const selection = selectItemsByProjectedLimit({
         items: timeline,

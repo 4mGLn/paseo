@@ -3269,6 +3269,7 @@ export const SubagentDirectorySchema = z.object({
 });
 export type SubagentDirectory = z.infer<typeof SubagentDirectorySchema>;
 export const SubagentCreateInputSchema = z.object({
+  notifyOnFinish: z.boolean().optional(),
   serverId: z.string().min(1),
   idempotencyKey: z.string().min(1).max(512),
   workspace: WorkspaceCreateRequestSchema.omit({

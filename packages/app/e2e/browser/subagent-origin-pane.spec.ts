@@ -3,6 +3,9 @@ import { submitMessage } from "../support/helpers/composer";
 import { openSessions, clickSessionRow } from "../support/helpers/archive-tab";
 import {
   seedFleetSubagents,
+  delegateFleetThroughMcp,
+  observeFleetRouteOwnership,
+  readFleetCompletion,
   connectFleetDirectHost,
   openFleetParentTrack,
   readFleetAuthorityState,
@@ -15,6 +18,8 @@ import { runWorkspaceActionFromCommandCenter } from "../support/helpers/command-
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { openSubagentsTrack, seedParentWithSubagent } from "../support/helpers/subagents";
+
+test.use({ e2eInjectPaseoTools: true });
 
 const SETTINGS_KEY = "@paseo:app-settings";
 
@@ -254,6 +259,69 @@ test("a fleet child retains its origin beside direct access through collision, c
       )
       .not.toBe(beforeRecovery);
     expect((await fleet.local.refresh())?.agent.lastUserMessageAt).toBeNull();
+  } finally {
+    await fleet.close();
+  }
+});
+
+test("an agent delegates through MCP to self and B, opens both ordinary conversations and receives correlated completion", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const counts = observeFleetRouteOwnership(page);
+  const fleet = await delegateFleetThroughMcp();
+  try {
+    await openAgentRoute(page, {
+      workspaceId: fleet.workspace.workspaceId,
+      agentId: fleet.parent.id,
+    });
+    console.log("Fleet ordinary parent ownership", await counts());
+    await openSubagentsTrack(page);
+    await expect(page.getByTestId(`subagents-track-row-${fleet.local.id}`)).toContainText(
+      "MCP child on A",
+    );
+    await expect(page.getByTestId(`subagents-track-row-${fleet.remote.id}`)).toContainText(
+      "MCP child on B",
+    );
+    await expect(page.getByTestId(`subagents-track-row-${fleet.remote.id}`)).toContainText(
+      "Fleet B",
+    );
+    await page.getByTestId(`subagents-track-row-${fleet.local.id}`).click();
+    await expect(page).toHaveURL((url) =>
+      url.pathname.includes(`/h/${fleet.local.serverId}/workspace/`),
+    );
+    await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
+    await fleet.expectCompletion(fleet.local);
+    await submitMessage(page, "UI_MCP_FLEET_LOCAL");
+    await expect(page.getByText("UI_MCP_FLEET_LOCAL", { exact: true })).toBeVisible();
+    expect(
+      (await fleet.direct.agents.ref(fleet.local.id).refresh())?.agent.lastUserMessageAt,
+    ).toBeNull();
+    await page.getByTestId(`workspace-tab-agent_${fleet.parent.id}`).click();
+    await openSubagentsTrack(page);
+    await page.getByTestId(`subagents-track-row-${fleet.remote.id}`).click();
+    await expect(page).toHaveURL(
+      (url) =>
+        url.pathname.includes(`/h/${fleet.remote.serverId}/workspace/`) &&
+        url.searchParams.get("origin") === fleet.parent.serverId,
+    );
+    await expect(page.getByRole("textbox", { name: "Message agent..." })).toBeVisible();
+    console.log("Fleet destination conversation ownership", await counts());
+    await fleet.expectCompletion(fleet.remote);
+    await submitMessage(page, "UI_MCP_FLEET_REMOTE");
+    await expect(page.getByText("UI_MCP_FLEET_REMOTE", { exact: true })).toBeVisible();
+    expect(
+      (await fleet.origin.agents.ref(fleet.remote.id).refresh())?.agent.lastUserMessageAt,
+    ).toBeNull();
+    await fleet.expectCompletion(fleet.local);
+    await fleet.expectCompletion(fleet.remote);
+    await openAgentRoute(page, {
+      workspaceId: fleet.workspace.workspaceId,
+      agentId: fleet.parent.id,
+    });
+    await readFleetCompletion(page, fleet.local);
+    await readFleetCompletion(page, fleet.remote);
   } finally {
     await fleet.close();
   }

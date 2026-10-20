@@ -364,6 +364,7 @@ export interface PaseoAgentTimelineHandle {
 }
 
 export type PaseoSubagentCreateOptions = Omit<PaseoAgentCreateOptions, "parent" | "cwd"> & {
+  notifyOnFinish?: boolean;
   serverId?: string;
   workspaceId?: string;
   workspace?: import("@getpaseo/protocol/messages").SubagentCreateInput["workspace"];
@@ -683,7 +684,7 @@ export function createPaseoApi(
         return daemonClient.listSubagents(parentId);
       },
       observe: () => own(() => daemonClient.observeSubagents(parentId)),
-      create: async ({ serverId, idempotencyKey, workspace, ...input }) => {
+      create: async ({ serverId, idempotencyKey, workspace, notifyOnFinish, ...input }) => {
         if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
         const normalized = toDaemonAgentCreateOptions(
           { ...input, cwd: input.cwd ?? "" },
@@ -693,6 +694,7 @@ export function createPaseoApi(
           serverId: serverId ?? requireServerIdentity(daemonClient.getServerId()),
           idempotencyKey: idempotencyKey ?? safeRandomId(),
           workspace,
+          notifyOnFinish,
           input: { ...normalized, labels: input.labels ?? {}, config: normalized.config! },
         });
         subagentRuntime ??= hosts.runtime();

@@ -1,3 +1,4 @@
+import { observeRunCompletion } from "../agent/run-notifications/index.js";
 import type { HostDirectory } from "@getpaseo/protocol/hosts";
 import { shouldDetachFromArchivedParent } from "@getpaseo/protocol/agent-lifecycle";
 import { hasOpenAgentTab, getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
@@ -40,6 +41,7 @@ const AuthoritySchema = z.object({
 const RelationshipStateSchema = z.object({
   row: SubagentRelationshipSchema,
   authority: AuthoritySchema,
+  notificationError: z.string().optional(),
   confirmed: z.enum(["attached", "detached", "archived", "canceled"]).nullable(),
   intent: z.object({
     revision: z.number().int().nonnegative(),
@@ -480,6 +482,7 @@ export class Subagents {
         const { config, initialPrompt, ...input } = creation.input;
         const agentOptions = {
           ...input,
+          labels: { ...input.labels, "paseo.parent-agent-id": row.parent.agentId },
           agentId: row.child.agentId,
           config: {
             ...config,
@@ -696,6 +699,18 @@ export class Subagents {
     )
       return;
     const observation = child.observe();
+    const notification =
+      record.provenance === "creation" && record.creation.notifyOnFinish
+        ? observeRunCompletion({
+            child,
+            recipient: await runtime.agent(record.row.parent),
+            submissionId:
+              record.creation.input.clientMessageId ?? `subagent:${record.row.id}:initial`,
+            title: record.creation.input.config.title ?? "Subagent",
+            active: () => !this.closed && record.intent === intent && observesChild(record),
+            failed: (error) => this.markNotificationFailure(record, intent, error),
+          })
+        : null;
     let applying: Promise<void> = Promise.resolve();
     const accept = (snapshot: AgentSnapshotPayload): void => {
       applying = applying
@@ -708,6 +723,7 @@ export class Subagents {
           if (!observesChild(record)) {
             this.observers.delete(record.row.id);
             await observation.release();
+            await notification?.release();
             await this.releaseUnusedRuntimes();
           }
           return undefined;
@@ -720,6 +736,7 @@ export class Subagents {
       intent,
       release: async () => {
         await observation.release();
+        await notification?.release();
         await applying;
       },
     });
@@ -739,13 +756,26 @@ export class Subagents {
     });
     try {
       await observation.ready;
+      await notification?.ready;
       await applying;
     } catch (error) {
       this.observers.delete(record.row.id);
       await observation.release();
+      await notification?.release();
       if (record.intent === intent) await this.markUnavailable(record, error);
       throw error;
     }
+  }
+  private markNotificationFailure(
+    record: RelationshipRecord,
+    intent: RelationshipIntent,
+    error: unknown,
+  ): void {
+    void this.transact(async () => {
+      if (record.intent !== intent) return;
+      record.notificationError = error instanceof Error ? error.message : String(error);
+      await this.persist();
+    }).catch(() => {});
   }
   private captureSnapshot(record: RelationshipRecord, snapshot: AgentSnapshotPayload | null): void {
     if (!snapshot) return;

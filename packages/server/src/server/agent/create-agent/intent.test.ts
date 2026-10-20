@@ -3,7 +3,7 @@ import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { resolveCreateAgentIntent } from "./intent.js";
 
 describe("resolveCreateAgentIntent", () => {
-  it("keeps caller parentage when an explicit workspace changes placement", async () => {
+  it("resolves placement without manufacturing relationship membership", async () => {
     const intent = await resolveCreateAgentIntent({
       explicitWorkspaceId: "workspace-isolated",
       caller: { id: "parent-agent", cwd: "/parent", workspaceId: "workspace-parent" },
@@ -15,10 +15,8 @@ describe("resolveCreateAgentIntent", () => {
     expect(intent).toEqual({
       workspaceId: "workspace-isolated",
       cwd: "/isolated",
-      parentAgentId: "parent-agent",
       labels: {
         purpose: "review",
-        [PARENT_AGENT_ID_LABEL]: "parent-agent",
       },
     });
   });
@@ -36,7 +34,6 @@ describe("resolveCreateAgentIntent", () => {
 
     expect(intent.workspaceId).toBe("workspace-parent");
     expect(intent.cwd).toBe("/parent");
-    expect(intent.parentAgentId).toBe("parent-agent");
     expect(createCount).toBe(0);
   });
 
@@ -50,7 +47,6 @@ describe("resolveCreateAgentIntent", () => {
     expect(intent).toEqual({
       workspaceId: "workspace-created",
       cwd: "/created",
-      parentAgentId: null,
       labels: {},
     });
   });
@@ -67,7 +63,6 @@ describe("resolveCreateAgentIntent", () => {
     expect(intent).toEqual({
       workspaceId: "workspace-parent",
       cwd: "/parent",
-      parentAgentId: null,
       labels: {},
     });
   });

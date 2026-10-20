@@ -4383,7 +4383,10 @@ export class Session {
   ): Promise<CreationSnapshot> {
     // COMPAT(qualifiedSubagents): added in v0.12, remove after 2027-04-20.
     // Normalize legacy parent placement before the creation owner reserves its resource.
-    const legacyParentId = request.callerAgentId ?? request.labels[PARENT_AGENT_ID_LABEL];
+    const legacyParentId =
+      request.parent === undefined
+        ? (request.callerAgentId ?? request.labels[PARENT_AGENT_ID_LABEL])
+        : undefined;
     if (legacyParentId && this.subagentOptions.subagents) {
       const key = request.idempotencyKey ?? request.requestId;
       const observing = await this.creationService.subscribe("agent", key, observer ?? (() => {}));
@@ -4538,7 +4541,10 @@ export class Session {
   ): Promise<CreationSnapshot> {
     const { requestId, type: _type, subscribe: _subscribe, idempotencyKey, ...intent } = request;
     const agentInput = request.agent;
-    const parentId = agentInput?.callerAgentId ?? agentInput?.labels[PARENT_AGENT_ID_LABEL];
+    const parentId =
+      agentInput?.parent === undefined
+        ? (agentInput?.callerAgentId ?? agentInput?.labels[PARENT_AGENT_ID_LABEL])
+        : undefined;
     const { subagents, subagentAuthority, serverId } = this.subagentOptions;
     if (agentInput && parentId && subagents && subagentAuthority && serverId) {
       const key = idempotencyKey ?? requestId;
@@ -4717,7 +4723,10 @@ export class Session {
   ): Promise<CreatedAgent | null> {
     // COMPAT(qualifiedSubagents): normalize pre-fleet caller/label creation at the session edge.
     // Added in v0.12; remove after 2027-04-20 once all creation callers use parent capabilities.
-    const legacyParentId = msg.callerAgentId ?? msg.labels[PARENT_AGENT_ID_LABEL];
+    const legacyParentId =
+      msg.parent === undefined
+        ? (msg.callerAgentId ?? msg.labels[PARENT_AGENT_ID_LABEL])
+        : undefined;
     const { subagents, subagentAuthority, serverId } = this.subagentOptions;
     if (legacyParentId && subagents && subagentAuthority && serverId) {
       const {
@@ -4836,9 +4845,7 @@ export class Session {
           workspaceId: resolvedIntent.intent.workspaceId,
           worktreeName,
           initialPrompt,
-          source: msg.callerAgentId
-            ? { kind: "agent-message", agentId: msg.callerAgentId }
-            : undefined,
+          source: creationPromptSource(msg),
           clientMessageId,
           outputSchema,
           images,
@@ -9271,4 +9278,17 @@ function createHostSession(options: SessionOptions, session: Session): Connected
 
 function hostSource(options: SessionOptions): string {
   return options.sourceId ?? "owner";
+}
+
+function creationPromptSource(
+  message: CreateAgentRequestMessage,
+): import("./agent/agent-messages/index.js").AgentPromptSource | undefined {
+  if (message.parent)
+    return {
+      kind: "agent-message",
+      agentId: message.parent.agentId,
+      serverId: message.parent.serverId,
+    };
+  if (message.callerAgentId) return { kind: "agent-message", agentId: message.callerAgentId };
+  return undefined;
 }

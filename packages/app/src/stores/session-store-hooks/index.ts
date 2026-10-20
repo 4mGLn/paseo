@@ -20,7 +20,7 @@ import {
   workspaceEqualityFns,
   type WorkspaceStructure,
 } from "./selectors";
-import { useSessionStore, type WorkspaceDescriptor } from "../session-store";
+import { useSessionStoreApi, type WorkspaceDescriptor } from "../session-store";
 import type { DesktopBadgeWorkspaceStatus } from "@/utils/desktop-badge-state";
 
 // These are the ONLY supported ways to read workspaces from the session store.
@@ -38,7 +38,7 @@ export function useWorkspace(
   workspaceId: string | null,
 ): WorkspaceDescriptor | null {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectWorkspace(state, serverId, workspaceId),
     workspaceEqualityFns.identity,
   );
@@ -50,7 +50,7 @@ export function useWorkspaceFields<T>(
   project: (w: WorkspaceDescriptor) => T,
 ): T | null {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectWorkspaceFields(state, serverId, workspaceId, project),
     workspaceEqualityFns.deep,
   );
@@ -58,7 +58,7 @@ export function useWorkspaceFields<T>(
 
 export function useWorkspaceExists(serverId: string | null, workspaceId: string | null): boolean {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectWorkspaceExists(state, serverId, workspaceId),
     workspaceEqualityFns.identity,
   );
@@ -66,7 +66,7 @@ export function useWorkspaceExists(serverId: string | null, workspaceId: string 
 
 export function useHasHydratedWorkspaces(serverId: string | null): boolean {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectHasHydratedWorkspaces(state, serverId),
     workspaceEqualityFns.identity,
   );
@@ -74,7 +74,7 @@ export function useHasHydratedWorkspaces(serverId: string | null): boolean {
 
 export function useHydratedWorkspaceServerIds(serverIds: string[]): string[] {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectHydratedWorkspaceServerIds(state, serverIds),
     workspaceEqualityFns.deep,
   );
@@ -82,7 +82,7 @@ export function useHydratedWorkspaceServerIds(serverIds: string[]): string[] {
 
 export function useWorkspaceDirectoryServerIds(serverIds: string[]): string[] {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectWorkspaceDirectoryServerIds(state, serverIds),
     workspaceEqualityFns.deep,
   );
@@ -93,7 +93,7 @@ export function useWorkspaceDirectory(
   workspaceId: string | null,
 ): string | null {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectWorkspaceDirectory(state, serverId, workspaceId),
     workspaceEqualityFns.identity,
   );
@@ -105,7 +105,7 @@ export function useWorkspaceStructure(serverIds: string[]): WorkspaceStructure {
     [serverIds],
   );
   const projects = useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     selectProjects,
     workspaceEqualityFns.deep,
   );
@@ -133,7 +133,7 @@ export function useWorkspaceStructure(serverIds: string[]): WorkspaceStructure {
 
 export function useWorkspaceKeys(serverId: string | null): string[] {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectWorkspaceKeys(state, serverId),
     workspaceEqualityFns.deep,
   );
@@ -141,7 +141,7 @@ export function useWorkspaceKeys(serverId: string | null): string[] {
 
 export function useRecommendedProjectPaths(serverId: string | null): string[] {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectRecommendedProjectPaths(state, serverId),
     workspaceEqualityFns.deep,
   );
@@ -149,7 +149,7 @@ export function useRecommendedProjectPaths(serverId: string | null): string[] {
 
 export function useHasWorkspaces(serverId: string | null): boolean {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectHasWorkspaces(state, serverId),
     workspaceEqualityFns.identity,
   );
@@ -157,7 +157,7 @@ export function useHasWorkspaces(serverId: string | null): boolean {
 
 export function useWorkspaceStatusesForBadges(): DesktopBadgeWorkspaceStatus[] {
   return useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => selectWorkspaceStatusesForBadges(state),
     workspaceEqualityFns.deep,
   );

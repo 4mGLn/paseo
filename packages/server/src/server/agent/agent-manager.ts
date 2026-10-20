@@ -1900,12 +1900,10 @@ export class AgentManager {
     return { archivedAt };
   }
 
-  // Children created via the MCP `create_agent` tool carry the parent-agent-id
-  // label pointing back at the caller. Archiving the parent cascades to those
-  // children so subagent fleets don't outlive their orchestrator. Detached
-  // handoff agents omit this label, so they stand outside the cascade.
+  // Managed membership and settlement belong to Subagents. This cascade retains
+  // only private/internal and execution-owned lifecycles.
   private async cascadeArchiveChildren(
-    parent: Pick<StoredAgentRecord, "id" | "workspaceId">,
+    parent: Pick<StoredAgentRecord, "id" | "workspaceId" | "internal" | "owner">,
   ): Promise<void> {
     const registry = this.registry;
     if (!registry) {
@@ -1914,7 +1912,7 @@ export class AgentManager {
     const parentAgentId = parent.id;
     const records = await registry.list();
     for (const record of records) {
-      if (this.managedChildLifecycleOwner && !record.internal && !record.owner) continue;
+      if (!parent.internal && !parent.owner && !record.internal && !record.owner) continue;
       if (record.archivedAt) {
         continue;
       }

@@ -294,7 +294,7 @@ test("session create stamps the new worktree's workspaceId when a setup continua
   }
 });
 
-test("mcp create stamps the new worktree's workspaceId, not the parent's", async () => {
+test("standalone creation stamps the new worktree's workspaceId, not the parent's", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "create-agent-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const agentManager = createRealAgentManager(storage);
@@ -314,6 +314,21 @@ test("mcp create stamps the new worktree's workspaceId, not the parent's", async
       },
     );
 
+    await expect(
+      createAgentCommand(
+        { agentManager, agentStorage: storage, logger, providerSnapshotManager },
+        {
+          kind: "mcp",
+          callerAgentId: parent.id,
+          provider: "codex/gpt-5.4",
+          title: "Unowned managed child",
+          initialPrompt: "must not start",
+          notifyOnFinish: false,
+        },
+      ),
+    ).rejects.toThrow("Managed creation requires the parent.subagents capability");
+    expect((await storage.list()).map((agent) => agent.id)).toEqual([parent.id]);
+
     const { snapshot: child } = await createAgentCommand(
       {
         agentManager,
@@ -332,6 +347,7 @@ test("mcp create stamps the new worktree's workspaceId, not the parent's", async
         initialPrompt: "do the thing",
         notifyOnFinish: false,
         callerAgentId: parent.id,
+        detached: true,
         worktree: { worktreeName: "feature", baseBranch: "main" },
       },
     );

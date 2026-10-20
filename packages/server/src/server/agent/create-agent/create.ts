@@ -175,10 +175,22 @@ interface ResolvedCreateAgent {
   createdWorktree?: CreatePaseoWorktreeWorkflowResult;
 }
 
+function assertCreationOwnership(input: CreateAgentCommandInput): void {
+  if (
+    input.kind === "mcp" &&
+    input.callerAgentId &&
+    !input.detached &&
+    !input.internal &&
+    !input.owner
+  )
+    throw new Error("Managed creation requires the parent.subagents capability");
+}
+
 export async function createAgentCommand(
   dependencies: CreateAgentCommandDependencies,
   input: CreateAgentCommandInput,
 ): Promise<CreateAgentCommandResult> {
+  assertCreationOwnership(input);
   const resolved =
     input.kind === "session"
       ? await resolveSessionCreateAgent(dependencies, input)
@@ -341,7 +353,10 @@ async function resolveMcpCreateAgent(
     caller: parentAgent
       ? { id: parentAgent.id, cwd: parentAgent.cwd, workspaceId: parentAgent.workspaceId }
       : null,
-    labels: input.labels,
+    labels:
+      input.internal && parentAgent
+        ? { ...input.labels, "paseo.parent-agent-id": parentAgent.id }
+        : input.labels,
     childAgentDefaultLabels: input.callerContext?.childAgentDefaultLabels,
     legacyDetached: input.detached ?? false,
     resolveWorkspace: async (workspaceId) => ({ workspaceId, cwd: resolvedCwd }),
