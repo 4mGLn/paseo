@@ -1,6 +1,7 @@
 import { HOST_ROUTE_OPCODE } from "@getpaseo/protocol/binary-frames/index";
 import { DaemonLinkEndpoint, VirtualHostSocket } from "./connected-hosts/index.js";
 import { ConnectedHosts } from "./connected-hosts/index.js";
+import { createDaemonHostRuntime, type HostRuntimeAuthority } from "./host-runtime/index.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -457,12 +458,11 @@ interface ReconnectableSessionConnection extends SessionConnectionBase {
   externalDisconnectCleanupTimeout: ReturnType<typeof setTimeout> | null;
 }
 
-interface PluginSessionConnection extends SessionConnectionBase {
-  lifecycle: "ephemeral-plugin";
-  pluginId: string;
+interface OwnedSessionConnection extends SessionConnectionBase {
+  lifecycle: "ephemeral";
 }
 
-type SessionConnection = ReconnectableSessionConnection | PluginSessionConnection;
+type SessionConnection = ReconnectableSessionConnection | OwnedSessionConnection;
 
 interface SocketSessionOptions {
   sourceId?: string;
@@ -531,6 +531,37 @@ function requireWebSocketServices(params: {
  * WebSocket server that only accepts sockets + parses/forwards messages to the session layer.
  */
 export class VoiceAssistantWebSocketServer {
+  private readonly hostRuntimes = new Set<Awaited<ReturnType<typeof createDaemonHostRuntime>>>();
+  private readonly ownedSockets = new WeakSet<WebSocketLike>();
+
+  public async createHostRuntime(authority: HostRuntimeAuthority) {
+    const runtime = await createDaemonHostRuntime({
+      clientId: `host-runtime:${randomUUID()}`,
+      permissionCeiling: authority.permissionCeiling,
+      disposed: (finishedRuntime) => {
+        this.hostRuntimes.delete(finishedRuntime);
+      },
+      attach: async (socket) => {
+        const admission = await authority.resolveAdmission();
+        if (admission.hubExecutionAgents) {
+          throw Object.assign(
+            new Error("Host runtime does not support execution-scoped admission"),
+            {
+              code: "unsupported_capability",
+            },
+          );
+        }
+        this.ownedSockets.add(socket);
+        await this.attachExternalSocket(socket, undefined, admission);
+      },
+    });
+    if (this.connectionLifecycle === "stopping") {
+      await runtime.dispose();
+      throw new Error("Cannot create host runtime while shutting down");
+    }
+    this.hostRuntimes.add(runtime);
+    return runtime;
+  }
   private readonly logger: pino.Logger;
   private readonly wss: WebSocketServer;
   private readonly hostLinks = new Map<WebSocketLike, DaemonLinkEndpoint>();
@@ -1041,6 +1072,7 @@ export class VoiceAssistantWebSocketServer {
       resolve = finish;
     });
     this.pluginSocketIds.set(ws, pluginId);
+    this.ownedSockets.add(ws);
     this.pluginSocketCleanup.set(ws, resolve);
     try {
       await this.attachSocket(ws, undefined, undefined, true, OWNER_SESSION_ADMISSION);
@@ -1067,7 +1099,10 @@ export class VoiceAssistantWebSocketServer {
         pending.admission = { ...pending.admission, permissions };
       }
     }
-    for (const connection of new Set(this.externalSessionsByKey.values())) {
+    for (const connection of new Set([
+      ...this.externalSessionsByKey.values(),
+      ...this.sessions.values(),
+    ])) {
       if (connection.principalId === principalId) {
         connection.session.setPermissions(
           connection.permissionCeiling
@@ -1090,6 +1125,8 @@ export class VoiceAssistantWebSocketServer {
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    await Promise.allSettled([...this.hostRuntimes].map((runtime) => runtime.dispose()));
+    this.hostRuntimes.clear();
     await this.connectedHosts.close();
     this.unsubscribeSpeechReadiness?.();
     this.unsubscribeSpeechReadiness = null;
@@ -1432,11 +1469,20 @@ export class VoiceAssistantWebSocketServer {
     appVersion: string | null;
     clientCapabilities: Record<string, unknown> | null;
     connectionLogger: pino.Logger;
-    lifecycle: { kind: "reconnectable" } | { kind: "ephemeral-plugin"; pluginId: string };
+    lifecycle: "reconnectable" | "ephemeral";
+    sourceId: string;
     admission: SessionAdmission;
   }): SessionConnection {
-    const { ws, clientId, appVersion, clientCapabilities, connectionLogger, lifecycle, admission } =
-      params;
+    const {
+      ws,
+      clientId,
+      appVersion,
+      clientCapabilities,
+      connectionLogger,
+      lifecycle,
+      admission,
+      sourceId,
+    } = params;
     let connection: SessionConnection | null = null;
 
     const session = this.createSocketSession({
@@ -1444,10 +1490,7 @@ export class VoiceAssistantWebSocketServer {
       appVersion,
       clientCapabilities,
       permissions: admission.permissions,
-      sourceId:
-        lifecycle.kind === "ephemeral-plugin"
-          ? `plugin:${lifecycle.pluginId}`
-          : admission.principalId,
+      sourceId,
       connectionLogger,
       onMessage: (msg) => {
         if (!connection) {
@@ -1509,8 +1552,8 @@ export class VoiceAssistantWebSocketServer {
       sockets: new Set([ws]),
     };
     connection =
-      lifecycle.kind === "ephemeral-plugin"
-        ? { ...base, lifecycle: "ephemeral-plugin", pluginId: lifecycle.pluginId }
+      lifecycle === "ephemeral"
+        ? { ...base, lifecycle: "ephemeral" }
         : { ...base, lifecycle: "reconnectable", externalDisconnectCleanupTimeout: null };
     session.updateClientCapabilities(clientCapabilities, ws, appVersion);
     return connection;
@@ -1618,6 +1661,14 @@ export class VoiceAssistantWebSocketServer {
       daemonVersion: this.daemonVersion,
       daemonRuntimeConfig: this.daemonRuntimeConfig,
       getWebSocketRuntimeMetrics: () => this.lastRuntimeMetricsSnapshot,
+      getHostObservationMetrics: () => ({
+        "Host runtimes": this.hostRuntimes.size,
+        "Owned sessions": new Set(
+          [...this.sessions.entries()]
+            .filter(([socket]) => this.ownedSockets.has(socket))
+            .map(([, connection]) => connection),
+        ).size,
+      }),
     });
   }
 
@@ -1697,7 +1748,9 @@ export class VoiceAssistantWebSocketServer {
       pending.identity.appVersion = message.appVersion;
     }
     const sessionKey = sessionConnectionKey(admitted.principalId, clientId);
-    const existing = pluginId ? undefined : this.externalSessionsByKey.get(sessionKey);
+    const existing = this.ownedSockets.has(ws)
+      ? undefined
+      : this.externalSessionsByKey.get(sessionKey);
     if (existing) {
       this.resumeSession({ ws, message, pending, existing });
       return;
@@ -1711,7 +1764,8 @@ export class VoiceAssistantWebSocketServer {
       appVersion: message.appVersion ?? null,
       clientCapabilities: message.capabilities ?? null,
       connectionLogger,
-      lifecycle: pluginId ? { kind: "ephemeral-plugin", pluginId } : { kind: "reconnectable" },
+      lifecycle: this.socketLifetime(ws),
+      sourceId: pluginId ? `plugin:${pluginId}` : admitted.principalId,
       admission: admitted,
     });
     connection.permissionCeiling = message.sessionPermissions;
@@ -1731,6 +1785,10 @@ export class VoiceAssistantWebSocketServer {
       },
       "Client connected via hello",
     );
+  }
+
+  private socketLifetime(ws: WebSocketLike): SessionConnection["lifecycle"] {
+    return this.ownedSockets.has(ws) ? "ephemeral" : "reconnectable";
   }
 
   private handleHelloSafely(params: {
@@ -2186,9 +2244,9 @@ export class VoiceAssistantWebSocketServer {
     this.socketIdentities.delete(ws);
 
     if (connection.sockets.size === 0) {
-      if (connection.lifecycle === "ephemeral-plugin") {
+      if (connection.lifecycle === "ephemeral") {
         this.pluginSocketIds.delete(ws);
-        await this.cleanupConnection(connection, "Plugin session disconnected");
+        await this.cleanupConnection(connection, "Owned session disconnected");
         this.finishPluginSocketCleanup(ws);
         return;
       }

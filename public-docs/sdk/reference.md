@@ -80,6 +80,8 @@ See [background workspaces](./workspaces.md) for caller inheritance and inclusiv
 | Member                         | Result                            | Behavior                                                                                                |
 | ------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `id`                           | `string`                          | Stable daemon agent ID.                                                                                 |
+| `serverId`                     | `string`                          | Accepted daemon identity, retained across disconnects. Connect before reading it.                       |
+| `address`                      | `{ serverId, agentId }`           | Complete agent identity, independent of the connection route.                                           |
 | `workspaceId`                  | `string \| null`                  | Current workspace placement.                                                                            |
 | `cwd`                          | `string \| null`                  | Current working directory.                                                                              |
 | `status`                       | Agent status or `null`            | Current lifecycle status.                                                                               |
@@ -259,6 +261,29 @@ Registration and host acquisition failures expose a stable `code`: `host_unknown
 `self_host`, or `duplicate_host`. Ordinary RPC permission codes, including `access_denied`, pass through
 unchanged. Multiplexing is a transport; consumers use the same client/API operations and lifecycle.
 Discovery does not grant execution authority.
+
+### Resolve agent addresses
+
+Use `HostRuntime` when a workflow holds complete agent addresses. Each runtime resolves through its
+origin API, preserving that route's authority even when another direct connection exists.
+
+```ts
+const runtime = client.hosts.runtime();
+try {
+  const agent = await runtime.agent({ serverId: "srv_build_box", agentId: "agent_on_build_box" });
+  await agent.refresh();
+  await agent.send("Continue the investigation");
+} finally {
+  await runtime.dispose();
+}
+```
+
+`directory()` returns the origin's host directory. `client(serverId)` acquires an independent,
+caller-owned API scope; dispose it after use. `agent(address)` borrows a runtime-owned scope.
+Disposing the runtime releases its scopes and pending acquisitions, leaving the origin API open.
+Agent addresses and accepted snapshots remain readable; operations on disposed handles reject.
+A connection that reaches a different daemon on reconnect fails with `server_id_mismatch` before
+queued work executes. Create a new client after explicitly choosing the new destination.
 
 ## Errors and cleanup
 

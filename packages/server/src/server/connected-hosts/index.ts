@@ -339,7 +339,7 @@ export class ConnectedHosts {
               message: "Cannot reach host. Check the connection; retrying automatically.",
             })
           : null;
-      if (row.error?.code === "authentication_failed") {
+      if (row.error?.code === "authentication_failed" || row.error?.code === "server_id_mismatch") {
         row.status = "error";
         row.nextRetryAt = null;
         client.setReconnectEnabled(false);
@@ -528,6 +528,12 @@ export class ConnectedHosts {
 
 function connectionFailure(error: unknown, authenticationFailed: boolean): HostSummary["error"] {
   if (error instanceof HostError) return { code: error.code, message: error.message };
+  if (error instanceof Error && "code" in error && error.code === "server_id_mismatch")
+    return {
+      code: "server_id_mismatch",
+      message:
+        "Daemon identity changed. Verify the destination and explicitly replace its identity.",
+    };
   if (error instanceof Error && "code" in error && error.code === "authentication_failed")
     return { code: "authentication_failed", message: error.message };
   if (authenticationFailed)

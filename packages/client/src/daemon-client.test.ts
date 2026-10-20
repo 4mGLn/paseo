@@ -65,7 +65,6 @@ function createMockTransport() {
   let onOpen: () => void = () => {};
   let onClose: (_event?: unknown) => void = () => {};
   let onError: (_event?: unknown) => void = () => {};
-  let serverInfoOrdinal = 1;
 
   const transport: DaemonTransport = {
     send: (data) => {
@@ -113,7 +112,7 @@ function createMockTransport() {
             type: "status",
             payload: {
               status: "server_info",
-              serverId: `srv_test_${serverInfoOrdinal++}`,
+              serverId: "srv_test_1",
               hostname: null,
               version: null,
               features: options?.features ?? { ownedSubscriptions: true },

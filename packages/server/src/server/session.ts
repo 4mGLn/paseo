@@ -568,6 +568,7 @@ export interface SessionOptions {
   daemonVersion?: string;
   daemonRuntimeConfig?: DaemonRuntimeConfig;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
+  getHostObservationMetrics?: () => Record<string, number>;
 }
 
 export type SessionLifecycleIntent =
@@ -1075,6 +1076,7 @@ export class Session {
       daemonRuntimeConfig,
       getWebSocketRuntimeMetrics,
       getObservationMetrics: () => ({
+        ...options.getHostObservationMetrics?.(),
         Registrations: this.delivery.registrationCount,
         "Source registrations": this.delivery.sourceRegistrationCount(),
         "Producer listeners": [

@@ -1,4 +1,6 @@
 import { AgentDirectory } from "../directory.js";
+import type { HostRuntime } from "@getpaseo/client";
+import { HostDirectorySchema } from "@getpaseo/protocol/hosts";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { ensureValidJson } from "../../json-utils.js";
@@ -110,6 +112,7 @@ import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-confi
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
 export interface PaseoToolHostDependencies {
+  hostRuntime?: () => Promise<HostRuntime>;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   terminalManager?: TerminalManager | null;
@@ -1331,6 +1334,24 @@ function createToolCatalog(
       resolveCallerAgent,
     });
   }
+
+  registerTool(
+    "list_hosts",
+    {
+      title: "List hosts",
+      description:
+        "Discover this host and its saved one-hop destinations without connection credentials.",
+      inputSchema: {},
+      outputSchema: HostDirectorySchema.shape,
+    },
+    async () => {
+      if (!options.hostRuntime) throw new Error("Host runtime is not configured");
+      return {
+        content: [],
+        structuredContent: ensureValidJson(await (await options.hostRuntime()).directory()),
+      };
+    },
+  );
 
   registerTool(
     "create_workspace",

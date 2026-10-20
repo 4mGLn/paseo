@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { createPaseoApi } from "@getpaseo/client";
+import { createPaseoApi, HostRuntime } from "@getpaseo/client";
 import { createHostClient, createHostChannelTransport } from "@getpaseo/client/node";
 import { createTestPaseoDaemon, type TestPaseoDaemon } from "../test-utils/paseo-daemon.js";
 import type { HostDirectory } from "@getpaseo/protocol/hosts";
@@ -516,12 +516,13 @@ import { z } from "zod";
 const operate = defineRpc({ name: "operate", input: z.object({ serverId: z.string(), path: z.string() }), output: z.object({ workspaceId: z.string(), registrationId: z.string(), sourceId: z.string() }) });
 export default function contribute(server) {
   server.handle(operate, async (input, context) => {
-    const remote = await context.paseo.hosts.client(input.serverId);
+    const runtime = context.paseo.hosts.runtime();
+    const remote = await runtime.client(input.serverId);
     try {
       const workspace = await remote.workspaces.create({ source: { kind: "directory", path: input.path }, title: "Plugin remote workspace" });
       const host = await remote.hosts.add({ connection: "127.0.0.1:1", sourceKey: "plugin-stable", metadata: { team: "plugin" } });
       return { workspaceId: workspace.id, registrationId: host.registrationId, sourceId: host.source.id };
-    } finally { await remote.dispose(); }
+    } finally { await runtime.dispose(); }
   });
   return () => {};
 }`,
@@ -905,13 +906,14 @@ test("source-key registration remains idempotent at directory capacity", async (
 
 /** Real WebSocket proxy records the A–B physical wire without replacing either daemon. */
 async function hostWire(b: TestPaseoDaemon) {
+  let destination = b;
   const http = createServer();
   const wss = new WebSocketServer({ server: http });
   const frames: { binary: boolean; bytes: Buffer; direction: "toB" | "fromB" }[] = [];
   let connections = 0;
   wss.on("connection", (downstream) => {
     connections++;
-    const upstream = new WebSocket(`ws://127.0.0.1:${b.port}/ws`);
+    const upstream = new WebSocket(`ws://127.0.0.1:${destination.port}/ws`);
     const pending: (() => void)[] = [];
     upstream.on("open", () => {
       for (const send of pending.splice(0)) send();
@@ -948,6 +950,10 @@ async function hostWire(b: TestPaseoDaemon) {
     frames,
     connections: () => connections,
     active: () => wss.clients.size,
+    retarget(next: TestPaseoDaemon) {
+      destination = next;
+      for (const socket of wss.clients) socket.close();
+    },
   };
 }
 
@@ -1302,4 +1308,241 @@ test("cancelling a logical scope during admission settles it and releases its ow
   expect(messages.filter((message) => message.type === "hosts.route.closed")).toHaveLength(1);
   endpoint.close();
   await delivery.close();
+});
+
+test("agent handles keep server identity when agent IDs collide across hosts", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  const directory = await online(origin.paseo);
+  const destination = directory.hosts[0]!.serverId!;
+  const remote = await origin.paseo.hosts.client(destination);
+  const id = crypto.randomUUID();
+  const localAgent = await origin.paseo.agents.create({
+    agentId: id,
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+    title: "On A",
+  });
+  const remoteAgent = await remote.agents.create({
+    agentId: id,
+    cwd: b.staticDir,
+    config: { provider: "codex/test" },
+    title: "On B",
+  });
+  expect(localAgent.address).toEqual({ serverId: directory.self.serverId, agentId: id });
+  expect(remoteAgent.address).toEqual({ serverId: destination, agentId: id });
+  expect(localAgent.serverId).toBe(directory.self.serverId);
+  expect(remoteAgent.serverId).toBe(destination);
+  expect(localAgent.current()?.title).toBe("On A");
+  expect(remoteAgent.current()?.title).toBe("On B");
+  const runtime = origin.paseo.hosts.runtime();
+  cleanup.push(() => runtime.dispose());
+  const direct = await api(b);
+  const directRuntime = direct.paseo.hosts.runtime();
+  cleanup.push(() => directRuntime.dispose());
+  const [firstScope, secondScope] = await Promise.all([
+    runtime.client(destination),
+    runtime.client(destination),
+  ]);
+  expect(firstScope).not.toBe(secondScope);
+  await firstScope.dispose();
+  expect((await secondScope.workspaces.list()).entries).toHaveLength(1);
+  for (const [owner, address, title] of [
+    [runtime, localAgent.address, "On A"],
+    [runtime, remoteAgent.address, "On B"],
+    [directRuntime, remoteAgent.address, "On B"],
+  ] as const) {
+    const agent = await owner.agent(address);
+    expect(agent.address).toEqual(address);
+    expect((await agent.refresh())?.agent.title).toBe(title);
+  }
+  await origin.paseo.hosts.update(directory.hosts[0]!.registrationId, { enabled: false });
+  expect(remoteAgent.address).toEqual({ serverId: destination, agentId: id });
+  const unavailable = await runtime.agent(remoteAgent.address);
+  await expect(unavailable.refresh()).rejects.toThrow();
+  const stillDirect = await directRuntime.agent(remoteAgent.address);
+  expect((await stillDirect.refresh())?.agent.title).toBe("On B");
+  await runtime.dispose();
+  await expect(runtime.agent(localAgent.address)).rejects.toThrow("disposed");
+});
+
+test("established agent identity survives disconnect and rejects a different server on reconnect", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const wire = await hostWire(a);
+  const client = createHostClient(wire.connection, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  cleanup.push(() => client.close());
+  await client.connect();
+  const paseo = createPaseoApi(client);
+  cleanup.push(() => paseo.dispose());
+  const agent = paseo.agents.ref(crypto.randomUUID());
+  const address = agent.address;
+  wire.retarget(b);
+  await expect.poll(() => client.getConnectionState().status).toBe("disconnected");
+  expect(client.getLastServerInfoMessage()).toBeNull();
+  expect(agent.address).toEqual(address);
+  await expect(client.connect()).rejects.toMatchObject({
+    code: "server_id_mismatch",
+    serverId: address.serverId,
+  });
+  expect(agent.address).toEqual(address);
+  expect(client.getConnectionState().status).toBe("disconnected");
+});
+
+test("runtime disposal rejects every pending acquisition and releases the resulting scopes", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  const directory = await online(origin.paseo);
+  const serverId = directory.hosts[0]!.serverId!;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const acquired: ReturnType<typeof createPaseoApi>[] = [];
+  // Delay an ordinary public acquisition; every connection and scope is real.
+  const runtime = new HostRuntime({
+    hosts: {
+      ...origin.paseo.hosts,
+      async client(target) {
+        const client = await origin.paseo.hosts.client(target);
+        acquired.push(client);
+        await gate;
+        return client;
+      },
+    },
+  });
+  cleanup.push(() => runtime.dispose());
+  const calls = [
+    runtime.client(serverId),
+    runtime.client(serverId),
+    runtime.agent({ serverId, agentId: crypto.randomUUID() }),
+  ];
+  const settled = Promise.allSettled(calls);
+  await expect.poll(() => acquired.length).toBe(3);
+  const disposed = runtime.dispose();
+  release();
+  const results = await settled;
+  expect(
+    results.every(
+      (result) => result.status === "rejected" && /disposed/.test(String(result.reason)),
+    ),
+  ).toBe(true);
+  await disposed;
+  for (const client of acquired) await expect(client.workspaces.list()).rejects.toThrow();
+});
+
+test("MCP list_hosts uses the daemon host runtime and returns the same secret-free directory as SDK", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}`, label: "Build box" });
+  await online(origin.paseo);
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } =
+    await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const mcp = new Client({ name: "fleet-regression", version: "1.0.0" });
+  cleanup.push(() => mcp.close());
+  await mcp.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${a.port}/mcp/agents`)),
+  );
+  const result = await mcp.callTool({ name: "list_hosts", arguments: {} });
+  expect(result.isError).not.toBe(true);
+  expect(result.structuredContent).toEqual(await origin.paseo.hosts.list());
+});
+
+test("a changed daemon on physical reconnect remains an inspectable identity failure", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const c = await daemon();
+  const wire = await hostWire(b);
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: wire.connection });
+  const directory = await online(origin.paseo);
+  const registration = directory.hosts[0]!;
+  wire.retarget(c);
+  await expect
+    .poll(async () => (await origin.paseo.hosts.list()).hosts[0]?.error?.code, { timeout: 10000 })
+    .toBe("server_id_mismatch");
+  expect((await origin.paseo.hosts.list()).hosts[0]).toMatchObject({
+    serverId: registration.serverId,
+    status: "error",
+    nextRetryAt: null,
+  });
+  await origin.paseo.hosts.update(registration.registrationId, {
+    connection: wire.connection,
+    replaceIdentity: true,
+  });
+  expect((await online(origin.paseo)).hosts[0]?.serverId).toBe(c.daemon.getServerId());
+}, 20000);
+
+test("runtime disposal ends borrowed agent operations while preserving identity and origin ownership", async () => {
+  const a = await daemon();
+  const origin = await api(a);
+  const local = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const runtime = origin.paseo.hosts.runtime();
+  cleanup.push(() => runtime.dispose());
+  const borrowed = await runtime.agent(local.address);
+  await borrowed.refresh();
+  await runtime.dispose();
+  expect(borrowed.address).toEqual(local.address);
+  expect(borrowed.current()?.id).toBe(local.id);
+  await expect(borrowed.refresh()).rejects.toThrow("disposed");
+  await expect(borrowed.send("must not dispatch")).rejects.toThrow("disposed");
+  await expect(borrowed.archive()).rejects.toThrow("disposed");
+  expect((await local.refresh())?.agent.archivedAt).toBeNull();
+});
+
+test("disposing a daemon-owned runtime closes its source session and failed admission leaves none", async () => {
+  const a = await daemon();
+  const origin = await api(a);
+  const sessions = async () => {
+    const { diagnostic } = await origin.client.collectDiagnostics();
+    const runtimes = /Host runtimes: (\d+)/.exec(diagnostic);
+    const ownedSessions = /Owned sessions: (\d+)/.exec(diagnostic);
+    if (!runtimes || !ownedSessions) throw new Error("Missing host runtime diagnostics");
+    return [Number(runtimes[1]), Number(ownedSessions[1])];
+  };
+  const before = await sessions();
+  const runtime = await a.daemon.createHostRuntime({
+    permissionCeiling: ["daemon.read", "workspace.read"],
+    resolveAdmission: async () => ({
+      principalId: "owner",
+      permissions: ["daemon.read", "workspace.read", "workspace.manage"],
+    }),
+  });
+  cleanup.push(() => runtime.dispose());
+  expect((await runtime.directory()).self.serverId).toBe(a.daemon.getServerId());
+  const scoped = await runtime.client(a.daemon.getServerId());
+  await expect(
+    scoped.workspaces.create({ source: { kind: "directory", path: a.staticDir } }),
+  ).rejects.toMatchObject({ code: "access_denied" });
+  await scoped.dispose();
+  const active = await sessions();
+  expect(active[0]).toBe(before[0]! + 1);
+  expect(active[1]).toBe(before[1]! + 1);
+  await runtime.dispose();
+  await expect.poll(sessions).toEqual(before);
+  await expect(runtime.directory()).rejects.toThrow("disposed");
+  const revoked = Object.assign(new Error("Runtime authority was revoked"), {
+    code: "access_denied",
+  });
+  await expect(
+    a.daemon.createHostRuntime({
+      permissionCeiling: ["daemon.read"],
+      resolveAdmission: async () => {
+        throw revoked;
+      },
+    }),
+  ).rejects.toMatchObject({ code: "access_denied" });
+  await expect.poll(sessions).toEqual(before);
 });

@@ -1,4 +1,7 @@
 import { createHostActions, type PaseoHostActions } from "./hosts/index.js";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
+export type { AgentAddress, WorkspaceAddress } from "@getpaseo/protocol/addresses";
+export { HostRuntime } from "./hosts/runtime.js";
 export type { PaseoHostActions } from "./hosts/index.js";
 export type { HostAdd, HostUpdate, HostSummary, HostDirectory } from "@getpaseo/protocol/hosts";
 import type { OwnedSubscription } from "./connection/index.js";
@@ -343,6 +346,8 @@ export interface PaseoAgentTimelineHandle {
 
 export interface PaseoAgentHandle {
   readonly id: string;
+  readonly serverId: string;
+  readonly address: AgentAddress;
   /**
    * `workspaceId` through `archivedAt` mirror the last snapshot this handle
    * observed. A handle from `ref()` reads `null` for all of them until
@@ -587,6 +592,7 @@ export function createPaseoApi(
     daemonClient,
     listenAgents,
     (agentId, handler) => own(() => daemonClient.subscribeAgentTimeline(agentId, handler)),
+    lifetime.signal,
   );
   const createAgent = async (
     options: PaseoAgentCreateOptions,
@@ -865,16 +871,32 @@ function createAgentHandleFactory(
   daemonClient: DaemonClient,
   listen: (handler: PaseoAgentUpdateHandler) => () => void,
   subscribeTimeline: DaemonClient["subscribeAgentTimeline"],
+  signal: AbortSignal,
 ): AgentHandleFactory {
+  const assertActive = () => {
+    if (signal.aborted) throw new Error("Paseo API is disposed");
+  };
   return (agent) => {
     const id = typeof agent === "string" ? agent : agent.id;
     let current = typeof agent === "string" ? null : agent;
 
     const handle: PaseoAgentHandle = {
       id,
+      get serverId() {
+        const serverId = daemonClient.getServerId();
+        if (!serverId) throw new Error("Connect to the host before reading an agent address");
+        return serverId;
+      },
+      get address() {
+        return { serverId: handle.serverId, agentId: id };
+      },
       timeline: {
-        append: (item) => daemonClient.appendAgentTimelineItem(id, item),
+        append: async (item) => {
+          assertActive();
+          return daemonClient.appendAgentTimelineItem(id, item);
+        },
         refetch: async (options) => {
+          assertActive();
           const result = await daemonClient.fetchAgentTimeline(id, options);
           if (result.agent) {
             current = result.agent;
@@ -943,19 +965,24 @@ function createAgentHandleFactory(
       },
       current: () => current,
       refresh: async (requestId) => {
+        assertActive();
         const result = await daemonClient.fetchAgent({ agentId: id, requestId });
         current = result?.agent ?? null;
         return result;
       },
       send: async (text, options) => {
+        assertActive();
         await daemonClient.sendAgentMessage(id, text, options);
       },
       respondToPermission: async ({ requestId, response }) => {
+        assertActive();
         await daemonClient.respondToPermission(id, requestId, response);
       },
       run: async (text, options) => {
+        assertActive();
         const { timeoutMs, ...sendOptions } = options ?? {};
         await daemonClient.sendAgentMessage(id, text, sendOptions);
+        assertActive();
         const result = await daemonClient.waitForFinish(
           id,
           timeoutMs ?? DEFAULT_WAIT_FOR_FINISH_MS,
@@ -966,6 +993,7 @@ function createAgentHandleFactory(
         return result;
       },
       waitForFinish: async (timeoutMs) => {
+        assertActive();
         const result = await daemonClient.waitForFinish(
           id,
           timeoutMs ?? DEFAULT_WAIT_FOR_FINISH_MS,
@@ -975,8 +1003,12 @@ function createAgentHandleFactory(
         }
         return result;
       },
-      commands: (options) => daemonClient.listCommands({ agentId: id, ...options }),
+      commands: async (options) => {
+        assertActive();
+        return daemonClient.listCommands({ agentId: id, ...options });
+      },
       archive: async () => {
+        assertActive();
         const result = await daemonClient.archiveAgent(id);
         if (current) {
           current = { ...current, archivedAt: result.archivedAt };
@@ -984,6 +1016,7 @@ function createAgentHandleFactory(
         return result;
       },
       detach: async () => {
+        assertActive();
         await daemonClient.detachAgent(id);
       },
       subscribe: (handler) =>

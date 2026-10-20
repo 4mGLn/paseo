@@ -1,4 +1,6 @@
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
+import type { HostRuntime } from "@getpaseo/client";
+import { OWNER_PERMISSIONS } from "./authorization/index.js";
 import { describeHookWorkspace } from "./plugins/lifecycle/index.js";
 import express from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
@@ -119,6 +121,7 @@ export async function fanOutReconciledWorkspaceUpdates(input: {
 }
 
 import { VoiceAssistantWebSocketServer } from "./websocket-server.js";
+import type { HostRuntimeAuthority } from "./host-runtime/index.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { createWorkspaceLabelService } from "./workspace-labels/index.js";
 import { createGitHubService } from "../services/github-service.js";
@@ -469,6 +472,7 @@ export interface PaseoDaemonConfig {
 
 export interface PaseoDaemon {
   config: PaseoDaemonConfig;
+  createHostRuntime(authority: HostRuntimeAuthority): Promise<HostRuntime>;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   terminalManager: TerminalManager;
@@ -1390,9 +1394,30 @@ export async function createPaseoDaemon(
   );
   logger.info({ elapsed: elapsed() }, "Preparing voice and MCP runtime");
 
+  let agentToolHostRuntime: Promise<HostRuntime> | null = null;
+  const createHostRuntime = (authority: HostRuntimeAuthority) => {
+    if (!wsServer) return Promise.reject(new Error("WebSocket server is not running"));
+    return wsServer.createHostRuntime(authority);
+  };
+  const getAgentToolHostRuntime = (): Promise<HostRuntime> => {
+    if (!wsServer) return Promise.reject(new Error("WebSocket server is not running"));
+    if (!agentToolHostRuntime) {
+      // Agent MCP already admits the daemon capability token or owner password.
+      const acquiring = createHostRuntime({
+        permissionCeiling: OWNER_PERMISSIONS,
+        resolveAdmission: async () => ({ principalId: "owner", permissions: OWNER_PERMISSIONS }),
+      });
+      agentToolHostRuntime = acquiring;
+      void acquiring.catch(() => {
+        if (agentToolHostRuntime === acquiring) agentToolHostRuntime = null;
+      });
+    }
+    return agentToolHostRuntime;
+  };
   const createAgentToolHostDependencies = (
     runtime: PaseoToolRuntimeContext,
   ): PaseoToolHostDependencies => ({
+    hostRuntime: getAgentToolHostRuntime,
     agentManager,
     agentStorage,
     terminalManager,
@@ -1864,6 +1889,7 @@ export async function createPaseoDaemon(
 
   return {
     config,
+    createHostRuntime,
     agentManager,
     agentStorage,
     terminalManager,

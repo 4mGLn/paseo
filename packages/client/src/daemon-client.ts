@@ -6446,6 +6446,11 @@ export class DaemonClient {
     return this.lastServerInfoMessage;
   }
 
+  /** Accepted destination identity survives connection gaps. */
+  getServerId(): string | null {
+    return this.destinationServerId ?? null;
+  }
+
   private requireHubRelationshipSupport(): void {
     // COMPAT(hubRelationship): added in v0.1.X, drop the gate when floor >= v0.1.X.
     if (this.lastServerInfoMessage?.features?.hubRelationship !== true) {
@@ -7007,6 +7012,15 @@ export class DaemonClient {
     if (consumerMessage.type === "status") {
       const serverInfo = parseServerInfoStatusPayload(consumerMessage.payload);
       if (serverInfo) {
+        if (this.destinationServerId && serverInfo.serverId !== this.destinationServerId) {
+          const failure = Object.assign(new Error("The connection reached a different host"), {
+            code: "server_id_mismatch",
+            serverId: this.destinationServerId,
+          });
+          this.disposeTransport(1008, failure.message);
+          this.scheduleReconnect({ reason: failure.message, failure });
+          return;
+        }
         this.lastServerInfoMessage = serverInfo;
         this.destinationServerId = serverInfo.serverId;
         this.connectionFailure = undefined;

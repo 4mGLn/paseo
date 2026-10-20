@@ -4,6 +4,7 @@ import type { DaemonTransportFactory } from "../daemon-client-transport-types.js
 import type { OwnedSubscription } from "../connection/index.js";
 import type { PaseoApi, createPaseoApi } from "../index.js";
 import type { HostAdd, HostUpdate, HostSummary, HostDirectory } from "@getpaseo/protocol/hosts";
+import { HostRuntime } from "./runtime.js";
 
 export interface PaseoHostActions {
   list(): Promise<HostDirectory>;
@@ -12,6 +13,7 @@ export interface PaseoHostActions {
   update(registrationId: string, patch: HostUpdate): Promise<HostSummary>;
   remove(registrationId: string): Promise<void>;
   client(serverId: string): Promise<PaseoApi>;
+  runtime(): HostRuntime;
 }
 
 export function createHostChannelTransport(
@@ -127,7 +129,7 @@ export function createHostActions(
   const assertActive = () => {
     if (owner.signal.aborted) throw new Error("Paseo API is disposed");
   };
-  return {
+  const actions: PaseoHostActions = {
     list: () => {
       assertActive();
       return origin.listHosts();
@@ -204,5 +206,14 @@ export function createHostActions(
         throw failure;
       }
     },
+    runtime() {
+      assertActive();
+      const runtime = new HostRuntime({ hosts: actions });
+      const dispose = runtime.dispose.bind(runtime);
+      const scope = owner.own(() => ({ release: dispose }));
+      runtime.dispose = () => scope.release();
+      return runtime;
+    },
   };
+  return actions;
 }
