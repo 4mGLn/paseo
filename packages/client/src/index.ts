@@ -1,3 +1,8 @@
+import { observeAgentRun } from "./agents/runs.js";
+import type { AgentSendResult } from "@getpaseo/protocol/agent-dispatch";
+export type { AgentSendResult } from "@getpaseo/protocol/agent-dispatch";
+import { createScheduleActions, type PaseoScheduleActions } from "./schedules/index.js";
+export type { PaseoScheduleActions } from "./schedules/index.js";
 import { observeAgent } from "./agents/observation.js";
 import { safeRandomId } from "./daemon-client-transport-utils.js";
 import { createHostActions, type PaseoHostActions } from "./hosts/index.js";
@@ -188,6 +193,14 @@ export interface PaseoWorkspaceHandle {
   readonly agents: {
     create(options: PaseoWorkspaceAgentCreateOptions): Promise<PaseoAgentHandle>;
   };
+  readonly scripts: {
+    list(requestId?: string): ReturnType<DaemonClient["listWorkspaceScripts"]>;
+    start(
+      scriptName: string,
+      requestId?: string,
+    ): ReturnType<DaemonClient["startWorkspaceScriptWithStatus"]>;
+    stop(scriptName: string, requestId?: string): ReturnType<DaemonClient["stopWorkspaceScript"]>;
+  };
   readonly terminals: PaseoWorkspaceTerminalActions;
   current(): PaseoWorkspace | null;
   refresh(options?: { requestId?: string }): Promise<PaseoWorkspace | null>;
@@ -238,7 +251,7 @@ export type PaseoAgentProvider = PaseoAgentSessionConfig["provider"];
 export type PaseoProviderFeatureValues = Record<string, unknown>;
 
 export interface PaseoAgentConfig {
-  /** Provider and model in `provider/model` format. */
+  /** Provider ID, or a provider/model pair when inspecting a selected model. */
   provider: string;
   modeId?: PaseoAgentSessionConfig["modeId"];
   thinkingOptionId?: PaseoAgentSessionConfig["thinkingOptionId"];
@@ -273,7 +286,9 @@ export interface PaseoAgentCreateOptions {
   labels?: Record<string, string>;
 }
 
-export type PaseoWorkspaceAgentCreateOptions = Omit<PaseoAgentCreateOptions, "cwd">;
+export type PaseoWorkspaceAgentCreateOptions = Omit<PaseoAgentCreateOptions, "cwd"> & {
+  cwd?: string;
+};
 
 export interface PaseoAgentRefetchResult {
   agent: PaseoAgent;
@@ -351,6 +366,7 @@ export interface PaseoAgentTimelineHandle {
 export type PaseoSubagentCreateOptions = Omit<PaseoAgentCreateOptions, "parent" | "cwd"> & {
   serverId?: string;
   workspaceId?: string;
+  workspace?: import("@getpaseo/protocol/messages").SubagentCreateInput["workspace"];
   cwd?: string;
 };
 export interface PaseoSubagentActions {
@@ -365,6 +381,7 @@ export type { AgentRunRecord, AgentRunCheckpoint } from "@getpaseo/protocol/agen
 export interface PaseoAgentHandle {
   observe(): OwnedSubscription<PaseoAgent>;
   readonly runs: {
+    observe(submissionId: string): ReturnType<DaemonClient["observeAgentRun"]>;
     get(
       submissionId: string,
     ): Promise<import("@getpaseo/protocol/agent-runs").AgentRunRecord | null>;
@@ -395,7 +412,7 @@ export interface PaseoAgentHandle {
   readonly timeline: PaseoAgentTimelineHandle;
   current(): PaseoAgent | null;
   refresh(requestId?: string): Promise<PaseoAgentRefetchResult | null>;
-  send(text: string, options?: PaseoAgentSendOptions): Promise<void>;
+  send(text: string, options?: PaseoAgentSendOptions): Promise<AgentSendResult>;
   respondToPermission(options: PaseoAgentRespondToPermissionOptions): Promise<void>;
   /** Sends a prompt and resolves when that turn finishes or needs attention. */
   run(text: string, options?: PaseoAgentRunOptions): Promise<PaseoAgentRunResult>;
@@ -409,6 +426,13 @@ export interface PaseoAgentHandle {
    * rejecting.
    */
   commands(options?: PaseoAgentCommandsOptions): Promise<PaseoAgentCommandsResult>;
+  cancel(): ReturnType<DaemonClient["cancelAgentWithStatus"]>;
+  close(): Promise<void>;
+  update(input: Parameters<DaemonClient["updateAgent"]>[1]): Promise<void>;
+  setMode(modeId: string): ReturnType<DaemonClient["setAgentMode"]>;
+  configure(
+    config: Parameters<DaemonClient["applyAgentConfig"]>[1],
+  ): ReturnType<DaemonClient["applyAgentConfig"]>;
   archive(): Promise<{ archivedAt: string }>;
   detach(): Promise<void>;
   subscribe(handler: (update: PaseoAgentUpdate) => void): () => void;
@@ -517,16 +541,19 @@ export interface PaseoConfigActions {
 }
 
 export interface PaseoCreationActions {
-  observeAgent(idempotencyKey: string): ReturnType<DaemonClient["observeAgentCreation"]>;
-  /** Cancel only pre-admission creation; admitted work retains its existing receipt. */
-  cancelAgent(input: {
+  observe(input: {
+    kind: "agent" | "workspace";
     idempotencyKey: string;
-    agentId: string;
-  }): Promise<import("@getpaseo/protocol/messages").AgentCreationCancellation>;
+  }): ReturnType<DaemonClient["observeCreation"]>;
+  /** Fences pre-admission creation; admitted work retains its original receipt. */
+  cancel(
+    input: import("@getpaseo/protocol/messages").CreationCancelInput,
+  ): Promise<import("@getpaseo/protocol/messages").CreationCancellation>;
 }
 
 export interface PaseoApi {
   readonly creations: PaseoCreationActions;
+  readonly schedules: PaseoScheduleActions;
   readonly hosts: PaseoHostActions;
   dispose(): Promise<void>;
   observeEvents: DaemonClient["observeEvents"];
@@ -641,6 +668,7 @@ export function createPaseoApi(
     (agentId, handler) => own(() => daemonClient.subscribeAgentTimeline(agentId, handler)),
     lifetime.signal,
     (agentId) => own(() => observeAgent(daemonClient, agentId)),
+    (agentId, submissionId) => own(() => observeAgentRun(daemonClient, agentId, submissionId)),
     (parentId) => ({
       detach: (child) => {
         if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
@@ -655,7 +683,7 @@ export function createPaseoApi(
         return daemonClient.listSubagents(parentId);
       },
       observe: () => own(() => daemonClient.observeSubagents(parentId)),
-      create: async ({ serverId, idempotencyKey, ...input }) => {
+      create: async ({ serverId, idempotencyKey, workspace, ...input }) => {
         if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
         const normalized = toDaemonAgentCreateOptions(
           { ...input, cwd: input.cwd ?? "" },
@@ -664,6 +692,7 @@ export function createPaseoApi(
         const child = await daemonClient.createSubagent(parentId, {
           serverId: serverId ?? requireServerIdentity(daemonClient.getServerId()),
           idempotencyKey: idempotencyKey ?? safeRandomId(),
+          workspace,
           input: { ...normalized, labels: input.labels ?? {}, config: normalized.config! },
         });
         subagentRuntime ??= hosts.runtime();
@@ -722,6 +751,7 @@ export function createPaseoApi(
     createAgent,
     terminals,
     listenWorkspaces,
+    lifetime.signal,
   );
 
   let disposal: Promise<void> | null = null;
@@ -814,11 +844,12 @@ export function createPaseoApi(
 
   return {
     dispose,
+    schedules: createScheduleActions(daemonClient, lifetime.signal),
     creations: {
-      observeAgent: (key) => own(() => daemonClient.observeAgentCreation(key)),
-      cancelAgent: (input) => {
+      observe: (input) => own(() => daemonClient.observeCreation(input)),
+      cancel: (input) => {
         if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
-        return daemonClient.cancelAgentCreation(input);
+        return daemonClient.cancelCreation(input);
       },
     },
     hosts,
@@ -866,8 +897,11 @@ export function createPaseoApi(
       listModels: (provider, options) => daemonClient.listProviderModels(provider, options),
       listModes: (provider, options) => daemonClient.listProviderModes(provider, options),
       listFeatures: ({ provider: providerModel, ...draftConfig }, options) => {
-        const { provider, model } = parseProviderModel(providerModel);
-        return daemonClient.listProviderFeatures({ ...draftConfig, provider, model }, options);
+        const { provider, model } = parseDraftProviderSelection(providerModel);
+        return daemonClient.listProviderFeatures(
+          { ...draftConfig, provider, ...(model ? { model } : {}) },
+          options,
+        );
       },
       listAvailable: (options) => daemonClient.listAvailableProviders(options),
       snapshot: (options) => daemonClient.getProvidersSnapshot(options),
@@ -906,9 +940,13 @@ function createWorkspaceHandleFactory(
   createAgent: CreateAgent,
   terminals: PaseoTerminalActions,
   listen: (handler: PaseoWorkspaceUpdateHandler) => () => void,
+  signal: AbortSignal,
 ): WorkspaceHandleFactory {
   return (workspace) => {
     const id = typeof workspace === "string" ? workspace : workspace.id;
+    const assertActive = () => {
+      if (signal.aborted) throw new Error("Paseo API is disposed");
+    };
     let current = typeof workspace === "string" ? null : workspace;
 
     const refresh = async (options?: { requestId?: string }) => {
@@ -955,9 +993,23 @@ function createWorkspaceHandleFactory(
             throw new Error(`Workspace ${id} has no available directory`);
           }
           return createAgent(
-            { ...options, cwd: snapshot.workspaceDirectory },
-            { workspaceId: id, cwd: snapshot.workspaceDirectory },
+            { ...options, cwd: options.cwd ?? snapshot.workspaceDirectory },
+            { workspaceId: id, cwd: options.cwd ?? snapshot.workspaceDirectory },
           );
+        },
+      },
+      scripts: {
+        list: async (requestId) => {
+          assertActive();
+          return daemonClient.listWorkspaceScripts(id, requestId);
+        },
+        start: async (scriptName, requestId) => {
+          assertActive();
+          return daemonClient.startWorkspaceScriptWithStatus(id, scriptName, requestId);
+        },
+        stop: async (scriptName, requestId) => {
+          assertActive();
+          return daemonClient.stopWorkspaceScript(id, scriptName, requestId);
         },
       },
       terminals: {
@@ -994,6 +1046,7 @@ function createAgentHandleFactory(
   subscribeTimeline: DaemonClient["subscribeAgentTimeline"],
   signal: AbortSignal,
   observeSnapshot: (agentId: string) => OwnedSubscription<PaseoAgent>,
+  observeRun: DaemonClient["observeAgentRun"],
   subagents: (parentId: string) => PaseoSubagentActions,
 ): AgentHandleFactory {
   const assertActive = () => {
@@ -1023,6 +1076,10 @@ function createAgentHandleFactory(
         return observation;
       },
       runs: {
+        observe: (submissionId) => {
+          assertActive();
+          return observeRun(id, submissionId);
+        },
         get: (submissionId) => {
           assertActive();
           return daemonClient.getAgentRun(id, submissionId);
@@ -1120,7 +1177,7 @@ function createAgentHandleFactory(
       },
       send: async (text, options) => {
         assertActive();
-        await daemonClient.sendAgentMessage(id, text, options);
+        return daemonClient.sendAgentMessageWithReceipt(id, text, options);
       },
       respondToPermission: async ({ requestId, response }) => {
         assertActive();
@@ -1154,6 +1211,26 @@ function createAgentHandleFactory(
       commands: async (options) => {
         assertActive();
         return daemonClient.listCommands({ agentId: id, ...options });
+      },
+      cancel: async () => {
+        assertActive();
+        return daemonClient.cancelAgentWithStatus(id);
+      },
+      close: async () => {
+        assertActive();
+        await daemonClient.closeAgentSession(id);
+      },
+      update: async (input) => {
+        assertActive();
+        await daemonClient.updateAgent(id, input);
+      },
+      setMode: (modeId) => {
+        assertActive();
+        return daemonClient.setAgentMode(id, modeId);
+      },
+      configure: (config) => {
+        assertActive();
+        return daemonClient.applyAgentConfig(id, config);
       },
       archive: async () => {
         assertActive();
@@ -1215,6 +1292,13 @@ function normalizeParentAddress(
 function requireServerIdentity(serverId: string | null): string {
   if (!serverId) throw new Error("Connect to the host before addressing a parent agent");
   return serverId;
+}
+
+function parseDraftProviderSelection(selection: string): { provider: string; model?: string } {
+  if (selection.includes("/")) return parseProviderModel(selection);
+  const provider = selection.trim();
+  if (!provider) throw new Error("Provider ID is required");
+  return { provider };
 }
 
 function parseProviderModel(selection: string): { provider: string; model: string } {

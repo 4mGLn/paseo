@@ -533,6 +533,7 @@ class TestAgentSession implements AgentSession {
 }
 
 class ResumeTrackingTestAgentClient extends TestAgentClient {
+  retryStartCount = 0;
   private readonly retryStarted = deferred<void>();
 
   override async resumeSession(
@@ -540,7 +541,10 @@ class ResumeTrackingTestAgentClient extends TestAgentClient {
     config?: Partial<AgentSessionConfig>,
   ): Promise<AgentSession> {
     this.resumeOverrides.push(config);
-    const signalRetryStarted = () => this.retryStarted.resolve();
+    const signalRetryStarted = () => {
+      this.retryStartCount++;
+      this.retryStarted.resolve();
+    };
     return new (class extends TestAgentSession {
       override async startTurn(): Promise<{ turnId: string }> {
         signalRetryStarted();
@@ -665,6 +669,7 @@ async function startAndSteerThroughManager(
     activeTurnBehavior: behavior,
     runOptions: { clientMessageId: "replacement-client" },
   });
+  await manager.waitForAgentRunStart(agent.id);
   return { manager, agentId: agent.id, workdir };
 }
 
@@ -962,6 +967,14 @@ test("orders an accepted steer before output emitted while acknowledgement is pe
     release.resolve();
     await expect(steer).resolves.toEqual({ status: "accepted" });
     await consume;
+    expect(await manager.getAgentRun(agent.id, "hello-client")).toMatchObject({
+      submissionId: "hello-client",
+      turnId: "active-turn-1",
+      status: "completed",
+      checkpoints: expect.arrayContaining([
+        expect.objectContaining({ kind: "completed", result: "terminal output" }),
+      ]),
+    });
     const rows = manager.fetchTimeline(agent.id, { limit: 0 }).rows.filter((row) => {
       return (
         (row.item.type === "user_message" && row.item.text === "hello") ||
@@ -4033,6 +4046,7 @@ test("a prompt after provider replacement reopens the stale session", async () =
     const result = await manager.waitForAgentEvent(created.id);
     expect(result.status).toBe("idle");
     expect(replacement.resumeOverrides).toHaveLength(1);
+    expect(replacement.retryStartCount).toBe(1);
     const timeline = manager.getTimeline(created.id);
     expect(timeline.filter((item) => item.type === "user_message")).toMatchObject([
       { text: "continue after reload", clientMessageId: "stale-session-retry" },
@@ -8630,7 +8644,7 @@ test("fires onAgentArchived for archived parent and cascaded children", async ()
     registry: storage,
     logger,
   });
-  manager.setAgentArchivedCallback((agentId) => {
+  manager.onAgentArchived((agentId) => {
     archivedIds.push(agentId);
   });
 
@@ -8664,7 +8678,7 @@ test("fires onAgentArchived for stored-only snapshot archives", async () => {
     registry: storage,
     logger,
   });
-  manager.setAgentArchivedCallback((agentId) => {
+  manager.onAgentArchived((agentId) => {
     archivedIds.push(agentId);
   });
 
@@ -12171,5 +12185,125 @@ test("run journal reload binds subsequent evidence to the original submission an
     expect(await next.get("agent-original", "submission-original")).toEqual(result);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("all accepted submissions bound to one actual turn recover its evidence after restart", async () => {
+  const { AgentRuns } = await import("./runs/index.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "paseo-run-aliases-"));
+  try {
+    const first = new AgentRuns({ serverId: "srv_original", directory });
+    for (const submission of ["initial", "steer-one", "steer-two"]) {
+      await first.prepare("agent", submission);
+      await first.start("agent", submission, "actual-turn");
+    }
+    const restarted = new AgentRuns({ serverId: "srv_original", directory });
+    await restarted.capture(
+      "agent",
+      "actual-turn",
+      { type: "turn_completed", provider: "codex" },
+      "shared answer",
+    );
+    for (const submission of ["initial", "steer-one", "steer-two"]) {
+      expect(await restarted.get("agent", submission)).toMatchObject({
+        submissionId: submission,
+        turnId: "actual-turn",
+        status: "completed",
+        checkpoints: expect.arrayContaining([
+          expect.objectContaining({ kind: "completed", result: "shared answer" }),
+        ]),
+      });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("run admission permits only owner-rejected identical input, never pending or restarted uncertainty", async () => {
+  const { AgentRuns } = await import("./runs/index.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "run-admission-rejection-"));
+  try {
+    const journal = new AgentRuns({ serverId: "srv_test", directory });
+    await journal.prepare("agent", "submission", { prompt: "original" });
+    await expect(
+      journal.prepare("agent", "submission", { prompt: "original" }),
+    ).rejects.toMatchObject({ code: "submission_exists" });
+    await expect(
+      journal.prepare("agent", "submission", { prompt: "different" }),
+    ).rejects.toMatchObject({ code: "submission_exists" });
+    await journal.rejectUnadmitted("agent", "submission");
+    await expect(
+      journal.prepare("agent", "submission", { prompt: "different" }),
+    ).rejects.toMatchObject({ code: "submission_exists" });
+    await journal.prepare("agent", "submission", { prompt: "original" });
+    const restarted = new AgentRuns({ serverId: "srv_test", directory });
+    expect(await restarted.get("agent", "submission")).toMatchObject({
+      status: "interrupted",
+      turnId: null,
+    });
+    await expect(
+      restarted.prepare("agent", "submission", { prompt: "original" }),
+    ).rejects.toMatchObject({ code: "submission_exists" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a gated first admission excludes competing same-submission work through the manager", async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let admissions = 0;
+  class GatedAdmission extends SteeringTestSession {
+    override async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
+      admissions++;
+      entered.resolve();
+      await release.promise;
+      return super.startTurn(prompt);
+    }
+  }
+  const session = new GatedAdmission({ provider: "codex", cwd: process.cwd() });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    logger,
+    clients: {
+      codex: new (class extends TestAgentClient {
+        override async createSession() {
+          return session;
+        }
+      })(),
+    },
+  });
+  const agent = await manager.createAgent({ provider: "codex", cwd: process.cwd() }, undefined, {
+    workspaceId: undefined,
+  });
+  const consume = (async () => {
+    for await (const _event of manager.streamAgent(agent.id, "original", {
+      clientMessageId: "one-submission",
+    })) {
+    }
+  })();
+  try {
+    await entered.promise;
+    for (const prompt of ["original", "different input"])
+      expect(() =>
+        manager.streamAgent(agent.id, prompt, { clientMessageId: "one-submission" }),
+      ).toThrow("already has an active run");
+    expect(admissions).toBe(1);
+    release.resolve();
+    await manager.waitForAgentRunStart(agent.id);
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+    await consume;
+    expect(admissions).toBe(1);
+    expect(session.startPrompts).toEqual(["original"]);
+    expect(await manager.getAgentRun(agent.id, "one-submission")).toMatchObject({
+      status: "completed",
+      turnId: "active-turn-1",
+    });
+  } finally {
+    release.resolve();
+    await manager.closeAgent(agent.id);
+    await consume.catch(() => {});
   }
 });

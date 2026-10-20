@@ -237,8 +237,16 @@ export class Subagents {
     if (snapshot.archivedAt)
       throw failure("invalid_parent", "Cannot attach a child to an archived parent");
     creation = SubagentCreateInputSchema.parse(creation);
+    const id = createHash("sha256")
+      .update(JSON.stringify([authority.sourceId, parent, creation.idempotencyKey]))
+      .digest("hex");
     let workspaceId = creation.input.workspaceId;
-    if (!workspaceId) {
+    if (creation.workspace) {
+      if (workspaceId)
+        throw failure("invalid_placement", "Choose a new workspace or an existing workspace");
+      workspaceId = creation.workspace.workspaceId ?? `wks_${id.slice(0, 16)}`;
+      creation.workspace.workspaceId = workspaceId;
+    } else if (!workspaceId) {
       if (creation.serverId !== parent.serverId)
         throw failure("workspace_required", "Choose a workspace on the destination host");
       workspaceId = snapshot.workspaceId;
@@ -246,9 +254,6 @@ export class Subagents {
     }
     creation.input.workspaceId = workspaceId;
     const fingerprint = JSON.stringify(creation);
-    const id = createHash("sha256")
-      .update(JSON.stringify([authority.sourceId, parent, creation.idempotencyKey]))
-      .digest("hex");
     const record = await this.transact(async () => {
       const existing = this.records.get(id);
       if (existing) {
@@ -303,6 +308,9 @@ export class Subagents {
     }
     return running;
   }
+  private creationKey(record: RelationshipRecord): string {
+    return record.creation.input.idempotencyKey ?? `subagent:${record.row.id}`;
+  }
   private async createChild(record: RelationshipRecord): Promise<AgentAddress> {
     const { row, creation } = record;
     const creationIntent = record.intent;
@@ -310,9 +318,8 @@ export class Subagents {
       const runtime = await this.runtime(record.authority);
       const api = await runtime.client(row.child.serverId);
       try {
-        const workspace = api.workspaces.ref(creation.input.workspaceId!);
         const { config, initialPrompt, ...input } = creation.input;
-        const agent = await workspace.agents.create({
+        const agentOptions = {
           ...input,
           agentId: row.child.agentId,
           config: {
@@ -321,9 +328,26 @@ export class Subagents {
           },
           parent: row.parent,
           prompt: initialPrompt,
-          idempotencyKey: `subagent:${row.id}`,
-          clientMessageId: `subagent:${row.id}:initial`,
-        });
+          clientMessageId: input.clientMessageId ?? `subagent:${row.id}:initial`,
+        };
+        let agent;
+        if (creation.workspace) {
+          await api.workspaces.create({
+            ...creation.workspace,
+            workspaceId: creation.input.workspaceId,
+            idempotencyKey: this.creationKey(record),
+            agent: { ...agentOptions, cwd: config.cwd },
+          });
+          agent = api.agents.ref(row.child.agentId);
+          await agent.refresh();
+        } else {
+          const workspace = api.workspaces.ref(creation.input.workspaceId!);
+          agent = await workspace.agents.create({
+            ...agentOptions,
+            ...(config.cwd ? { cwd: config.cwd } : {}),
+            idempotencyKey: this.creationKey(record),
+          });
+        }
         await this.transact(async () => {
           // Creation confirms a resource; it never owns a newer lifecycle decision.
           if (!terminalConfirmation(record)) record.confirmed = "attached";
@@ -630,7 +654,10 @@ export class Subagents {
       await api.dispose();
       return null;
     }
-    const observation = api.creations.observeAgent(`subagent:${record.row.id}`);
+    const observation = api.creations.observe({
+      kind: record.creation.workspace ? "workspace" : "agent",
+      idempotencyKey: this.creationKey(record),
+    });
     let latest: CreationSnapshot | null = null;
     const accept = (snapshot: CreationSnapshot | null) => {
       latest = snapshot;
@@ -681,8 +708,11 @@ export class Subagents {
         const destination = await runtime.client(record.row.child.serverId);
         try {
           if (record.intent !== intent) return;
-          const cancellation = await destination.creations.cancelAgent({
-            idempotencyKey: `subagent:${record.row.id}`,
+          const cancellation = await destination.creations.cancel({
+            ...(record.creation.workspace
+              ? { kind: "workspace" as const, workspaceId: record.creation.input.workspaceId! }
+              : { kind: "agent" as const }),
+            idempotencyKey: this.creationKey(record),
             agentId: record.row.child.agentId,
           });
           if (cancellation.status === "canceled") {

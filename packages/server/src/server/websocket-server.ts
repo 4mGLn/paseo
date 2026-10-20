@@ -534,6 +534,7 @@ function requireWebSocketServices(params: {
  */
 export class VoiceAssistantWebSocketServer {
   private readonly subagents: Subagents;
+  private readonly stopAgentArchived: () => void;
   private ownerAdmission: SessionAdmission = OWNER_SESSION_ADMISSION;
   private readonly hostRuntimes = new Set<Awaited<ReturnType<typeof createDaemonHostRuntime>>>();
   private readonly ownedSocketSources = new WeakMap<WebSocketLike, string>();
@@ -765,7 +766,7 @@ export class VoiceAssistantWebSocketServer {
           this.logger.warn({ err: error }, "Failed to reconcile subagent host availability"),
         );
     });
-    this.agentManager.setAgentArchivedCallback(async (agentId) => {
+    this.stopAgentArchived = this.agentManager.onAgentArchived(async (agentId) => {
       const record = await this.agentStorage.get(agentId);
       await this.subagents.parentArchived(
         { serverId, agentId },
@@ -1170,6 +1171,7 @@ export class VoiceAssistantWebSocketServer {
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    this.stopAgentArchived();
     await this.subagents.close();
     await Promise.allSettled([...this.hostRuntimes].map((runtime) => runtime.dispose()));
     this.hostRuntimes.clear();

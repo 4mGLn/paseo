@@ -1,3 +1,4 @@
+import type { AgentMessageSource } from "@getpaseo/protocol/agent-message";
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -12,16 +13,28 @@ const sourceSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("agent-message"),
     agentId: agentIdSchema,
+    serverId: z.string().min(1).optional(),
     title: z.string().min(1).optional(),
   }),
   z.object({
     kind: z.literal("agent-notification"),
     agentId: agentIdSchema,
+    serverId: z.string().min(1).optional(),
     title: z.string().min(1).optional(),
     event: z.enum(["finished", "errored", "permission-required", "closed"]),
   }),
 ]);
 export type AgentPromptSource = z.infer<typeof sourceSchema>;
+
+export function fromMessageSource(source: AgentMessageSource): AgentPromptSource {
+  const identity = {
+    agentId: source.agent.agentId,
+    serverId: source.agent.serverId,
+    title: source.title,
+  };
+  if (source.event === "message") return { ...identity, kind: "agent-message" };
+  return { ...identity, kind: "agent-notification", event: source.event };
+}
 
 interface AgentMessage {
   id: string;
@@ -69,9 +82,10 @@ export function formatAgentMessage(message: AgentMessage): string {
   const attributes = source
     ? `kind="${source.kind}" source-agent-id="${escapeXml(source.agentId)}"`
     : 'kind="user-message"';
+  const server = source?.serverId ? ` source-server-id="${escapeXml(source.serverId)}"` : "";
   const title = source?.title ? ` source-agent-title="${escapeXml(source.title)}"` : "";
   const event = source?.kind === "agent-notification" ? ` event="${source.event}"` : "";
-  return `<paseo-system version="1" ${attributes} message-id="${escapeXml(message.id)}"${title}${event}>\n${escapeXml(message.text)}\n</paseo-system>`;
+  return `<paseo-system version="1" ${attributes} message-id="${escapeXml(message.id)}"${server}${title}${event}>\n${escapeXml(message.text)}\n</paseo-system>`;
 }
 
 export function parseAgentMessage(text: string): AgentMessage | null {
@@ -96,6 +110,7 @@ export function parseAgentMessage(text: string): AgentMessage | null {
   const source = sourceSchema.safeParse({
     kind: attributes.get("kind"),
     agentId: attributes.get("source-agent-id"),
+    serverId: attributes.get("source-server-id"),
     event: attributes.get("event"),
     title: attributes.get("source-agent-title"),
   });
@@ -162,7 +177,13 @@ export function projectAgentMessage(item: AgentTimelineItem): AgentTimelineItem 
     callId: `paseo-agent-message:${message.id}`,
     agentMessage: {
       event: source.kind === "agent-message" ? "message" : source.event,
-      sender: { id: source.agentId, ...(source.title ? { title: source.title } : {}) },
+      sender: {
+        id: source.agentId,
+        ...(source.serverId
+          ? { address: { serverId: source.serverId, agentId: source.agentId } }
+          : {}),
+        ...(source.title ? { title: source.title } : {}),
+      },
       text: message.text,
     },
     // COMPAT(agentMessageToolEnvelope): added in v0.11.1; remove after 2027-04-08

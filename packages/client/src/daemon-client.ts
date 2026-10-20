@@ -1,3 +1,5 @@
+import type { AgentMessageSource } from "@getpaseo/protocol/agent-message";
+import type { AgentSendResult } from "@getpaseo/protocol/agent-dispatch";
 import {
   HOST_ROUTE_OPCODE,
   encodeHostRouteFrame,
@@ -17,7 +19,7 @@ import {
 } from "./connection/index.js";
 import { CreationClient } from "./creation/index.js";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
-import type { z } from "zod";
+import { z } from "zod";
 import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import type { AgentAttentionNotificationPayload } from "@getpaseo/protocol/agent-attention-notification";
@@ -434,6 +436,9 @@ export interface DaemonClientTrace {
 }
 
 export interface SendMessageOptions {
+  source?: AgentMessageSource;
+  /** Suppress delivery when the recipient is archived, instead of unarchiving. */
+  unarchive?: boolean;
   sourceAgentId?: string;
   messageId?: string;
   /** What happens when the agent is mid-turn. The daemon interrupts the turn when omitted. */
@@ -1685,22 +1690,41 @@ export class DaemonClient {
         code: "unsupported_capability",
       });
   }
-  observeAgentCreation(idempotencyKey: string) {
+  observeCreation(input: { kind: "agent" | "workspace"; idempotencyKey: string }) {
     this.requireFleetSubagents();
     return this.observe("creation.subscribe.response", {
       type: "creation.subscribe.request",
-      kind: "agent",
-      idempotencyKey,
+      ...input,
     });
   }
-  async cancelAgentCreation(input: { idempotencyKey: string; agentId: string }) {
+  async closeAgentSession(agentId: string): Promise<void> {
+    this.requireFleetSubagents();
+    await this.sendCorrelatedSessionRequest({
+      message: { type: "agent.close.request", agentId },
+      responseType: "agent.close.response",
+    });
+  }
+  async cancelCreation(creation: import("@getpaseo/protocol/messages").CreationCancelInput) {
     this.requireFleetSubagents();
     return (
       await this.sendCorrelatedSessionRequest({
-        message: { type: "agent.create.cancel.request", ...input },
-        responseType: "agent.create.cancel.response",
+        message: { type: "creation.cancel.request", creation },
+        responseType: "creation.cancel.response",
       })
     ).cancellation;
+  }
+  observeAgentRun(agentId: string, submissionId: string) {
+    this.requireFleetSubagents();
+    return this.owned.observe(async (accept) => {
+      const result = await this.sendCorrelatedSessionRequest({
+        message: { type: "agent.runs.get.request", agentId, submissionId, observe: true },
+        responseType: "agent.runs.get.response",
+      });
+      if (!result.subscriptionId) throw new Error("Host omitted run subscription identity");
+      const snapshot = { run: result.run, subscriptionId: result.subscriptionId };
+      accept(snapshot);
+      return snapshot;
+    });
   }
   async getAgentRun(agentId: string, submissionId: string) {
     this.requireFleetSubagents();
@@ -3783,17 +3807,22 @@ export class DaemonClient {
   // Agent Interaction
   // ============================================================================
 
-  async sendAgentMessage(
-    agentId: string,
-    text: string,
-    options?: SendMessageOptions,
-  ): Promise<void> {
+  private assertMessageSendSupported(options: SendMessageOptions | undefined): void {
     if (
       options?.sourceAgentId &&
       this.lastServerInfoMessage?.features?.agentMessageProvenance !== true
     ) {
       throw new Error("Update the Paseo host to send messages with agent provenance.");
     }
+    if (options?.unarchive !== undefined || options?.source) this.requireFleetSubagents();
+  }
+
+  async sendAgentMessageWithReceipt(
+    agentId: string,
+    text: string,
+    options?: SendMessageOptions,
+  ): Promise<AgentSendResult> {
+    this.assertMessageSendSupported(options);
     const requestId = this.createRequestId();
     const messageId = options?.messageId ?? crypto.randomUUID();
     const message = SessionInboundMessageSchema.parse({
@@ -3802,10 +3831,12 @@ export class DaemonClient {
       agentId,
       text,
       sourceAgentId: options?.sourceAgentId,
-      ...(messageId ? { messageId } : {}),
-      ...(options?.activeTurnBehavior ? { activeTurnBehavior: options.activeTurnBehavior } : {}),
-      ...(options?.images ? { images: options.images } : {}),
-      ...(options?.attachments ? { attachments: options.attachments } : {}),
+      source: options?.source,
+      unarchive: options?.unarchive,
+      messageId,
+      activeTurnBehavior: options?.activeTurnBehavior,
+      images: options?.images,
+      attachments: options?.attachments,
     });
     const payload = await this.sendRequest({
       requestId,
@@ -3822,8 +3853,26 @@ export class DaemonClient {
       },
     });
     if (!payload.accepted) {
-      throw new Error(payload.error ?? "sendAgentMessage rejected");
+      throw Object.assign(new Error(payload.error ?? "sendAgentMessage rejected"), {
+        code: payload.code,
+        outcome: payload.outcome,
+      });
     }
+    // COMPAT(message-dispatch-evidence): added in v0.12, remove after 2027-04-20.
+    // Older hosts and completed receipts have no evidence of their dispatch disposition.
+    return {
+      submissionId: messageId,
+      disposition: payload.dispatch?.disposition ?? "unknown",
+      tracking: payload.dispatch?.tracking ?? "unavailable",
+    };
+  }
+
+  async sendAgentMessage(
+    agentId: string,
+    text: string,
+    options?: SendMessageOptions,
+  ): Promise<void> {
+    await this.sendAgentMessageWithReceipt(agentId, text, options);
   }
 
   async sendMessage(agentId: string, text: string, options?: SendMessageOptions): Promise<void> {
@@ -3864,6 +3913,14 @@ export class DaemonClient {
   }
 
   async cancelAgent(agentId: string): Promise<void> {
+    await this.requestAgentCancellation(agentId);
+  }
+  async cancelAgentWithStatus(agentId: string): Promise<{ cancelled: boolean }> {
+    this.requireFleetSubagents();
+    const result = await this.requestAgentCancellation(agentId);
+    return z.object({ cancelled: z.boolean() }).parse(result);
+  }
+  private async requestAgentCancellation(agentId: string) {
     const requestId = this.createRequestId();
     const message = SessionInboundMessageSchema.parse({
       type: "cancel_agent_request",
@@ -3884,9 +3941,8 @@ export class DaemonClient {
         return msg.payload;
       },
     });
-    if (payload.error) {
-      throw new Error(payload.error);
-    }
+    if (payload.error) throw new Error(payload.error);
+    return payload;
   }
 
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {

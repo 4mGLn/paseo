@@ -1,3 +1,4 @@
+import { SessionInboundMessageSchema } from "@getpaseo/protocol/messages";
 import {
   createMessageReceiptsStub,
   createTestCreationService,
@@ -1053,13 +1054,20 @@ test("create_agent_request keeps requested child cwd when grouped under an exist
         terminalManager: null,
       }),
     );
-    await session.handleMessage({
-      type: "create_agent_request",
-      requestId: "req-create-child",
-      config: { provider: "codex", cwd: child },
-      attachments: [],
-    });
+    await session.handleMessage(
+      SessionInboundMessageSchema.parse({
+        type: "create_agent_request",
+        requestId: "req-create-child",
+        config: { provider: "codex", cwd: child },
+        attachments: [],
+      }),
+    );
 
+    expect(
+      emitted.find(
+        (message) => message.type === "status" && message.payload.status === "agent_create_failed",
+      ),
+    ).toBeUndefined();
     const [createdAgent] = agentManager.listAgents();
     expect(createdAgent?.cwd).toBe(child);
     const createdWorkspace = await workspaceRegistry.get(createdAgent!.workspaceId!);
@@ -1218,14 +1226,21 @@ test("create_agent_request launches from an exact subdirectory in a created work
       terminalManager: null,
     });
 
-    await session.handleMessage({
-      type: "create_agent_request",
-      requestId: "req-create-worktree-child",
-      config: { provider: "codex", cwd: child },
-      attachments: [],
-      worktree: { mode: "branch-off", newBranch: "feature/created-worktree" },
-    });
+    await session.handleMessage(
+      SessionInboundMessageSchema.parse({
+        type: "create_agent_request",
+        requestId: "req-create-worktree-child",
+        config: { provider: "codex", cwd: child },
+        attachments: [],
+        worktree: { mode: "branch-off", newBranch: "feature/created-worktree" },
+      }),
+    );
 
+    expect(
+      emitted.find(
+        (message) => message.type === "status" && message.payload.status === "agent_create_failed",
+      ),
+    ).toBeUndefined();
     const [createdAgent] = agentManager.listAgents();
     const createdWorktreeRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd: createdAgent!.cwd,
@@ -1353,14 +1368,16 @@ test("create_agent_request does not title an existing workspace from the agent p
       }),
     );
 
-    await session.handleMessage({
-      type: "create_agent_request",
-      requestId: "req-create-existing-title",
-      workspaceId: "ws-existing",
-      config: { provider: "codex", cwd },
-      initialPrompt: "Fix login bug\nwith better validation",
-      attachments: [],
-    });
+    await session.handleMessage(
+      SessionInboundMessageSchema.parse({
+        type: "create_agent_request",
+        requestId: "req-create-existing-title",
+        workspaceId: "ws-existing",
+        config: { provider: "codex", cwd },
+        initialPrompt: "Fix login bug\nwith better validation",
+        attachments: [],
+      }),
+    );
     await vi.runAllTimersAsync();
 
     const [createdAgent] = agentManager.listAgents();

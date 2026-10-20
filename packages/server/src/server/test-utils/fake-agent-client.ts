@@ -58,18 +58,24 @@ interface FakeAgentSessionOptions {
   sessionId?: string;
   memoryMarker?: string | null;
   closeSession?: () => Promise<void>;
+  beforeSetFeature?: (featureId: string, value: unknown) => Promise<void>;
   onStartTurn?: (prompt: AgentPromptInput, config: AgentSessionConfig) => void;
   beforeTurnComplete?: (prompt: AgentPromptInput) => Promise<void>;
   historyEvents?: readonly AgentStreamEvent[];
+  steerActiveTurn?: AgentSession["steerActiveTurn"];
+  tryHandleOutOfBand?: AgentSession["tryHandleOutOfBand"];
 }
 
 export interface TestAgentClientOptions {
   beforeCreateSession?: (config: AgentSessionConfig) => Promise<void>;
   closeSession?: () => Promise<void>;
+  beforeSetFeature?: (featureId: string, value: unknown) => Promise<void>;
   onStartTurn?: (prompt: AgentPromptInput, config: AgentSessionConfig) => void;
   beforeTurnComplete?: (prompt: AgentPromptInput) => Promise<void>;
   supportsMcpServers?: boolean;
   historyEvents?: readonly AgentStreamEvent[];
+  steerActiveTurn?: AgentSession["steerActiveTurn"];
+  tryHandleOutOfBand?: AgentSession["tryHandleOutOfBand"];
 }
 
 function createDeferred<T>(): Deferred<T> {
@@ -327,6 +333,8 @@ function buildLargeTimelineItem(input: {
 }
 
 class FakeAgentSession implements AgentSession {
+  readonly steerActiveTurn: AgentSession["steerActiveTurn"];
+  readonly tryHandleOutOfBand: AgentSession["tryHandleOutOfBand"];
   readonly capabilities: AgentCapabilityFlags;
   readonly id: string;
   private readonly providerName: string;
@@ -341,6 +349,7 @@ class FakeAgentSession implements AgentSession {
   private activeForegroundTurnId: string | null = null;
 
   private readonly closeSession: (() => Promise<void>) | undefined;
+  private readonly beforeSetFeature: TestAgentClientOptions["beforeSetFeature"];
   private readonly onStartTurn: TestAgentClientOptions["onStartTurn"];
   private readonly beforeTurnComplete: ((prompt: AgentPromptInput) => Promise<void>) | undefined;
   private readonly historyEvents: readonly AgentStreamEvent[] | undefined;
@@ -355,9 +364,12 @@ class FakeAgentSession implements AgentSession {
     this.id = options.sessionId ?? randomUUID();
     this.memoryMarker = options.memoryMarker ?? null;
     this.closeSession = options.closeSession;
+    this.beforeSetFeature = options.beforeSetFeature;
     this.onStartTurn = options.onStartTurn;
     this.beforeTurnComplete = options.beforeTurnComplete;
     this.historyEvents = options.historyEvents;
+    this.steerActiveTurn = options.steerActiveTurn;
+    this.tryHandleOutOfBand = options.tryHandleOutOfBand;
     this.historyPath = path.join(
       tmpdir(),
       "paseo-fake-provider-history",
@@ -865,6 +877,7 @@ class FakeAgentSession implements AgentSession {
   }
 
   async setFeature(featureId: string, value: unknown): Promise<void> {
+    await this.beforeSetFeature?.(featureId, value);
     this.config.featureValues = {
       ...this.config.featureValues,
       [featureId]: value,
@@ -1232,9 +1245,12 @@ class FakeAgentClient implements AgentClient {
       config: { ...config },
       supportsMcpServers: this.options.supportsMcpServers,
       closeSession: this.options.closeSession,
+      beforeSetFeature: this.options.beforeSetFeature,
       onStartTurn: this.options.onStartTurn,
       beforeTurnComplete: this.options.beforeTurnComplete,
       historyEvents: this.options.historyEvents,
+      steerActiveTurn: this.options.steerActiveTurn,
+      tryHandleOutOfBand: this.options.tryHandleOutOfBand,
     });
   }
 
@@ -1259,9 +1275,12 @@ class FakeAgentClient implements AgentClient {
       sessionId: handle.sessionId,
       memoryMarker: typeof marker === "string" ? marker : null,
       closeSession: this.options.closeSession,
+      beforeSetFeature: this.options.beforeSetFeature,
       onStartTurn: this.options.onStartTurn,
       beforeTurnComplete: this.options.beforeTurnComplete,
       historyEvents: this.options.historyEvents,
+      steerActiveTurn: this.options.steerActiveTurn,
+      tryHandleOutOfBand: this.options.tryHandleOutOfBand,
     });
   }
 

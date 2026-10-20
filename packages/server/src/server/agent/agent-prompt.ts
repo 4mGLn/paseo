@@ -37,7 +37,7 @@ export interface StartAgentRunOptions {
   clearPendingPermissions?: boolean;
 }
 
-export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
+export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started" | "suppressed";
 
 async function steerOrReplaceActiveRun(
   agentManager: AgentRunController,
@@ -289,14 +289,18 @@ export async function waitForAgentRunStartWithTimeout(
 
 async function resolvePromptSource(
   source: AgentPromptSource | undefined,
-  manager: Pick<AgentManager, "getAgent">,
+  manager: Pick<AgentManager, "getAgent" | "serverId">,
   storage: AgentStorage,
 ): Promise<AgentPromptSource | undefined> {
   if (!source) return undefined;
+  // COMPAT(local-message-source): added in v0.12, remove after 2027-04-20.
+  // Legacy callers identify a source on this daemon. Qualify once before dispatch.
+  const qualified = { ...source, serverId: source.serverId ?? manager.serverId };
+  if (qualified.serverId !== manager.serverId) return qualified;
   const title = (
     manager.getAgent(source.agentId)?.config.title ?? (await storage.get(source.agentId))?.title
   )?.trim();
-  return title ? { ...source, title } : source;
+  return title ? { ...qualified, title } : qualified;
 }
 
 /**
@@ -307,8 +311,8 @@ async function resolvePromptSource(
  * chat mentions, notify-on-finish) MUST go through this so behavior can never
  * drift between them.
  *
- * When `unarchive` is false and the agent is archived, the call is a silent
- * no-op (returns the normal turn-start disposition) — the agent is not run.
+ * When `unarchive` is false and the agent is archived, dispatch is suppressed.
+ * No provider turn or run tracking record is created.
  */
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
@@ -319,7 +323,7 @@ export async function sendPromptToAgent(
   let archivedAtToRestore: string | null = null;
   if (record?.archivedAt) {
     if (!unarchive) {
-      return { disposition: "turn_started" };
+      return { disposition: "suppressed" };
     }
     if (await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId)) {
       archivedAtToRestore = record.archivedAt;

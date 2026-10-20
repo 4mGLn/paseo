@@ -266,11 +266,13 @@ test("createPaseoApi borrows daemon capabilities without exposing connection own
   expect(Object.keys(paseo).sort()).toEqual([
     "agents",
     "config",
+    "creations",
     "dispose",
     "hosts",
     "observeEvents",
     "projects",
     "providers",
+    "schedules",
     "terminals",
     "workspaces",
   ]);

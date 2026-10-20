@@ -158,7 +158,11 @@ const seededAgentProfile = {
 };
 
 function createRecordingAgentClients(): Record<AgentProvider, AgentClient> {
-  const baseClients = createTestAgentClients();
+  const baseClients = createTestAgentClients({
+    beforeSetFeature: async (featureId) => {
+      if (featureId !== "test_feature") throw new Error(`Unsupported feature: ${featureId}`);
+    },
+  });
   launchConfigsByProvider = {};
   const wrappedClients: Record<AgentProvider, AgentClient> = {};
 
@@ -607,6 +611,92 @@ describe("Suite A: Core Fixes", () => {
     } finally {
       await archiveAgentIfPresent(agentId);
     }
+  });
+
+  test("MCP settings failure preserves metadata and no-op update preserves the full snapshot", async () => {
+    const agentId = await createTopLevelAgent();
+    try {
+      await callToolStructured(topLevelClient, "update_agent", {
+        agentId,
+        name: "Configured metadata",
+        labels: { role: "worker" },
+        settings: {
+          modeId: "default",
+          model: "claude-test-model",
+          features: { test_feature: true },
+        },
+      });
+      const before = await callToolStructured(topLevelClient, "get_agent_status", { agentId });
+      expect(before.snapshot).toMatchObject({
+        id: agentId,
+        title: "Configured metadata",
+        model: "claude-test-model",
+        currentModeId: "default",
+        labels: { role: "worker" },
+        capabilities: expect.any(Object),
+        availableModes: expect.any(Array),
+        pendingPermissions: [],
+        runtimeInfo: expect.any(Object),
+        persistence: expect.any(Object),
+      });
+      expectAgentFeatureValue(
+        z.record(z.string(), z.unknown()).parse(before.snapshot),
+        "test_feature",
+        true,
+      );
+      expect(await callToolStructured(topLevelClient, "update_agent", { agentId })).toMatchObject({
+        success: true,
+      });
+      expect(
+        (await callToolStructured(topLevelClient, "get_agent_status", { agentId })).snapshot,
+      ).toEqual(before.snapshot);
+      await expectToolError(
+        topLevelClient,
+        "update_agent",
+        {
+          agentId,
+          name: "Must not persist",
+          labels: { role: "changed" },
+          settings: { features: { unsupported_feature: true } },
+        },
+        /feature/i,
+      );
+      expect(
+        (await callToolStructured(topLevelClient, "get_agent_status", { agentId })).snapshot,
+      ).toEqual(before.snapshot);
+    } finally {
+      await archiveAgentIfPresent(agentId);
+    }
+  });
+
+  test("MCP reads archived history and hides internal stored agents", async () => {
+    const agentId = await createTopLevelAgent();
+    await callToolStructured(topLevelClient, "archive_agent", { agentId });
+    expect(await callToolStructured(topLevelClient, "get_agent_status", { agentId })).toMatchObject(
+      {
+        status: "closed",
+        snapshot: { id: agentId, archivedAt: expect.any(String) },
+      },
+    );
+    const now = new Date().toISOString();
+    const internalId = crypto.randomUUID();
+    await daemonHandle.daemon.agentStorage.upsert({
+      id: internalId,
+      internal: true,
+      provider: "claude",
+      cwd: parentAgentCwd,
+      createdAt: now,
+      updatedAt: now,
+      labels: {},
+      lastStatus: "closed",
+      title: "Internal history",
+    });
+    await expectToolError(
+      topLevelClient,
+      "get_agent_status",
+      { agentId: internalId },
+      /not found/i,
+    );
   });
 
   test("inspect_provider returns draft provider features over MCP", async () => {
@@ -1087,4 +1177,212 @@ describe("Suite E: Workspace Tools", () => {
           .catch(() => undefined);
     }
   });
+});
+
+test("MCP qualified control addresses the selected daemon with colliding agent IDs through one SDK workflow", async () => {
+  const { createHostClient } = await import("@getpaseo/client/node");
+  const { createPaseoApi } = await import("@getpaseo/client");
+  const b = await createTestPaseoDaemon();
+  const sourceClient = createHostClient(`127.0.0.1:${daemonHandle.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  const targetClient = createHostClient(`127.0.0.1:${b.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  await Promise.all([sourceClient.connect(), targetClient.connect()]);
+  const source = createPaseoApi(sourceClient);
+  const target = createPaseoApi(targetClient);
+  try {
+    const agentId = crypto.randomUUID();
+    await source.agents.create({
+      agentId,
+      cwd: daemonHandle.staticDir,
+      title: "Origin identity",
+      config: { provider: "claude/claude-test-model" },
+    });
+    await target.agents.create({
+      agentId,
+      cwd: b.staticDir,
+      title: "Destination identity",
+      config: { provider: "claude/claude-test-model" },
+    });
+    const registration = await source.hosts.add({ connection: `127.0.0.1:${b.port}` });
+    await expect.poll(async () => (await source.hosts.list()).hosts[0]?.status).toBe("online");
+    const serverId = b.daemon.getServerId();
+    const status = await callToolStructured(topLevelClient, "get_agent_status", {
+      serverId,
+      agentId,
+    });
+    expect(status).toMatchObject({
+      serverId,
+      snapshot: { id: agentId, title: "Destination identity" },
+    });
+    await callToolStructured(topLevelClient, "update_agent", {
+      serverId,
+      agentId,
+      name: "Changed through selected host",
+    });
+    await callToolStructured(topLevelClient, "set_agent_mode", {
+      serverId,
+      agentId,
+      modeId: "default",
+    });
+    expect((await target.agents.ref(agentId).refresh())?.agent).toMatchObject({
+      title: "Changed through selected host",
+      currentModeId: "default",
+    });
+    expect((await source.agents.ref(agentId).refresh())?.agent.title).toBe("Origin identity");
+    expect(
+      await callToolStructured(topLevelClient, "cancel_agent", { serverId, agentId }),
+    ).toMatchObject({ serverId, success: false });
+    expect(
+      await callToolStructured(topLevelClient, "kill_agent", { serverId, agentId }),
+    ).toMatchObject({ serverId, success: true });
+    expect(await target.agents.ref(agentId).refresh()).not.toBeNull();
+    expect((await source.agents.ref(agentId).refresh())?.agent.title).toBe("Origin identity");
+    expect(await callToolStructured(topLevelClient, "get_agent_status", { agentId })).toMatchObject(
+      { serverId: daemonHandle.daemon.getServerId(), snapshot: { title: "Origin identity" } },
+    );
+    await source.hosts.update(registration.registrationId, { enabled: false });
+    const failure = await topLevelClient.callTool({
+      name: "get_agent_status",
+      args: { serverId, agentId },
+    });
+    expect(failure.isError).toBe(true);
+    expect(getStructuredContent(failure)).toMatchObject({
+      serverId,
+      code: "host_disabled",
+      error: expect.any(String),
+    });
+  } finally {
+    await Promise.allSettled([source.dispose(), target.dispose()]);
+    await Promise.allSettled([sourceClient.close(), targetClient.close()]);
+    await b.close();
+  }
+});
+
+test("MCP preserves selected destination and unknown submitted-action outcome at the client response", async () => {
+  const { createHostClient } = await import("@getpaseo/client/node");
+  const { createPaseoApi } = await import("@getpaseo/client");
+  let release!: () => void;
+  let reached!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let closes = 0;
+  const b = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      closeSession: async () => {
+        closes++;
+        reached();
+        await gate;
+      },
+    }),
+  });
+  const sourceClient = createHostClient(`127.0.0.1:${daemonHandle.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  const targetClient = createHostClient(`127.0.0.1:${b.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  await Promise.all([sourceClient.connect(), targetClient.connect()]);
+  const source = createPaseoApi(sourceClient);
+  const target = createPaseoApi(targetClient);
+  try {
+    const agent = await target.agents.create({
+      cwd: b.staticDir,
+      title: "Uncertain close",
+      config: { provider: "codex/test" },
+    });
+    const registration = await source.hosts.add({ connection: `127.0.0.1:${b.port}` });
+    await expect
+      .poll(
+        async () =>
+          (await source.hosts.list()).hosts.find(
+            (host) => host.registrationId === registration.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    const closing = topLevelClient.callTool({
+      name: "kill_agent",
+      args: { serverId: agent.serverId, agentId: agent.id },
+    });
+    void closing.catch(() => {});
+    await ready;
+    await source.hosts.update(registration.registrationId, { enabled: false });
+    const failure = await closing;
+    expect(failure.isError).toBe(true);
+    expect(getStructuredContent(failure)).toMatchObject({
+      serverId: agent.serverId,
+      code: "DAEMON_CONNECTION_LOST",
+      outcome: "unknown",
+    });
+    release();
+    await expect.poll(async () => (await agent.refresh())?.agent.status).toBe("closed");
+    expect(closes).toBe(1);
+  } finally {
+    release();
+    await Promise.allSettled([source.dispose(), target.dispose()]);
+    await Promise.allSettled([sourceClient.close(), targetClient.close()]);
+    await b.close();
+  }
+});
+
+test("MCP provider discovery uses the selected host profiles and models", async () => {
+  const { createHostClient } = await import("@getpaseo/client/node");
+  const { createPaseoApi } = await import("@getpaseo/client");
+  const profile = { ...seededAgentProfile, id: "destination-profile", name: "Destination work" };
+  const b = await createTestPaseoDaemon({ agentProfiles: [profile] });
+  const client = createHostClient(`127.0.0.1:${daemonHandle.port}`, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  await client.connect();
+  const source = createPaseoApi(client);
+  try {
+    const registration = await source.hosts.add({ connection: `127.0.0.1:${b.port}` });
+    await expect
+      .poll(
+        async () =>
+          (await source.hosts.list()).hosts.find(
+            (host) => host.registrationId === registration.registrationId,
+          )?.status,
+      )
+      .toBe("online");
+    const serverId = b.daemon.getServerId();
+    expect(await callToolStructured(topLevelClient, "list_profiles", { serverId })).toMatchObject({
+      serverId,
+      profiles: [profile],
+    });
+    expect(await callToolStructured(topLevelClient, "list_providers", { serverId })).toMatchObject({
+      serverId,
+      providers: expect.arrayContaining([expect.objectContaining({ id: "codex" })]),
+    });
+    expect(
+      await callToolStructured(topLevelClient, "list_models", { serverId, provider: "codex" }),
+    ).toMatchObject({ serverId, provider: "codex", models: expect.any(Array) });
+    const inspected = await callToolStructured(topLevelClient, "inspect_provider", {
+      serverId,
+      provider: "codex",
+      cwd: b.staticDir,
+    });
+    expect(inspected.error).toBeUndefined();
+    expect(inspected).toMatchObject({
+      serverId,
+      provider: "codex",
+      enabled: true,
+      features: expect.any(Array),
+    });
+  } finally {
+    await source.dispose();
+    await client.close();
+    await b.close();
+  }
 });

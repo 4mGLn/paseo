@@ -767,14 +767,14 @@ export class AgentManager {
   ) => ProviderPaseoToolsPolicy | undefined;
   private appendSystemPrompt: string;
   private onAgentAttention?: AgentAttentionCallback;
-  private onAgentArchived?: AgentArchivedCallback;
+  private readonly agentArchivedListeners = new Set<AgentArchivedCallback>();
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
   private acceptingAgentRegistrations = true;
 
-  private readonly serverId: string;
+  readonly serverId: string;
 
   constructor(options: AgentManagerOptions) {
     this.serverId = options.serverId;
@@ -866,12 +866,19 @@ export class AgentManager {
     this.onAgentAttention = callback;
   }
 
+  observeAgentRun(...args: Parameters<AgentRuns["observe"]>) {
+    return this.runJournal.observe(...args);
+  }
+
   getAgentRun(agentId: string, submissionId: string) {
     return this.runJournal.get(agentId, submissionId);
   }
 
-  setAgentArchivedCallback(callback: AgentArchivedCallback): void {
-    this.onAgentArchived = callback;
+  onAgentArchived(callback: AgentArchivedCallback): () => void {
+    this.agentArchivedListeners.add(callback);
+    return () => {
+      this.agentArchivedListeners.delete(callback);
+    };
   }
 
   setMcpBaseUrl(url: string | null): void {
@@ -1988,14 +1995,14 @@ export class AgentManager {
   }
 
   private async fireAgentArchived(agentId: string): Promise<void> {
-    const callback = this.onAgentArchived;
-    if (!callback) {
-      return;
-    }
-    try {
-      await callback(agentId);
-    } catch (error) {
-      this.logger.warn({ err: error, agentId }, "onAgentArchived callback failed");
+    const results = await Promise.allSettled(
+      [...this.agentArchivedListeners].map(async (listener) => {
+        await listener(agentId);
+      }),
+    );
+    for (const result of results) {
+      if (result.status === "rejected")
+        this.logger.warn({ err: result.reason, agentId }, "Agent archive listener failed");
     }
   }
 
@@ -2572,7 +2579,7 @@ export class AgentManager {
     const { agent, agentId, pendingRun, prompt, options } = params;
     try {
       const submissionId = options?.clientMessageId ?? pendingRun.token;
-      await this.runJournal.prepare(agentId, submissionId);
+      await this.runJournal.prepare(agentId, submissionId, { prompt, options });
       const result = await agent.session.startTurn(prompt, options);
       try {
         await this.runJournal.start(agentId, submissionId, result.turnId);
@@ -2593,6 +2600,14 @@ export class AgentManager {
         throw error;
       }
       if (isStaleProviderSessionError(error)) {
+        await this.runJournal
+          .rejectUnadmitted(agentId, options?.clientMessageId ?? pendingRun.token)
+          .catch((journalError) => {
+            this.logger.error(
+              { err: journalError, agentId },
+              "Failed to persist definitive admission rejection",
+            );
+          });
         pendingRun.start = { status: "failed", error: error.message };
         agent.pendingReplacement = false;
         if (!agent.activeForegroundTurnId) agent.lifecycle = "idle";
@@ -3009,6 +3024,12 @@ export class AgentManager {
     if (!clientMessageId) {
       return;
     }
+    await this.runJournal.acceptSteer(agent.id, clientMessageId, expectedTurnId).catch((error) => {
+      this.logger.error(
+        { err: error, agentId: agent.id, submissionId: clientMessageId },
+        "Failed to persist accepted steer identity",
+      );
+    });
     this.recordSubmittedPrompt(agent, prompt, clientMessageId, "accepted", {
       messageId: clientMessageId,
       turnId: expectedTurnId,
@@ -3559,6 +3580,9 @@ export class AgentManager {
               hasStarted = true;
               return;
             }
+            // A run selected for dispatch is still admitting even if the previous
+            // session's idle snapshot is replayed before provider admission settles.
+            if (this.runs.getPendingRun(agentId)?.start.status === "pending") return;
             if (!waitForActive || hasStarted) {
               if (terminalStatusOverride) {
                 currentStatus = terminalStatusOverride;
@@ -4378,6 +4402,15 @@ export class AgentManager {
       options?.fromHistory === true,
       terminalDisposition,
     );
+    if (!options?.fromHistory) {
+      if (terminalDisposition !== "stale")
+        await this.runJournal.capture(agent.id, eventTurnId, event, runResult).catch((error) => {
+          this.logger.error(
+            { err: error, agentId: agent.id, turnId: eventTurnId },
+            "Failed to persist provider checkpoint",
+          );
+        });
+    }
     const dispatchPromise = this.dispatchStreamEventByType({
       agent,
       event,
@@ -4392,13 +4425,6 @@ export class AgentManager {
     }
 
     if (!options?.fromHistory) {
-      if (terminalDisposition !== "stale")
-        await this.runJournal.capture(agent.id, eventTurnId, event, runResult).catch((error) => {
-          this.logger.error(
-            { err: error, agentId: agent.id, turnId: eventTurnId },
-            "Failed to persist provider checkpoint",
-          );
-        });
       if (isTurnTerminalEvent(event)) {
         this.runs.settleTerminalRun(agent.id, eventTurnId);
         if (isForegroundEvent) {

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   CreationSnapshotSchema,
+  CreationCancelInputSchema,
+  type CreationCancelInput,
   type AgentSnapshotPayload,
   type CreationSnapshot,
   type WorkspaceDescriptorPayload,
@@ -128,42 +130,59 @@ export class CreationService {
     input: CreationInput,
     identity: string,
   ): Promise<CreationSnapshot | null> {
-    if (input.kind !== "agent") return null;
-    const agentId = await this.readCancellation(identity);
-    if (!agentId) return null;
-    if (input.agentId && input.agentId !== agentId) throw conflict();
-    return cancellationSnapshot(input.key, agentId);
+    const canceled = await this.readCancellation(identity);
+    if (!canceled) return null;
+    if (
+      (input.agentId && input.agentId !== canceled.agentId) ||
+      (canceled.kind === "workspace" &&
+        input.workspaceId &&
+        input.workspaceId !== canceled.workspaceId)
+    )
+      throw conflict();
+    return cancellationSnapshot(canceled);
   }
 
   /** Fences a creation identity only before admission. Running receipts remain owned by their runner. */
-  cancelAgent(
-    key: string,
-    agentId: string,
+  cancel(
+    input: CreationCancelInput,
   ): Promise<{ status: "canceled" } | { status: "admitted"; creation: CreationSnapshot }> {
-    const identity = identityFor("agent", key);
+    const { idempotencyKey: key, agentId } = input;
+    const identity = identityFor(input.kind, key);
     const operation = this.admission.then(async () => {
       await mkdir(this.directory, { recursive: true });
       const record = await this.read(identity);
       if (record) {
-        if (record.snapshot.agentId !== agentId) throw conflict();
+        if (
+          record.snapshot.agentId !== agentId ||
+          (input.kind === "workspace" && record.snapshot.workspaceId !== input.workspaceId)
+        )
+          throw conflict();
         return { status: "admitted" as const, creation: record.snapshot };
       }
       // COMPAT(agentRequestReceipts): added in v0.8.0, remove after 2027-03-11 once old creation receipts can expire.
       // A legacy receipt is evidence of admission, never permission to cancel an uncertain runner.
       if (
+        input.kind === "agent" &&
         this.legacyDirectory &&
         (await readOptional(join(this.legacyDirectory, `${digest(["create", key])}.json`))) !== null
       )
         throw Object.assign(new Error("Cannot cancel an existing legacy creation receipt"), {
           code: "creation_already_admitted",
         });
-      const canceledAgentId = await this.readCancellation(identity);
-      if (canceledAgentId && canceledAgentId !== agentId) throw conflict();
+      const canceled = await this.readCancellation(identity);
+      if (
+        canceled &&
+        (canceled.agentId !== agentId ||
+          (input.kind === "workspace" &&
+            canceled.kind === "workspace" &&
+            canceled.workspaceId !== input.workspaceId))
+      )
+        throw conflict();
       await writeFileAtomic(
         join(this.directory, `${identity}.canceled.json`),
-        JSON.stringify({ agentId }),
+        JSON.stringify(input),
       );
-      const snapshot = cancellationSnapshot(key, agentId);
+      const snapshot = cancellationSnapshot(input);
       for (const observer of this.observers.get(identity) ?? []) this.notify(observer, snapshot);
       return { status: "canceled" as const };
     });
@@ -173,11 +192,9 @@ export class CreationService {
     );
     return operation;
   }
-  private async readCancellation(identity: string): Promise<string | null> {
+  private async readCancellation(identity: string): Promise<CreationCancelInput | null> {
     const text = await readOptional(join(this.directory, `${identity}.canceled.json`));
-    return text === null
-      ? null
-      : z.object({ agentId: z.string().uuid() }).parse(JSON.parse(text)).agentId;
+    return text === null ? null : CreationCancelInputSchema.parse(JSON.parse(text));
   }
 
   async subscribe(
@@ -199,10 +216,9 @@ export class CreationService {
         });
       }
       if (record?.snapshot.phase === "completed") await this.validateCompleted(record.snapshot);
-      const canceledAgentId = kind === "agent" ? await this.readCancellation(identity) : null;
+      const canceled = await this.readCancellation(identity);
       return {
-        snapshot:
-          record?.snapshot ?? (canceledAgentId ? cancellationSnapshot(key, canceledAgentId) : null),
+        snapshot: record?.snapshot ?? (canceled ? cancellationSnapshot(canceled) : null),
         unsubscribe,
       };
     } catch (error) {
@@ -444,16 +460,16 @@ function conflict(): Error {
     code: "agent_request_key_conflict",
   });
 }
-function cancellationSnapshot(key: string, agentId: string): CreationSnapshot {
+function cancellationSnapshot(input: CreationCancelInput): CreationSnapshot {
   return {
-    kind: "agent",
-    idempotencyKey: key,
+    kind: input.kind,
+    idempotencyKey: input.idempotencyKey,
     revision: 0,
     phase: "failed",
-    workspaceId: null,
-    agentId,
+    workspaceId: input.kind === "workspace" ? input.workspaceId : null,
+    agentId: input.agentId,
     error: "Creation was canceled before admission",
     errorCode: "creation_canceled",
-    failedStage: "agent",
+    failedStage: input.kind,
   };
 }

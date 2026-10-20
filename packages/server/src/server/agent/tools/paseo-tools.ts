@@ -1,5 +1,6 @@
+import { executeHostTool } from "./host-tool.js";
 import { AgentDirectory } from "../directory.js";
-import type { HostRuntime } from "@getpaseo/client";
+import type { HostRuntime, PaseoApi } from "@getpaseo/client";
 import { HostDirectorySchema } from "@getpaseo/protocol/hosts";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
@@ -77,13 +78,6 @@ import {
   waitForAgentRunStartWithTimeout,
 } from "../agent-prompt.js";
 import { respondToAgentPermission } from "../permission-response.js";
-import {
-  archiveAgentCommand,
-  cancelAgentRunCommand,
-  closeAgentCommand,
-  setAgentModeCommand,
-  updateAgentCommand,
-} from "../lifecycle-command.js";
 import type { ForgeService } from "../../../services/forge-service.js";
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
 import type {
@@ -661,7 +655,6 @@ function createToolCatalog(
     workspaceScripts,
     scheduleService,
     providerSnapshotManager,
-    daemonConfigStore,
     callerAgentId,
     resolveSpeakHandler,
     resolveCallerContext,
@@ -706,6 +699,45 @@ function createToolCatalog(
       outputSchema: config.outputSchema,
       handler: handler as PaseoToolDefinition["handler"],
     });
+  };
+  const registerHostTool = <T extends z.ZodRawShape>(
+    name: string,
+    config: Omit<PaseoToolConfig, "inputSchema"> & { inputSchema: T },
+    handler: (
+      input: z.output<z.ZodObject<T>>,
+      api: PaseoApi,
+      context: PaseoToolExecutionContext,
+    ) => Promise<PaseoToolResult>,
+  ) => {
+    registerTool(
+      name,
+      {
+        ...config,
+        inputSchema: {
+          ...config.inputSchema,
+          serverId: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Destination server ID from list_hosts. Omit for this daemon."),
+        },
+        outputSchema: { ...config.outputSchema, serverId: z.string() },
+      },
+      async ({ serverId, ...input }, context) => {
+        if (!options.hostRuntime) throw new Error("Host runtime is not configured");
+        return executeHostTool(options.hostRuntime, serverId, (api, identity) => {
+          const normalized = { ...input };
+          if (identity.originServerId !== identity.serverId && callerContext?.lockedCwd)
+            throw Object.assign(
+              new PaseoToolInputError("This caller is restricted to its origin workspace"),
+              { code: "access_denied" },
+            );
+          if ("cwd" in config.inputSchema && identity.originServerId === identity.serverId)
+            normalized.cwd = resolveScopedCwd(normalized.cwd);
+          return handler(normalized as z.output<z.ZodObject<T>>, api, context);
+        });
+      },
+    );
   };
   const toCatalog = (): PaseoToolCatalog => ({
     tools,
@@ -2096,7 +2128,7 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "get_agent_status",
     {
       title: "Get agent status",
@@ -2110,37 +2142,15 @@ function createToolCatalog(
         snapshot: AgentSnapshotPayloadSchema,
       },
     },
-    async ({ agentId }) => {
-      const snapshot = agentManager.getAgent(agentId);
-      if (snapshot) {
-        const structuredSnapshot = await serializeSnapshotWithMetadata(
-          agentStorage,
-          snapshot,
-          childLogger,
-        );
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            status: snapshot.lifecycle,
-            snapshot: structuredSnapshot,
-          }),
-        };
-      }
-
-      const record = await agentStorage.get(agentId);
-      if (!record || record.internal) {
+    async ({ agentId }, api) => {
+      const refreshed = await api.agents.ref(agentId).refresh();
+      if (!refreshed || refreshed.agent.internal)
         throw new PaseoToolInputError(`Agent ${agentId} not found`);
-      }
-
-      const structuredSnapshot = buildStoredAgentPayload(
-        record,
-        new Set(providerSnapshotManager.listRegisteredProviderIds()),
-      );
       return {
         content: [],
         structuredContent: ensureValidJson({
-          status: structuredSnapshot.status,
-          snapshot: structuredSnapshot,
+          status: refreshed.agent.status,
+          snapshot: refreshed.agent,
         }),
       };
     },
@@ -2215,7 +2225,7 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "cancel_agent",
     {
       title: "Cancel agent run",
@@ -2227,19 +2237,13 @@ function createToolCatalog(
         success: z.boolean(),
       },
     },
-    async ({ agentId }) => {
-      const { cancelled } = await cancelAgentRunCommand(
-        { agentManager, logger: childLogger },
-        agentId,
-      );
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ success: cancelled }),
-      };
+    async ({ agentId }, api) => {
+      const { cancelled } = await api.agents.ref(agentId).cancel();
+      return { content: [], structuredContent: { success: cancelled } };
     },
   );
 
-  registerTool(
+  registerHostTool(
     "archive_agent",
     {
       title: "Archive agent",
@@ -2252,23 +2256,13 @@ function createToolCatalog(
         success: z.boolean(),
       },
     },
-    async ({ agentId }) => {
-      await archiveAgentCommand(
-        {
-          agentManager,
-          agentStorage,
-          logger: childLogger,
-        },
-        agentId,
-      );
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ success: true }),
-      };
+    async ({ agentId }, api) => {
+      await api.agents.ref(agentId).archive();
+      return { content: [], structuredContent: { success: true } };
     },
   );
 
-  registerTool(
+  registerHostTool(
     "kill_agent",
     {
       title: "Kill agent",
@@ -2280,16 +2274,13 @@ function createToolCatalog(
         success: z.boolean(),
       },
     },
-    async ({ agentId }) => {
-      await closeAgentCommand({ agentManager }, agentId);
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ success: true }),
-      };
+    async ({ agentId }, api) => {
+      await api.agents.ref(agentId).close();
+      return { content: [], structuredContent: { success: true } };
     },
   );
 
-  registerTool(
+  registerHostTool(
     "update_agent",
     {
       title: "Update agent",
@@ -2306,28 +2297,17 @@ function createToolCatalog(
         success: z.boolean(),
       },
     },
-    async ({ agentId, name, labels, settings }) => {
-      if (settings?.modeId !== undefined) {
-        await agentManager.setAgentMode(agentId, settings.modeId);
-      }
-      if (settings?.model !== undefined) {
-        await agentManager.setAgentModel(agentId, settings.model);
-      }
-      if (settings?.thinkingOptionId !== undefined) {
-        await agentManager.setAgentThinkingOption(agentId, settings.thinkingOptionId);
-      }
-      if (settings?.features) {
-        for (const [featureId, value] of Object.entries(settings.features)) {
-          await agentManager.setAgentFeature(agentId, featureId, value);
-        }
-      }
-
-      await updateAgentCommand({ agentManager }, { agentId, name, labels });
-
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ success: true }),
-      };
+    async ({ agentId, name, labels, settings }, api) => {
+      const agent = api.agents.ref(agentId);
+      if (settings)
+        await agent.configure({
+          modeId: settings.modeId,
+          modelId: settings.model,
+          thinkingOptionId: settings.thinkingOptionId,
+          featureValues: settings.features,
+        });
+      if (name !== undefined || labels !== undefined) await agent.update({ name, labels });
+      return { content: [], structuredContent: { success: true } };
     },
   );
 
@@ -3040,7 +3020,7 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "list_providers",
     {
       title: "List providers",
@@ -3050,18 +3030,13 @@ function createToolCatalog(
         providers: z.array(ProviderSummarySchema),
       },
     },
-    async () => {
-      const providers = (await providerSnapshotManager.listProviders({ wait: true })).map(
-        toProviderSummary,
-      );
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ providers }),
-      };
+    async (_input, api) => {
+      const providers = (await api.providers.waitForReady()).entries.map(toProviderSummary);
+      return { content: [], structuredContent: ensureValidJson({ providers }) };
     },
   );
 
-  registerTool(
+  registerHostTool(
     "list_models",
     {
       title: "List models",
@@ -3074,22 +3049,17 @@ function createToolCatalog(
         models: z.array(AgentModelSchema),
       },
     },
-    async ({ provider }) => {
-      const models = await providerSnapshotManager.listModels({
-        provider,
-        wait: true,
-      });
+    async ({ provider }, api) => {
+      const result = await api.providers.listModels(provider);
+      if (result.error) throw new PaseoToolInputError(result.error);
       return {
         content: [],
-        structuredContent: ensureValidJson({
-          provider,
-          models,
-        }),
+        structuredContent: ensureValidJson({ provider, models: result.models ?? [] }),
       };
     },
   );
 
-  registerTool(
+  registerHostTool(
     "list_profiles",
     {
       title: "List agent profiles",
@@ -3104,16 +3074,13 @@ function createToolCatalog(
         profiles: z.array(AgentProfileSchema),
       },
     },
-    async () => {
-      const profiles = daemonConfigStore?.get().agentProfiles ?? [];
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ profiles }),
-      };
+    async (_input, api) => {
+      const profiles = (await api.config.get()).config.agentProfiles ?? [];
+      return { content: [], structuredContent: ensureValidJson({ profiles }) };
     },
   );
 
-  registerTool(
+  registerHostTool(
     "inspect_provider",
     {
       title: "Inspect provider",
@@ -3131,34 +3098,27 @@ function createToolCatalog(
         features: z.array(AgentFeatureSchema),
       },
     },
-    async ({ provider, cwd, settings }) => {
-      const resolvedProviderModel = resolveScheduleProviderAndModel({
-        provider,
-        defaultProvider: provider,
-      });
-      const providerId = resolvedProviderModel.provider;
-      const resolvedCwd = resolveScopedCwd(cwd, { required: true });
-      const entry = await providerSnapshotManager.getProvider({
-        cwd: resolvedCwd,
-        provider: providerId,
-        wait: true,
-      });
-      const summary = toProviderSummary(entry);
-      if (!entry.enabled) {
-        throw new PaseoToolInputError(`Provider '${providerId}' is disabled`);
-      }
-      if (entry.status !== "ready") {
+    async ({ provider, cwd, settings }, api) => {
+      if (!cwd) throw new PaseoToolInputError("Choose a working directory on the destination host");
+      const selection = resolveScheduleProviderAndModel({ provider, defaultProvider: provider });
+      const providerId = selection.provider;
+      const entry = (await api.providers.waitForReady({ cwd })).entries.find(
+        (item) => item.provider === providerId,
+      );
+      if (!entry) throw new PaseoToolInputError(`Provider '${providerId}' was not found`);
+      if (!entry.enabled) throw new PaseoToolInputError(`Provider '${providerId}' is disabled`);
+      if (entry.status !== "ready")
         throw new PaseoToolInputError(entry.error ?? `Provider '${providerId}' is unavailable`);
-      }
-      const selectedModel = settings?.model ?? resolvedProviderModel.model;
-      const features = await agentManager.listDraftFeatures({
-        provider: providerId,
-        cwd: resolvedCwd,
-        ...(settings?.modeId ? { modeId: settings.modeId } : {}),
-        ...(selectedModel ? { model: selectedModel } : {}),
-        ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
-        ...(settings?.features ? { featureValues: settings.features } : {}),
+      const selectedModel = settings?.model ?? selection.model;
+      const result = await api.providers.listFeatures({
+        provider: selectedModel ? `${providerId}/${selectedModel}` : providerId,
+        cwd,
+        modeId: settings?.modeId,
+        thinkingOptionId: settings?.thinkingOptionId,
+        featureValues: settings?.features,
       });
+      if (result.error) throw new PaseoToolInputError(result.error);
+      const summary = toProviderSummary(entry);
       return {
         content: [],
         structuredContent: ensureValidJson({
@@ -3169,7 +3129,7 @@ function createToolCatalog(
           status: summary.status,
           modes: summary.modes,
           selectedModel: selectedModel ?? null,
-          features,
+          features: result.features ?? [],
         }),
       };
     },
@@ -3231,7 +3191,7 @@ function createToolCatalog(
     },
   );
 
-  registerTool(
+  registerHostTool(
     "set_agent_mode",
     {
       title: "Set agent session mode",
@@ -3246,12 +3206,9 @@ function createToolCatalog(
         newMode: z.string(),
       },
     },
-    async ({ agentId, modeId }) => {
-      const result = await setAgentModeCommand({ agentManager }, { agentId, modeId });
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ success: true, newMode: result.modeId }),
-      };
+    async ({ agentId, modeId }, api) => {
+      await api.agents.ref(agentId).setMode(modeId);
+      return { content: [], structuredContent: { success: true, newMode: modeId } };
     },
   );
 

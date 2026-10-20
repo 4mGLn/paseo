@@ -1,3 +1,5 @@
+import { fromMessageSource } from "./agent/agent-messages/index.js";
+import type { AgentDispatch } from "@getpaseo/protocol/agent-dispatch";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import type { Subagents, SubagentAuthority } from "./subagents/index.js";
 import { AgentDirectory } from "./agent/directory.js";
@@ -473,7 +475,7 @@ export interface SessionOptions {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   messageReceipts: Pick<MessageReceipts, "send">;
-  creationService: Pick<CreationService, "create" | "subscribe" | "cancelAgent">;
+  creationService: Pick<CreationService, "create" | "subscribe" | "cancel">;
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
@@ -831,7 +833,7 @@ export class Session {
   private readonly workspaceScripts: WorkspaceScriptsService;
   private readonly messageReceipts: Pick<MessageReceipts, "send">;
   private readonly createAgentLifecycleDispatch: CreateAgentLifecycleDispatch;
-  private readonly creationService: Pick<CreationService, "create" | "subscribe" | "cancelAgent">;
+  private readonly creationService: Pick<CreationService, "create" | "subscribe" | "cancel">;
 
   constructor(options: SessionOptions) {
     const {
@@ -2949,7 +2951,7 @@ export class Session {
     source?: object,
   ): Promise<void> | undefined {
     switch (msg.type) {
-      case "agent.create.cancel.request":
+      case "creation.cancel.request":
         return this.handleAgentCreationCancel(msg);
       case "agent.create.request":
         return this.handleAgentCreation(msg, source);
@@ -2963,22 +2965,29 @@ export class Session {
   }
 
   private async handleAgentCreationCancel(
-    message: Extract<SessionInboundMessage, { type: "agent.create.cancel.request" }>,
+    message: Extract<SessionInboundMessage, { type: "creation.cancel.request" }>,
   ): Promise<void> {
     try {
       // The originating execution-scoped capability cannot be reduced to ordinary grants.
       this.subagentOptions.subagentAuthority?.();
-      const result = await this.creationService.cancelAgent(
-        message.idempotencyKey,
-        message.agentId,
-      );
+      const result = await this.creationService.cancel(message.creation);
       const serverId = this.subagentOptions.serverId;
       if (!serverId) throw new Error("Daemon identity is unavailable");
       this.emit({
-        type: "agent.create.cancel.response",
+        type: "creation.cancel.response",
         payload: {
           requestId: message.requestId,
-          cancellation: { ...result, reservedAgent: { serverId, agentId: message.agentId } },
+          cancellation: {
+            ...result,
+            reservation:
+              message.creation.kind === "workspace"
+                ? {
+                    kind: "workspace",
+                    reservedAgent: { serverId, agentId: message.creation.agentId },
+                    reservedWorkspace: { serverId, workspaceId: message.creation.workspaceId },
+                  }
+                : { kind: "agent", reservedAgent: { serverId, agentId: message.creation.agentId } },
+          },
         },
       });
     } catch (error) {
@@ -2997,14 +3006,84 @@ export class Session {
     }
   }
 
+  private async handleAgentClose(
+    message: Extract<SessionInboundMessage, { type: "agent.close.request" }>,
+  ): Promise<void> {
+    try {
+      this.subagentOptions.subagentAuthority?.();
+      await closeAgentCommand({ agentManager: this.agentManager }, message.agentId);
+      this.emit({ type: "agent.close.response", payload: { requestId: message.requestId } });
+    } catch (error) {
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: message.requestId,
+          requestType: message.type,
+          code:
+            error instanceof Error && "code" in error ? String(error.code) : "agent_close_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
   private async handleAgentRunGet(
     message: Extract<SessionInboundMessage, { type: "agent.runs.get.request" }>,
   ): Promise<void> {
-    const run = await this.agentManager.getAgentRun(message.agentId, message.submissionId);
-    this.emit({ type: "agent.runs.get.response", payload: { requestId: message.requestId, run } });
+    try {
+      this.subagentOptions.subagentAuthority?.();
+      if (message.observe) {
+        let stop = () => {};
+        const owner = this.delivery.begin("agent-runs", undefined, () => stop(), message.agentId);
+        try {
+          stop = await this.agentManager.observeAgentRun(
+            message.agentId,
+            message.submissionId,
+            (run) =>
+              owner.emit({
+                type: "agent.runs.get.response",
+                payload: {
+                  requestId: message.requestId,
+                  subscriptionId: owner.id,
+                  run,
+                },
+              }),
+            (run) =>
+              owner.emit({
+                type: "agent.runs.changed",
+                payload: { subscriptionId: owner.id, run },
+              }),
+          );
+          if (owner.signal.aborted) stop();
+        } catch (error) {
+          await owner.release();
+          throw error;
+        }
+        return;
+      }
+      const run = await this.agentManager.getAgentRun(message.agentId, message.submissionId);
+      this.emit({
+        type: "agent.runs.get.response",
+        payload: { requestId: message.requestId, run },
+      });
+    } catch (error) {
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: message.requestId,
+          requestType: message.type,
+          code:
+            error instanceof Error && "code" in error
+              ? String(error.code)
+              : "agent_run_read_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   private dispatchSubagentMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    if (msg.type === "agent.close.request") return this.handleAgentClose(msg);
     if (msg.type === "agent.runs.get.request") return this.handleAgentRunGet(msg);
     if (
       msg.type === "agent.subagents.create.request" ||
@@ -4271,10 +4350,29 @@ export class Session {
       ? (await this.workspaceRegistry.get(id)) !== null
       : this.agentManager.getAgent(id) != null || (await this.agentStorage.get(id)) !== null;
 
-  private createRequestedAgent(
+  private async createRequestedAgent(
     request: AgentCreateRequest,
     observer?: (snapshot: CreationSnapshot) => void,
   ): Promise<CreationSnapshot> {
+    // COMPAT(qualifiedSubagents): added in v0.12, remove after 2027-04-20.
+    // Normalize legacy parent placement before the creation owner reserves its resource.
+    const legacyParentId = request.callerAgentId ?? request.labels[PARENT_AGENT_ID_LABEL];
+    if (legacyParentId && this.subagentOptions.subagents) {
+      const key = request.idempotencyKey ?? request.requestId;
+      const observing = await this.creationService.subscribe("agent", key, observer ?? (() => {}));
+      try {
+        await this.createLegacySubagent(
+          { ...request, type: "create_agent_request", idempotencyKey: key },
+          request.agentId,
+        );
+        const receipt = await this.creationService.subscribe("agent", key, () => {});
+        receipt.unsubscribe();
+        if (!receipt.snapshot) throw new Error("Subagent creation owner omitted its receipt");
+        return receipt.snapshot;
+      } finally {
+        observing.unsubscribe();
+      }
+    }
     const { requestId, type: _type, subscribe: _subscribe, idempotencyKey, ...intent } = request;
     return this.creationService.create(
       {
@@ -4349,7 +4447,7 @@ export class Session {
     request: Extract<SessionInboundMessage, { type: "workspace.create.request" }>,
     source?: object,
   ): Promise<void> {
-    const { requestId, subscribe, type: _type, idempotencyKey, ...intent } = request;
+    const { requestId, subscribe } = request;
     const progress = subscribe
       ? this.delivery.operation(
           (message) =>
@@ -4365,67 +4463,8 @@ export class Session {
       ) {
         throw new Error("Session is not authorized to create an agent");
       }
-      const agentInput = request.agent;
-      const creation = await this.creationService.create(
-        {
-          kind: "workspace",
-          key: idempotencyKey ?? requestId,
-          request: intent,
-          workspaceId: request.workspaceId,
-          agentId: agentInput?.agentId,
-          hasAgent: Boolean(agentInput),
-          hasPrompt: hasInitialCreationPrompt(agentInput),
-          exists: this.creationResourceExists,
-          provision: async (id) => {
-            const descriptor = await this.createRequestedWorkspace(
-              {
-                ...request,
-                firstAgentContext: agentInput
-                  ? { prompt: agentInput.initialPrompt, attachments: agentInput.attachments }
-                  : request.firstAgentContext,
-              },
-              id,
-            );
-            const workspace = await this.workspaceRegistry.get(descriptor.id);
-            return {
-              workspace: descriptor,
-              setupSkippedReason: workspace?.untrustedSource
-                ? formatWorkspaceAutomationBlockedMessage(workspace.untrustedSource)
-                : undefined,
-            };
-          },
-          createAgent: agentInput
-            ? async (id, workspace, onReady) => {
-                if (!workspace?.workspaceDirectory)
-                  throw new Error("Created workspace has no directory");
-                const sourceCwd =
-                  request.source.kind === "directory"
-                    ? request.source.path
-                    : await resolveWorktreeSourceCwd(request.source, this.projectRegistry);
-                const relativeCwd = relative(resolve(sourceCwd), resolve(agentInput.config.cwd));
-                if (
-                  relativeCwd === ".." ||
-                  relativeCwd.startsWith(`..${sep}`) ||
-                  isAbsolute(relativeCwd)
-                )
-                  throw new Error("Agent directory must be inside the workspace source");
-                return this.createSessionAgent(
-                  {
-                    ...agentInput,
-                    type: "create_agent_request",
-                    requestId,
-                    config: {
-                      ...agentInput.config,
-                      cwd: resolve(workspace.workspaceDirectory, relativeCwd),
-                    },
-                    workspaceId: workspace.id,
-                  },
-                  id,
-                  onReady,
-                );
-              }
-            : undefined,
-        },
+      const creation = await this.createRequestedWorkspaceWithAgent(
+        request,
         progress ? (snapshot) => progress.emit(this.creationUpdate(snapshot)) : undefined,
       );
       this.emitForSource(
@@ -4464,6 +4503,114 @@ export class Session {
     } finally {
       await progress?.release();
     }
+  }
+
+  private async createRequestedWorkspaceWithAgent(
+    request: Extract<SessionInboundMessage, { type: "workspace.create.request" }>,
+    observer?: (snapshot: CreationSnapshot) => void,
+  ): Promise<CreationSnapshot> {
+    const { requestId, type: _type, subscribe: _subscribe, idempotencyKey, ...intent } = request;
+    const agentInput = request.agent;
+    const parentId = agentInput?.callerAgentId ?? agentInput?.labels[PARENT_AGENT_ID_LABEL];
+    const { subagents, subagentAuthority, serverId } = this.subagentOptions;
+    if (agentInput && parentId && subagents && subagentAuthority && serverId) {
+      const key = idempotencyKey ?? requestId;
+      const observing = await this.creationService.subscribe(
+        "workspace",
+        key,
+        observer ?? (() => {}),
+      );
+      try {
+        const { callerAgentId: _caller, parent: _parent, ...input } = agentInput;
+        const {
+          type: _workspaceType,
+          requestId: _workspaceRequestId,
+          subscribe: _subscribeWorkspace,
+          agent: _agent,
+          ...workspace
+        } = request;
+        const labels = { ...input.labels };
+        delete labels[PARENT_AGENT_ID_LABEL];
+        await subagents.create(
+          { serverId, agentId: parentId },
+          {
+            serverId,
+            idempotencyKey: key,
+            workspace,
+            input: { ...input, labels, idempotencyKey: key },
+          },
+          subagentAuthority(),
+        );
+        const receipt = await this.creationService.subscribe("workspace", key, () => {});
+        receipt.unsubscribe();
+        if (!receipt.snapshot) throw new Error("Workspace creation owner omitted its receipt");
+        return receipt.snapshot;
+      } finally {
+        observing.unsubscribe();
+      }
+    }
+    return this.creationService.create(
+      {
+        kind: "workspace",
+        key: idempotencyKey ?? requestId,
+        request: intent,
+        workspaceId: request.workspaceId,
+        agentId: agentInput?.agentId,
+        hasAgent: Boolean(agentInput),
+        hasPrompt: hasInitialCreationPrompt(agentInput),
+        exists: this.creationResourceExists,
+        provision: async (id) => {
+          const descriptor = await this.createRequestedWorkspace(
+            {
+              ...request,
+              firstAgentContext: agentInput
+                ? { prompt: agentInput.initialPrompt, attachments: agentInput.attachments }
+                : request.firstAgentContext,
+            },
+            id,
+          );
+          const workspace = await this.workspaceRegistry.get(descriptor.id);
+          return {
+            workspace: descriptor,
+            setupSkippedReason: workspace?.untrustedSource
+              ? formatWorkspaceAutomationBlockedMessage(workspace.untrustedSource)
+              : undefined,
+          };
+        },
+        createAgent: agentInput
+          ? async (id, workspace, onReady) => {
+              if (!workspace?.workspaceDirectory)
+                throw new Error("Created workspace has no directory");
+              const sourceCwd =
+                request.source.kind === "directory"
+                  ? request.source.path
+                  : await resolveWorktreeSourceCwd(request.source, this.projectRegistry);
+              const relativeCwd = relative(resolve(sourceCwd), resolve(agentInput.config.cwd));
+              if (
+                relativeCwd === ".." ||
+                relativeCwd.startsWith(`..${sep}`) ||
+                isAbsolute(relativeCwd)
+              )
+                throw new Error("Agent directory must be inside the workspace source");
+              return this.createSessionAgent(
+                {
+                  ...agentInput,
+                  type: "create_agent_request",
+                  requestId,
+                  config: {
+                    ...agentInput.config,
+                    cwd: resolve(workspace.workspaceDirectory, relativeCwd),
+                  },
+                  workspaceId: workspace.id,
+                },
+                id,
+                onReady,
+              );
+            }
+          : undefined,
+      },
+      observer,
+    );
   }
 
   private async handleCreateAgentRequest(msg: CreateAgentRequestMessage): Promise<void> {
@@ -4560,7 +4707,7 @@ export class Session {
         {
           serverId,
           idempotencyKey: msg.idempotencyKey ?? msg.requestId,
-          input: { ...input, labels, agentId },
+          input: { ...input, labels, agentId, idempotencyKey: msg.idempotencyKey ?? msg.requestId },
         },
         subagentAuthority(),
       );
@@ -4730,6 +4877,9 @@ export class Session {
     }
 
     let config = request.config;
+    // The worktree workflow already maps the requested subdirectory into its checkout.
+    // Workspace identity remains separate from an existing agent's launch directory.
+    const launchCwd = createdWorktree?.workspace.cwd ?? config.cwd;
 
     const intent = await resolveCreateAgentIntent({
       explicitWorkspaceId: createdWorktree?.workspace.workspaceId ?? request.workspaceId,
@@ -4739,13 +4889,13 @@ export class Session {
       labels: request.labels,
       resolveWorkspace: async (workspaceId) => {
         if (createdWorktree?.workspace.workspaceId === workspaceId) {
-          return { workspaceId, cwd: createdWorktree.workspace.cwd };
+          return { workspaceId, cwd: launchCwd };
         }
         const workspace = await this.workspaceRegistry.get(workspaceId);
         if (!workspace || workspace.archivedAt) {
           throw new Error(`Workspace ${workspaceId} not found`);
         }
-        return { workspaceId, cwd: workspace.cwd };
+        return { workspaceId, cwd: launchCwd };
       },
       createWorkspace: async () => ({
         workspaceId: await this.workspaceProvisioning.resolveOrCreateWorkspaceIdForCreateAgent({
@@ -5007,7 +5157,7 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
-      await cancelAgentRunCommand(
+      const { cancelled } = await cancelAgentRunCommand(
         { agentManager: this.agentManager, logger: this.sessionLogger },
         agentId,
       );
@@ -5020,6 +5170,7 @@ export class Session {
             requestId,
             agentId,
             agent: payload,
+            cancelled,
             error: null,
           },
         });
@@ -8488,6 +8639,13 @@ export class Session {
     }
   }
 
+  private legacyMessageSource(
+    agentId: string | undefined,
+  ): import("./agent/agent-messages/index.js").AgentPromptSource | undefined {
+    // COMPAT(local-message-source): added in v0.12, remove after 2027-04-20.
+    return agentId ? { kind: "agent-message", agentId } : undefined;
+  }
+
   private async handleSendAgentMessageRequest(
     msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
   ): Promise<void> {
@@ -8513,21 +8671,23 @@ export class Session {
         {
           agentId,
           messageId: msg.messageId,
+          unarchive: msg.unarchive,
           activeTurnBehavior: msg.activeTurnBehavior,
           textPrefix: msg.text.slice(0, 80),
         },
         "agent.session.send_agent_message",
       );
-      const send = async () => {
+      const send = async (): Promise<AgentDispatch> => {
         const result = await sendPromptToAgent({
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
           agentId,
           prompt,
-          source: msg.sourceAgentId
-            ? { kind: "agent-message", agentId: msg.sourceAgentId }
-            : undefined,
+          source: msg.source
+            ? fromMessageSource(msg.source)
+            : this.legacyMessageSource(msg.sourceAgentId),
           messageId: msg.messageId,
+          unarchive: msg.unarchive,
           activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
           clearPendingPermissions: true,
           logger: this.sessionLogger,
@@ -8539,23 +8699,37 @@ export class Session {
             this.delivery.requestSignal,
           );
         }
+        return {
+          disposition: result.disposition,
+          tracking:
+            result.disposition === "turn_started" || result.disposition === "steered"
+              ? "turn"
+              : "unavailable",
+        };
       };
+      let dispatch: AgentDispatch | void;
       if (msg.messageId) {
-        await this.messageReceipts.send({
+        dispatch = await this.messageReceipts.send({
           agentId,
           messageId: msg.messageId,
           request: {
             prompt,
             sourceAgentId: msg.sourceAgentId,
+            ...(msg.source ? { source: msg.source } : {}),
             activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
+            ...(msg.unarchive !== undefined ? { unarchive: msg.unarchive } : {}),
           },
           prepare: async () => {
-            if (!msg.sourceAgentId) await this.prepareAgentMessage(agentId, msg.text);
+            if (!msg.sourceAgentId && !msg.source) {
+              const recipient = await this.agentStorage.get(agentId);
+              if (msg.unarchive !== false || !recipient?.archivedAt)
+                await this.prepareAgentMessage(agentId, msg.text);
+            }
           },
           send,
         });
       } else {
-        await send();
+        dispatch = await send();
       }
 
       this.emit({
@@ -8564,6 +8738,7 @@ export class Session {
           requestId: msg.requestId,
           agentId,
           accepted: true,
+          ...(dispatch ? { dispatch } : {}),
           error: null,
         },
       });
@@ -8577,6 +8752,12 @@ export class Session {
           agentId: resolved.agentId,
           accepted: false,
           error: errorToFriendlyMessage(error),
+          ...(error instanceof Error && "code" in error && typeof error.code === "string"
+            ? { code: error.code }
+            : {}),
+          ...(error instanceof Error && "outcome" in error && error.outcome === "unknown"
+            ? { outcome: "unknown" as const }
+            : {}),
         },
       });
     }

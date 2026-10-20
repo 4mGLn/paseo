@@ -75,3 +75,23 @@ test("failed local message preparation does not leave an ambiguous receipt", asy
   await requests.send(input);
   expect(sends).toBe(1);
 });
+
+test("accepted untracked and suppressed dispatch evidence survives receipt reconstruction", async () => {
+  const { requests, directory } = await fixture();
+  for (const disposition of ["out_of_band", "suppressed"] as const) {
+    let sends = 0;
+    const dispatch = { disposition, tracking: "unavailable" as const };
+    const input = {
+      agentId: "agent",
+      messageId: disposition,
+      request: { disposition },
+      send: async () => {
+        sends++;
+        return dispatch;
+      },
+    };
+    expect(await requests.send(input)).toEqual(dispatch);
+    expect(await new MessageReceipts(directory).send(input)).toEqual(dispatch);
+    expect(sends).toBe(1);
+  }
+});

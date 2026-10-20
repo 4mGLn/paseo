@@ -1377,7 +1377,7 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveScheduleWorkspaceExternal,
   });
   await scheduleService.start();
-  agentManager.setAgentArchivedCallback(async (agentId) => {
+  const stopScheduleAgentArchived = agentManager.onAgentArchived(async (agentId) => {
     try {
       await scheduleService.completeForAgent(agentId);
     } catch (error) {
@@ -1866,6 +1866,7 @@ export async function createPaseoDaemon(
     await pluginRuntime.stopAllPlugins();
     terminalManager.killAll();
     await speechService.stop();
+    stopScheduleAgentArchived();
     await scheduleService.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {

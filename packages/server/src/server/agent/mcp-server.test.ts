@@ -33,7 +33,6 @@ import { createProviderSnapshotManagerStub } from "../test-utils/session-stubs.j
 import {
   AgentListItemPayloadSchema,
   AgentPermissionRequestPayloadSchema,
-  AgentSnapshotPayloadSchema,
 } from "@getpaseo/protocol/messages";
 import {
   createPersistedProjectRecord,
@@ -5321,87 +5320,6 @@ describe("update_agent MCP tool", () => {
 
     expect(lookupTool(server, "set_agent_feature")).toBeUndefined();
   });
-
-  it("updates runtime settings before metadata", async () => {
-    const { agentManager, agentStorage, spies } = createTestDeps();
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: createOpenCodeManager().manager,
-      logger,
-    });
-    const tool = registeredTool(server, "update_agent");
-    const input = {
-      agentId: "agent-1",
-      name: "Updated agent",
-      labels: { role: "worker" },
-      settings: {
-        modeId: "full-access",
-        model: "gpt-5.4",
-        thinkingOptionId: "high",
-        features: { fast_mode: true },
-      },
-    };
-
-    const parsed = await tool.inputSchema.safeParseAsync(input);
-    expect(parsed.success).toBe(true);
-
-    const response = await tool.handler(input);
-
-    expect(spies.agentManager.setAgentMode).toHaveBeenCalledWith("agent-1", "full-access");
-    expect(spies.agentManager.setAgentModel).toHaveBeenCalledWith("agent-1", "gpt-5.4");
-    expect(spies.agentManager.setAgentThinkingOption).toHaveBeenCalledWith("agent-1", "high");
-    expect(spies.agentManager.setAgentFeature).toHaveBeenCalledWith("agent-1", "fast_mode", true);
-    expect(spies.agentManager.updateAgentMetadata).toHaveBeenCalledWith("agent-1", {
-      title: "Updated agent",
-      labels: { role: "worker" },
-    });
-    expect(response.structuredContent).toEqual({ success: true });
-  });
-
-  it("reports success for a no-op update with neither metadata nor settings", async () => {
-    const { agentManager, agentStorage, spies } = createTestDeps();
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: createOpenCodeManager().manager,
-      logger,
-    });
-    const tool = registeredTool(server, "update_agent");
-
-    const response = await tool.handler({ agentId: "agent-1" });
-
-    expect(response.structuredContent).toEqual({ success: true });
-    expect(spies.agentManager.updateAgentMetadata).not.toHaveBeenCalled();
-    expect(spies.agentManager.setAgentMode).not.toHaveBeenCalled();
-    expect(spies.agentManager.setAgentModel).not.toHaveBeenCalled();
-    expect(spies.agentManager.setAgentThinkingOption).not.toHaveBeenCalled();
-    expect(spies.agentManager.setAgentFeature).not.toHaveBeenCalled();
-  });
-
-  it("does not update metadata when runtime settings fail", async () => {
-    const { agentManager, agentStorage, spies } = createTestDeps();
-    spies.agentManager.setAgentFeature.mockRejectedValue(new Error("unsupported feature"));
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: createOpenCodeManager().manager,
-      logger,
-    });
-    const tool = registeredTool(server, "update_agent");
-
-    await expect(
-      tool.handler({
-        agentId: "agent-1",
-        name: "Should not persist",
-        labels: { role: "worker" },
-        settings: { features: { fast_mode: true } },
-      }),
-    ).rejects.toThrow("unsupported feature");
-
-    expect(spies.agentStorage.get).not.toHaveBeenCalled();
-    expect(spies.agentManager.updateAgentMetadata).not.toHaveBeenCalled();
-  });
 });
 
 describe("rename_workspace MCP tool", () => {
@@ -6779,6 +6697,7 @@ describe("agent snapshot MCP serialization", () => {
           requiresAttention: false,
           attentionReason: null,
           attentionTimestamp: null,
+          parent: null,
           labels: { role: "researcher" },
         },
       ],
@@ -6789,172 +6708,6 @@ describe("agent snapshot MCP serialization", () => {
     expect(structured.agents[0]).not.toHaveProperty("runtimeInfo");
     expect(structured.agents[0]).not.toHaveProperty("persistence");
     expect(structured.agents[0]).not.toHaveProperty("pendingPermissions");
-  });
-
-  it("returns archived agent snapshots from storage for get_agent_status", async () => {
-    const { agentManager, agentStorage, spies } = createTestDeps();
-    const record = createStoredRecord({
-      id: "archived-agent",
-      archivedAt: "2026-04-12T00:00:00.000Z",
-    });
-    spies.agentManager.getAgent.mockReturnValue(null);
-    spies.agentStorage.get.mockResolvedValue(record);
-
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      logger,
-      providerSnapshotManager: createClaudeOnlyManager(),
-    });
-    const tool = registeredTool(server, "get_agent_status");
-    const response = await tool.handler({ agentId: "archived-agent" });
-
-    expect(response.structuredContent).toEqual({
-      status: "closed",
-      snapshot: expect.objectContaining({
-        id: "archived-agent",
-        archivedAt: "2026-04-12T00:00:00.000Z",
-        title: "Stored agent",
-        status: "closed",
-      }),
-    });
-    expect(spies.agentStorage.get).toHaveBeenCalledWith("archived-agent");
-  });
-
-  it("returns full-detail snapshots from get_agent_status", async () => {
-    const { agentManager, agentStorage, spies } = createTestDeps();
-    spies.agentStorage.get.mockResolvedValue({ title: "Full detail agent" });
-    spies.agentManager.getAgent.mockReturnValue(
-      createManagedAgent({
-        id: "full-detail-agent",
-        provider: "codex",
-        cwd: "/tmp/full-detail",
-        config: { model: "gpt-5.4", thinkingOptionId: "high" },
-        runtimeInfo: {
-          provider: "codex",
-          sessionId: "session-full",
-          model: "gpt-5.4",
-          thinkingOptionId: "xhigh",
-          modeId: "auto",
-        },
-        currentModeId: "auto",
-        availableModes: [
-          {
-            id: "auto",
-            label: "Auto",
-            description: "Default coding mode",
-          },
-        ],
-        features: [
-          {
-            type: "toggle",
-            id: "web-search",
-            label: "Web search",
-            value: true,
-          },
-        ],
-        pendingPermissions: new Map(),
-        persistence: {
-          provider: "codex",
-          sessionId: "session-full",
-        },
-        capabilities: {
-          supportsStreaming: false,
-          supportsSessionPersistence: false,
-          supportsSessionListing: true,
-          supportsDynamicModes: false,
-          supportsMcpServers: true,
-          supportsReasoningStream: false,
-          supportsToolInvocations: true,
-          supportsNewProviderCapability: true,
-        },
-      }),
-    );
-
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: createOpenCodeManager().manager,
-      logger,
-    });
-    const tool = registeredTool(server, "get_agent_status");
-    const response = await tool.handler({ agentId: "full-detail-agent" });
-    const snapshot = z.record(z.string(), z.unknown()).parse(response.structuredContent.snapshot);
-
-    const parsed = AgentSnapshotPayloadSchema.safeParse(snapshot);
-    if (!parsed.success) {
-      throw new Error(
-        `get_agent_status response failed AgentSnapshotPayloadSchema: ${JSON.stringify(parsed.error.issues, null, 2)}`,
-      );
-    }
-    expect(response.structuredContent.status).toBe("idle");
-    expect(snapshot).toEqual(
-      expect.objectContaining({
-        id: "full-detail-agent",
-        title: "Full detail agent",
-        provider: "codex",
-        model: "gpt-5.4",
-        thinkingOptionId: "high",
-        effectiveThinkingOptionId: "xhigh",
-        currentModeId: "auto",
-        runtimeInfo: {
-          provider: "codex",
-          sessionId: "session-full",
-          model: "gpt-5.4",
-          thinkingOptionId: "xhigh",
-          modeId: "auto",
-        },
-        persistence: {
-          provider: "codex",
-          sessionId: "session-full",
-        },
-      }),
-    );
-    expect(snapshot.capabilities).toEqual(
-      expect.objectContaining({
-        supportsMcpServers: true,
-        supportsToolInvocations: true,
-      }),
-    );
-    expect(snapshot.availableModes).toEqual([
-      {
-        id: "auto",
-        label: "Auto",
-        description: "Default coding mode",
-      },
-    ]);
-    expect(snapshot.features).toEqual([
-      {
-        type: "toggle",
-        id: "web-search",
-        label: "Web search",
-        value: true,
-      },
-    ]);
-    expect(snapshot.pendingPermissions).toEqual([]);
-  });
-
-  it("does not expose internal stored agents from get_agent_status", async () => {
-    const { agentManager, agentStorage, spies } = createTestDeps();
-    spies.agentManager.getAgent.mockReturnValue(null);
-    spies.agentStorage.get.mockResolvedValue(
-      createStoredRecord({
-        id: "internal-agent",
-        internal: true,
-      }),
-    );
-
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      logger,
-      providerSnapshotManager: createClaudeOnlyManager(),
-    });
-    const tool = registeredTool(server, "get_agent_status");
-
-    await expect(tool.handler({ agentId: "internal-agent" })).rejects.toThrow(
-      "Agent internal-agent not found",
-    );
   });
 
   it("defaults list_agents to caller cwd and excludes archived agents", async () => {
@@ -7144,6 +6897,7 @@ describe("agent snapshot MCP serialization", () => {
       requiresAttention: false,
       attentionReason: null,
       attentionTimestamp: null,
+      parent: null,
       labels: {},
     });
     expect(item).not.toHaveProperty("features");

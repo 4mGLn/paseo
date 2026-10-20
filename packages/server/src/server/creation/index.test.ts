@@ -343,7 +343,9 @@ test("cancellation preserves an admitted outcome-unknown receipt after owner res
   void f.service.create(input);
   await entered.promise;
   const restarted = new CreationService(f.directory, silentLogger);
-  expect(await restarted.cancelAgent(input.key, agent.id)).toMatchObject({
+  expect(
+    await restarted.cancel({ kind: "agent", idempotencyKey: input.key, agentId: agent.id }),
+  ).toMatchObject({
     status: "admitted",
     creation: { phase: "accepted", agentId: agent.id },
   });
@@ -353,7 +355,9 @@ test("cancellation preserves an admitted outcome-unknown receipt after owner res
     failedStage: "agent",
     outcomeUnknown: true,
   });
-  expect(await restarted.cancelAgent(input.key, agent.id)).toMatchObject({
+  expect(
+    await restarted.cancel({ kind: "agent", idempotencyKey: input.key, agentId: agent.id }),
+  ).toMatchObject({
     status: "admitted",
     creation: { phase: "failed", outcomeUnknown: true },
   });

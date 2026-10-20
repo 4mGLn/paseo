@@ -41,8 +41,18 @@ export const AgentRunGetRequestSchema = z.object({
   requestId: z.string(),
   agentId: z.string(),
   submissionId: z.string(),
+  observe: z.boolean().optional(),
 });
 export const AgentRunGetResponseSchema = z.object({
   type: z.literal("agent.runs.get.response"),
-  payload: z.object({ requestId: z.string(), run: AgentRunRecordSchema.nullable() }),
+  payload: z.object({
+    requestId: z.string(),
+    subscriptionId: z.string().optional(),
+    run: AgentRunRecordSchema.nullable(),
+  }),
+});
+
+export const AgentRunChangedSchema = z.object({
+  type: z.literal("agent.runs.changed"),
+  payload: z.object({ subscriptionId: z.string(), run: AgentRunRecordSchema.nullable() }),
 });

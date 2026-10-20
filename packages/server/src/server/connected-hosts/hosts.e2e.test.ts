@@ -1174,7 +1174,7 @@ test("channel output accounts for escaped text, awaits physical drain, and prese
   expect(wss.clients.size).toBe(1);
 });
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
 test.skipIf(process.platform !== "linux" || !existsSync("/usr/sbin/sshd"))(
@@ -2253,12 +2253,15 @@ test("creation cancellation survives destination restart and fences delayed subm
   const origin = await api(first);
   const agentId = crypto.randomUUID();
   const idempotencyKey = "reserved-before-admission";
-  expect(await origin.paseo.creations.cancelAgent({ agentId, idempotencyKey })).toEqual({
+  expect(await origin.paseo.creations.cancel({ kind: "agent", agentId, idempotencyKey })).toEqual({
     status: "canceled",
-    reservedAgent: { serverId: first.daemon.getServerId(), agentId },
+    reservation: {
+      kind: "agent",
+      reservedAgent: { serverId: first.daemon.getServerId(), agentId },
+    },
   });
   await expect(
-    origin.paseo.creations.cancelAgent({ agentId: crypto.randomUUID(), idempotencyKey }),
+    origin.paseo.creations.cancel({ kind: "agent", agentId: crypto.randomUUID(), idempotencyKey }),
   ).rejects.toMatchObject({ code: "agent_request_key_conflict" });
   const viewer = createHostClient(`127.0.0.1:${first.port}`, {
     clientId: crypto.randomUUID(),
@@ -2270,7 +2273,8 @@ test("creation cancellation survives destination restart and fences delayed subm
   const viewerApi = createPaseoApi(viewer);
   cleanup.push(() => viewerApi.dispose());
   await expect(
-    viewerApi.creations.cancelAgent({
+    viewerApi.creations.cancel({
+      kind: "agent",
       agentId: crypto.randomUUID(),
       idempotencyKey: "unauthorized-cancellation",
     }),
@@ -2297,7 +2301,9 @@ test("creation cancellation survives destination restart and fences delayed subm
     }),
   ).rejects.toMatchObject({ code: "agent_request_key_conflict" });
   expect(await next.paseo.agents.ref(agentId).refresh()).toBeNull();
-  expect(await next.paseo.creations.cancelAgent({ agentId, idempotencyKey })).toMatchObject({
+  expect(
+    await next.paseo.creations.cancel({ kind: "agent", agentId, idempotencyKey }),
+  ).toMatchObject({
     status: "canceled",
   });
 });
@@ -2339,68 +2345,99 @@ test("creation cancellation reports admitted work before provider resource readi
   });
   void creating.catch(() => {});
   await ready;
-  const cancellation = await paseo.creations.cancelAgent({ agentId, idempotencyKey });
+  const cancellation = await paseo.creations.cancel({ kind: "agent", agentId, idempotencyKey });
   expect(cancellation).toMatchObject({
     status: "admitted",
-    reservedAgent: { serverId: instance.daemon.getServerId(), agentId },
+    reservation: {
+      kind: "agent",
+      reservedAgent: { serverId: instance.daemon.getServerId(), agentId },
+    },
     creation: { agentId, phase: "accepted" },
   });
   expect(cancellation.status === "admitted" && cancellation.creation.agent).toBeUndefined();
   release();
   await creating;
-  expect(await paseo.creations.cancelAgent({ agentId, idempotencyKey })).toMatchObject({
+  expect(await paseo.creations.cancel({ kind: "agent", agentId, idempotencyKey })).toMatchObject({
     status: "admitted",
     creation: { phase: "completed" },
   });
   expect(prompts).toBe(1);
-  const observation = paseo.creations.observeAgent(idempotencyKey);
+  const observation = paseo.creations.observe({ kind: "agent", idempotencyKey });
   expect((await observation.ready).snapshot).toMatchObject({ phase: "completed", agentId });
   await observation.release();
 });
 
-test("parent archive cancels an unadmitted durable creation after origin restart without a stray child", async () => {
-  const root = await mkdtemp(join(tmpdir(), "paseo-unadmitted-child-"));
-  cleanup.push(() => rm(root, { recursive: true, force: true }));
-  const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
-  cleanup.push(() => a.close());
-  const b = await daemon();
-  const origin = await api(a);
-  const destination = await api(b);
-  const saved = await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
-  await online(origin.paseo);
-  const parent = await origin.paseo.agents.create({
-    cwd: a.staticDir,
-    config: { provider: "codex/test" },
-  });
-  const workspace = await destination.paseo.workspaces.create({
-    source: { kind: "directory", path: b.staticDir },
-  });
-  await origin.paseo.hosts.update(saved.registrationId, { enabled: false });
-  await expect(
-    parent.subagents.create({
-      serverId: b.daemon.getServerId(),
-      workspaceId: workspace.id,
+test.each(["agent", "workspace"] as const)(
+  "parent archive cancels an unadmitted %s creation after origin restart without stray resources",
+  async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-unadmitted-child-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    cleanup.push(() => a.close());
+    const b = await daemon();
+    const origin = await api(a);
+    const destination = await api(b);
+    const saved = await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+    await online(origin.paseo);
+    const parent = await origin.paseo.agents.create({
+      cwd: a.staticDir,
       config: { provider: "codex/test" },
-      idempotencyKey: "unadmitted",
-      prompt: "Must never be replayed",
-    }),
-  ).rejects.toMatchObject({ code: "host_disabled" });
-  const row = (await parent.subagents.list()).rows[0]!;
-  expect(row.phase).toBe("creating");
-  expect(await destination.paseo.agents.ref(row.child.agentId).refresh()).toBeNull();
-  await parent.archive();
-  expect((await parent.subagents.list()).rows[0]?.phase).toBe("detach_pending");
-  await a.close();
-  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
-  cleanup.push(() => restarted.close());
-  const next = await api(restarted);
-  const restored = next.paseo.agents.ref(parent.id);
-  await next.paseo.hosts.update(saved.registrationId, { enabled: true });
-  await online(next.paseo);
-  await expect.poll(async () => (await restored.subagents.list()).rows[0]?.phase).toBe("canceled");
-  expect(await destination.paseo.agents.ref(row.child.agentId).refresh()).toBeNull();
-  await next.paseo.hosts.remove(saved.registrationId);
-});
+    });
+    const workspace = await destination.paseo.workspaces.create({
+      source: { kind: "directory", path: b.staticDir },
+    });
+    await origin.paseo.hosts.update(saved.registrationId, { enabled: false });
+    await expect(
+      parent.subagents.create({
+        serverId: b.daemon.getServerId(),
+        ...(kind === "workspace"
+          ? {
+              workspace: { source: { kind: "directory" as const, path: b.staticDir } },
+              cwd: b.staticDir,
+            }
+          : { workspaceId: workspace.id }),
+        config: { provider: "codex/test" },
+        idempotencyKey: "unadmitted",
+        prompt: "Must never be replayed",
+      }),
+    ).rejects.toMatchObject({ code: "host_disabled" });
+    const row = (await parent.subagents.list()).rows[0]!;
+    expect(row.phase).toBe("creating");
+    expect(await destination.paseo.agents.ref(row.child.agentId).refresh()).toBeNull();
+    await parent.archive();
+    expect((await parent.subagents.list()).rows[0]?.phase).toBe("detach_pending");
+    await a.close();
+    const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    cleanup.push(() => restarted.close());
+    const next = await api(restarted);
+    const restored = next.paseo.agents.ref(parent.id);
+    await next.paseo.hosts.update(saved.registrationId, { enabled: true });
+    await online(next.paseo);
+    await expect
+      .poll(async () => (await restored.subagents.list()).rows[0]?.phase)
+      .toBe("canceled");
+    expect(await destination.paseo.agents.ref(row.child.agentId).refresh()).toBeNull();
+    if (kind === "workspace") {
+      const delayed = await destination.client.createWorkspace({
+        idempotencyKey: `subagent:${row.id}`,
+        workspaceId: row.workspace!.workspaceId,
+        source: { kind: "directory", path: b.staticDir },
+        agent: {
+          agentId: row.child.agentId,
+          config: { provider: "codex", cwd: b.staticDir },
+          initialPrompt: "Must never be replayed",
+        },
+      });
+      expect(delayed).toMatchObject({ workspace: null, errorCode: "creation_canceled" });
+      expect(
+        (await destination.paseo.workspaces.list()).entries.some(
+          (entry) => entry.id === row.workspace!.workspaceId,
+        ),
+      ).toBe(false);
+    }
+    await next.paseo.hosts.remove(saved.registrationId);
+  },
+);
 
 test("parent lifecycle recovers an admitted creation that becomes ready after origin restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "paseo-admitted-child-"));
@@ -2525,3 +2562,666 @@ test("failed admitted creation exposes its failure through lifecycle recovery an
   expect((await parent.subagents.list()).rows).toEqual([]);
   expect(attempts).toBe(1);
 });
+
+test("shared control and automation capabilities follow the same qualified workflow on every destination", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const runtime = origin.paseo.hosts.runtime();
+  cleanup.push(() => runtime.dispose());
+  const agentId = crypto.randomUUID();
+  for (const destination of [a, b]) {
+    const target = await runtime.client(destination.daemon.getServerId());
+    cleanup.push(() => target.dispose());
+    const agent = await target.agents.create({
+      agentId,
+      cwd: destination.staticDir,
+      config: { provider: "codex/test", modeId: "default" },
+    });
+    await agent.update({ name: `Target ${agent.serverId}`, labels: { test: "qualified" } });
+    await agent.setMode("default");
+    expect((await agent.refresh())?.agent).toMatchObject({
+      title: `Target ${agent.serverId}`,
+      labels: { test: "qualified" },
+      currentModeId: "default",
+    });
+    await agent.send('printf "ok" > sdk-control.txt', { messageId: "control-permission" });
+    await expect
+      .poll(async () => (await agent.runs.get("control-permission"))?.status)
+      .toBe("permission");
+    expect(await agent.cancel()).toEqual({ cancelled: true });
+    expect(await agent.cancel()).toEqual({ cancelled: false });
+    await expect
+      .poll(async () => (await agent.runs.get("control-permission"))?.status)
+      .toBe("canceled");
+    const workspace = target.workspaces.ref((await agent.refresh())!.agent.workspaceId!);
+    expect((await workspace.scripts.list()).scripts).toEqual([]);
+    const created = await target.schedules.create({
+      prompt: "Automation belongs to this destination",
+      cadence: { type: "cron", expression: "0 0 * * *" },
+      target: { type: "agent", agentId },
+      runOnCreate: false,
+    });
+    expect(created.error).toBeNull();
+    const id = created.schedule!.id;
+    expect((await target.schedules.inspect({ id })).schedule?.target).toEqual({
+      type: "agent",
+      agentId,
+    });
+    expect((await target.schedules.pause({ id })).schedule?.status).toBe("paused");
+    expect((await target.schedules.resume({ id })).schedule?.status).toBe("active");
+    await target.schedules.delete({ id });
+    await agent.close();
+    expect(await agent.refresh()).not.toBeNull();
+  }
+});
+
+test("disposing a same-server scope fences captured workspace scripts while sibling and origin remain usable", async () => {
+  const instance = await daemon();
+  await writeFile(
+    join(instance.staticDir, "paseo.json"),
+    JSON.stringify({
+      scripts: {
+        fixture: {
+          type: "service",
+          command: `node -e "require('node:fs').writeFileSync('scope-effect.txt','started')"`,
+        },
+      },
+    }),
+  );
+  const origin = await api(instance);
+  const workspace = await origin.paseo.workspaces.create({
+    source: { kind: "directory", path: instance.staticDir },
+  });
+  const runtime = origin.paseo.hosts.runtime();
+  cleanup.push(() => runtime.dispose());
+  const scope = await runtime.client(instance.daemon.getServerId());
+  const sibling = await runtime.client(instance.daemon.getServerId());
+  cleanup.push(() => sibling.dispose());
+  const captured = scope.workspaces.ref(workspace.id);
+  expect((await captured.scripts.list()).scripts.map((script) => script.scriptName)).toContain(
+    "fixture",
+  );
+  await scope.dispose();
+  await expect(Promise.resolve().then(() => captured.scripts.start("fixture"))).rejects.toThrow(
+    "disposed",
+  );
+  await expect(Promise.resolve().then(() => captured.scripts.stop("fixture"))).rejects.toThrow(
+    "disposed",
+  );
+  await expect(Promise.resolve().then(() => captured.scripts.list())).rejects.toThrow("disposed");
+  expect(
+    (await sibling.workspaces.ref(workspace.id).scripts.list()).scripts.map(
+      (script) => script.scriptName,
+    ),
+  ).toContain("fixture");
+  expect(
+    (await origin.paseo.workspaces.ref(workspace.id).scripts.list()).scripts.map(
+      (script) => script.scriptName,
+    ),
+  ).toContain("fixture");
+  await expect(stat(join(instance.staticDir, "scope-effect.txt"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+test("ordinary sends suppress archived recipients on every destination without starting tracked work", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const runtime = origin.paseo.hosts.runtime();
+  cleanup.push(() => runtime.dispose());
+  for (const destination of [a, b]) {
+    const target = await runtime.client(destination.daemon.getServerId());
+    cleanup.push(() => target.dispose());
+    const agent = await target.agents.create({
+      cwd: destination.staticDir,
+      config: { provider: "codex/test" },
+    });
+    await agent.archive();
+    const dispatch = await agent.send("Do not wake this archived recipient", {
+      messageId: "suppressed-delivery",
+      unarchive: false,
+      activeTurnBehavior: "steer",
+    });
+    expect((await agent.refresh())?.agent.archivedAt).toBeTruthy();
+    expect(dispatch).toMatchObject({
+      submissionId: "suppressed-delivery",
+      disposition: "suppressed",
+      tracking: "unavailable",
+    });
+    expect(await agent.runs.get("suppressed-delivery")).toBeNull();
+    expect(
+      await agent.send("Do not wake this archived recipient", {
+        messageId: "suppressed-delivery",
+        unarchive: false,
+        activeTurnBehavior: "steer",
+      }),
+    ).toEqual(dispatch);
+  }
+});
+
+test("accepted steering and out-of-band sends expose actual tracking on every destination", async () => {
+  let release!: () => void;
+  const terminal = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  cleanup.push(async () => release());
+  let starts = 0;
+  let commands = 0;
+  const clients = () =>
+    createTestAgentClients({
+      onStartTurn: () => {
+        starts++;
+      },
+      beforeTurnComplete: () => terminal,
+      steerActiveTurn: async () => ({ status: "accepted" }),
+      tryHandleOutOfBand: (prompt) =>
+        prompt === "/side-effect"
+          ? {
+              run: async () => {
+                commands++;
+              },
+            }
+          : null,
+    });
+  const a = await createTestPaseoDaemon({ agentClients: clients() });
+  const b = await createTestPaseoDaemon({ agentClients: clients() });
+  // Shutdown must not wait on a deliberately held provider completion.
+  cleanup.push(() => a.close());
+  cleanup.push(() => b.close());
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const runtime = origin.paseo.hosts.runtime();
+  cleanup.push(() => runtime.dispose());
+  const agents = [];
+  try {
+    for (const destination of [a, b]) {
+      const target = await runtime.client(destination.daemon.getServerId());
+      cleanup.push(() => target.dispose());
+      const agent = await target.agents.create({
+        cwd: destination.staticDir,
+        config: { provider: "codex/test" },
+      });
+      agents.push(agent);
+      const checkpoints: string[] = [];
+      const observing = agent.runs.observe("accepted-steer");
+      cleanup.push(() => observing.release());
+      observing.subscribe({
+        snapshot: ({ run }) => {
+          if (run) checkpoints.push(run.status);
+        },
+        update: () => {},
+      });
+      expect((await observing.ready).run).toBeNull();
+      expect(await agent.send("Reply with initial output", { messageId: "initial" })).toMatchObject(
+        { disposition: "turn_started", tracking: "turn" },
+      );
+      expect(
+        await agent.send("Continue the existing turn", {
+          messageId: "accepted-steer",
+          activeTurnBehavior: "steer",
+        }),
+      ).toMatchObject({ disposition: "steered", tracking: "turn" });
+      await expect.poll(() => checkpoints).toContain("running");
+      expect((await agent.runs.get("accepted-steer"))?.turnId).toBe(
+        (await agent.runs.get("initial"))?.turnId,
+      );
+      const command = await agent.send("/side-effect", { messageId: "accepted-command" });
+      expect(command).toMatchObject({ disposition: "out_of_band", tracking: "unavailable" });
+      expect(await agent.runs.get("accepted-command")).toBeNull();
+      expect(await agent.send("/side-effect", { messageId: "accepted-command" })).toEqual(command);
+    }
+    expect(starts).toBe(2);
+    expect(commands).toBe(2);
+    release();
+    for (const agent of agents) {
+      await expect
+        .poll(async () => (await agent.runs.get("accepted-steer"))?.status)
+        .toBe("completed");
+      expect((await agent.runs.get("initial"))?.status).toBe("completed");
+      const completed = agent.runs.observe("accepted-steer");
+      expect((await completed.ready).run?.status).toBe("completed");
+      await completed.release();
+    }
+  } finally {
+    release();
+  }
+});
+
+test("pending message receipt across restart exposes unknown delivery and conflict without resending", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-message-receipt-restart-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  let directory = "";
+  let starts = 0;
+  let injectFailure = true;
+  const clients = () =>
+    createTestAgentClients({
+      onStartTurn: () => {
+        starts++;
+        if (!injectFailure) return;
+        injectFailure = false;
+        renameSync(directory, `${directory}.saved`);
+        writeFileSync(directory, "Receipt storage temporarily unavailable");
+      },
+    });
+  const first = await createTestPaseoDaemon({
+    paseoHomeRoot: root,
+    cleanup: false,
+    agentClients: clients(),
+  });
+  cleanup.push(() => first.close());
+  directory = join(first.paseoHome, "agent-requests");
+  const origin = await api(first);
+  const agent = await origin.paseo.agents.create({
+    cwd: first.staticDir,
+    config: { provider: "codex/test" },
+  });
+  try {
+    await expect(agent.send("Reply once", { messageId: "uncertain" })).rejects.toMatchObject({
+      code: "agent_request_outcome_unknown",
+      outcome: "unknown",
+    });
+  } finally {
+    rmSync(directory, { force: true });
+    renameSync(`${directory}.saved`, directory);
+  }
+  await first.close();
+  const restarted = await createTestPaseoDaemon({
+    paseoHomeRoot: root,
+    cleanup: false,
+    agentClients: clients(),
+  });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  const restored = next.paseo.agents.ref(agent.id);
+  await expect(restored.send("Reply once", { messageId: "uncertain" })).rejects.toMatchObject({
+    code: "agent_request_outcome_unknown",
+    outcome: "unknown",
+  });
+  const conflict = await restored
+    .send("Different request", { messageId: "uncertain" })
+    .catch((error: unknown) => error);
+  expect(conflict).toMatchObject({ code: "agent_request_key_conflict" });
+  expect(conflict).not.toHaveProperty("outcome", "unknown");
+  expect(starts).toBe(1);
+});
+
+test.each([false, true])(
+  "archiving a parent completes its schedule and children despite failing observer: %s",
+  async (failing) => {
+    const instance = await daemon();
+    const { paseo } = await api(instance);
+    const parent = await paseo.agents.create({
+      cwd: instance.staticDir,
+      config: { provider: "codex/test" },
+    });
+    const child = await parent.subagents.create({ config: { provider: "codex/test" } });
+    const schedule = await paseo.schedules.create({
+      prompt: "Scheduled parent work",
+      cadence: { type: "cron", expression: "0 0 * * *" },
+      target: { type: "agent", agentId: parent.id },
+      runOnCreate: false,
+    });
+    expect(schedule.error).toBeNull();
+    const stop = instance.daemon.agentManager.onAgentArchived(() => {
+      if (failing) throw new Error("Independent listener failed");
+    });
+    cleanup.push(async () => stop());
+    await parent.archive();
+    expect((await paseo.schedules.inspect({ id: schedule.schedule!.id })).schedule?.status).toBe(
+      "completed",
+    );
+    expect((await parent.subagents.list()).rows[0]).toMatchObject({
+      child: child.address,
+      phase: "archived",
+    });
+    expect((await child.refresh())?.agent.archivedAt).toBeTruthy();
+  },
+);
+
+test("parented modern creation retains one reserved identity and exact child directory across retries", async () => {
+  let prompts = 0;
+  const instance = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      onStartTurn: () => {
+        prompts++;
+      },
+    }),
+  });
+  cleanup.push(() => instance.close());
+  const origin = await api(instance);
+  const parent = await origin.paseo.agents.create({
+    cwd: instance.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const directory = join(instance.staticDir, "nested-child");
+  await mkdir(directory);
+  const request = {
+    agentId: crypto.randomUUID(),
+    idempotencyKey: "parented-original-key",
+    callerAgentId: parent.id,
+    config: { provider: "codex", model: "test", cwd: directory },
+    initialPrompt: "Reply once for this child",
+    clientMessageId: "original-initial-prompt",
+  };
+  const child = await origin.client.createAgent(request);
+  expect(child).toMatchObject({ id: request.agentId, cwd: directory, parent: parent.address });
+  expect((await parent.subagents.list()).rows).toHaveLength(1);
+  expect((await origin.client.createAgent(request)).id).toBe(child.id);
+  expect(prompts).toBe(1);
+});
+
+test("parented workspace creation retains its original receipt and both resources across retry", async () => {
+  let prompts = 0;
+  const instance = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      onStartTurn: () => {
+        prompts++;
+      },
+    }),
+  });
+  cleanup.push(() => instance.close());
+  const origin = await api(instance);
+  const parent = await origin.paseo.agents.create({
+    cwd: instance.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const directory = join(instance.staticDir, "workspace-child");
+  await mkdir(directory);
+  const workspaceId = "wks_0123456789abcdef";
+  const agentId = crypto.randomUUID();
+  const request = {
+    idempotencyKey: "original-workspace-key",
+    workspaceId,
+    source: { kind: "directory" as const, path: instance.staticDir },
+    agent: {
+      agentId,
+      callerAgentId: parent.id,
+      config: { provider: "codex", model: "test", cwd: directory },
+      initialPrompt: "Reply once from workspace child",
+      clientMessageId: "workspace-initial",
+    },
+  };
+  const created = await origin.client.createWorkspace(request);
+  expect(created.error).toBeNull();
+  expect(created.workspace?.id).toBe(workspaceId);
+  const child = origin.paseo.agents.ref(agentId);
+  expect((await child.refresh())?.agent).toMatchObject({
+    workspaceId,
+    cwd: directory,
+    parent: parent.address,
+  });
+  expect((await parent.subagents.list()).rows).toHaveLength(1);
+  const repeated = await origin.client.createWorkspace(request);
+  expect(repeated.workspace?.id).toBe(workspaceId);
+  expect(prompts).toBe(1);
+  const receipt = origin.paseo.creations.observe({
+    kind: "workspace",
+    idempotencyKey: request.idempotencyKey,
+  });
+  expect((await receipt.ready).snapshot).toMatchObject({
+    kind: "workspace",
+    agentId,
+    workspaceId,
+    phase: "completed",
+  });
+  await receipt.release();
+});
+
+test("workspace creation cancellation fences both resources across restart without crossing key namespaces", async () => {
+  const root = await mkdtemp(join(tmpdir(), "workspace-creation-cancel-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  let starts = 0;
+  const clients = () =>
+    createTestAgentClients({
+      onStartTurn: () => {
+        starts++;
+      },
+    });
+  const first = await createTestPaseoDaemon({
+    paseoHomeRoot: root,
+    cleanup: false,
+    agentClients: clients(),
+  });
+  cleanup.push(() => first.close());
+  const origin = await api(first);
+  const idempotencyKey = "same-textual-key";
+  const workspaceId = "wks_1234567890abcdef";
+  const agentId = crypto.randomUUID();
+  const reservation = { kind: "workspace" as const, workspaceId, agentId, idempotencyKey };
+  expect(await origin.paseo.creations.cancel(reservation)).toMatchObject({
+    status: "canceled",
+    reservation: {
+      kind: "workspace",
+      reservedAgent: { serverId: first.daemon.getServerId(), agentId },
+      reservedWorkspace: { serverId: first.daemon.getServerId(), workspaceId },
+    },
+  });
+  for (const mismatch of [
+    { ...reservation, agentId: crypto.randomUUID() },
+    { ...reservation, workspaceId: "wks_1234567890abcdee" },
+  ])
+    await expect(origin.paseo.creations.cancel(mismatch)).rejects.toMatchObject({
+      code: "agent_request_key_conflict",
+    });
+  const independent = await origin.paseo.agents.create({
+    idempotencyKey,
+    cwd: first.staticDir,
+    config: { provider: "codex/test" },
+  });
+  expect(independent.id).not.toBe(agentId);
+  const request = {
+    idempotencyKey,
+    workspaceId,
+    source: { kind: "directory" as const, path: first.staticDir },
+    agent: {
+      agentId,
+      config: { provider: "codex", model: "test", cwd: first.staticDir },
+      initialPrompt: "Must never run",
+    },
+  };
+  expect(await origin.client.createWorkspace(request)).toMatchObject({
+    errorCode: "creation_canceled",
+    workspace: null,
+  });
+  await first.close();
+  const restarted = await createTestPaseoDaemon({
+    paseoHomeRoot: root,
+    cleanup: false,
+    agentClients: clients(),
+  });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  expect(await next.client.createWorkspace(request)).toMatchObject({
+    errorCode: "creation_canceled",
+    workspace: null,
+  });
+  expect(
+    (await next.paseo.workspaces.list()).entries.some((workspace) => workspace.id === workspaceId),
+  ).toBe(false);
+  expect(await next.paseo.agents.ref(agentId).refresh()).toBeNull();
+  expect(starts).toBe(0);
+});
+
+test("admitted workspace cancellation returns its existing receipt and leaves its runner intact", async () => {
+  let release!: () => void;
+  let reached!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  cleanup.push(async () => release());
+  let prompts = 0;
+  const instance = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      beforeCreateSession: async (config) => {
+        if (!config.internal) {
+          reached();
+          await gate;
+        }
+      },
+      onStartTurn: (_prompt, config) => {
+        if (!config.internal) prompts++;
+      },
+    }),
+  });
+  cleanup.push(() => instance.close());
+  const origin = await api(instance);
+  const agentId = crypto.randomUUID();
+  const workspaceId = "wks_abcdef0123456789";
+  const idempotencyKey = "workspace-won-admission";
+  const request = {
+    idempotencyKey,
+    workspaceId,
+    source: { kind: "directory" as const, path: instance.staticDir },
+    agent: {
+      agentId,
+      config: { provider: "codex", model: "test", cwd: instance.staticDir },
+      initialPrompt: "Run once after admission",
+    },
+  };
+  const creating = origin.client.createWorkspace(request);
+  void creating.catch(() => {});
+  try {
+    await ready;
+    expect(
+      await origin.paseo.creations.cancel({
+        kind: "workspace",
+        idempotencyKey,
+        workspaceId,
+        agentId,
+      }),
+    ).toMatchObject({
+      status: "admitted",
+      creation: { kind: "workspace", workspaceId, agentId, phase: "workspace_ready" },
+    });
+    await expect(
+      origin.paseo.creations.cancel({
+        kind: "workspace",
+        idempotencyKey,
+        workspaceId: "wks_abcdef0123456788",
+        agentId,
+      }),
+    ).rejects.toMatchObject({ code: "agent_request_key_conflict" });
+    expect(
+      await origin.paseo.creations.cancel({ kind: "agent", idempotencyKey, agentId }),
+    ).toMatchObject({ status: "canceled", reservation: { kind: "agent" } });
+    release();
+    expect((await creating).workspace?.id).toBe(workspaceId);
+    expect(prompts).toBe(1);
+    expect(
+      await origin.paseo.creations.cancel({
+        kind: "workspace",
+        idempotencyKey,
+        workspaceId,
+        agentId,
+      }),
+    ).toMatchObject({ status: "admitted", creation: { phase: "completed" } });
+  } finally {
+    release();
+  }
+});
+
+test.each([false, true])(
+  "legacy parented creation preserves exact directory and prompt with worktree: %s",
+  async (worktree) => {
+    let prompts = 0;
+    const instance = await createTestPaseoDaemon({
+      agentClients: createTestAgentClients({
+        onStartTurn: () => {
+          prompts++;
+        },
+      }),
+    });
+    cleanup.push(() => instance.close());
+    const origin = await api(instance);
+    const directory = join(instance.staticDir, "legacy-nested");
+    await mkdir(directory);
+    if (worktree) {
+      const git = (args: string[]) => promisify(execFile)("git", args, { cwd: instance.staticDir });
+      await git(["init", "-b", "main"]);
+      await git(["config", "user.name", "Paseo Test"]);
+      await git(["config", "user.email", "test@example.com"]);
+      await writeFile(join(directory, "README.md"), "Track exact launch directory");
+      await git(["add", "."]);
+      await git(["commit", "-m", "Initial"]);
+    }
+    const parent = await origin.paseo.agents.create({
+      cwd: instance.staticDir,
+      config: { provider: "codex/test" },
+    });
+    const socket = new WebSocket(`ws://127.0.0.1:${instance.port}/ws`);
+    cleanup.push(async () => socket.terminate());
+    const messages: SessionOutboundMessage[] = [];
+    socket.on("message", (data) => {
+      const parsed = WSOutboundMessageSchema.parse(JSON.parse(String(data)));
+      if (parsed.type === "session") messages.push(parsed.message);
+    });
+    await once(socket, "open");
+    const hello = once(socket, "message");
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        clientId: "legacy-parented",
+        clientType: "cli",
+        protocolVersion: 1,
+      }),
+    );
+    await hello;
+    const request = {
+      type: "create_agent_request",
+      ...(worktree ? { worktree: { mode: "branch-off", newBranch: "legacy-child" } } : {}),
+      callerAgentId: parent.id,
+      config: { provider: "codex", model: "test", cwd: directory },
+      labels: {},
+      attachments: [],
+      initialPrompt: "Run legacy child once",
+      clientMessageId: "legacy-initial",
+    };
+    for (const attempt of [1, 2]) {
+      const requestId = "legacy-original";
+      socket.send(JSON.stringify({ type: "session", message: { ...request, requestId } }));
+      await expect
+        .poll(
+          () =>
+            messages.filter(
+              (message) => message.type === "status" && message.payload.requestId === requestId,
+            ).length,
+        )
+        .toBe(attempt);
+      const response = messages.find(
+        (message) => message.type === "status" && message.payload.requestId === requestId,
+      );
+      expect(
+        response?.type === "status" && "error" in response.payload
+          ? response.payload.error
+          : undefined,
+      ).toBeUndefined();
+      expect(response).toMatchObject({
+        type: "status",
+        payload: { status: "agent_created", agent: { parent: parent.address } },
+      });
+    }
+    const rows = (await parent.subagents.list()).rows;
+    expect(rows).toHaveLength(1);
+    const child = origin.paseo.agents.ref(rows[0]!.child.agentId);
+    const snapshot = (await child.refresh())!.agent;
+    if (worktree) {
+      expect(snapshot.cwd).not.toBe(directory);
+      const { stdout } = await promisify(execFile)("git", ["rev-parse", "--show-toplevel"], {
+        cwd: snapshot.cwd,
+      });
+      expect(snapshot.cwd).toBe(join(stdout.trim(), "legacy-nested"));
+      expect(snapshot.workspaceId).not.toBe((await parent.refresh())!.agent.workspaceId);
+    } else expect(snapshot.cwd).toBe(directory);
+    expect(prompts).toBe(1);
+  },
+);
