@@ -52,6 +52,7 @@ class RewindHistoryGate {
 async function createRewindHarness(options: { historyGate?: RewindHistoryGate } = {}) {
   const session = new FakeRewindSession(options.historyGate?.wait.bind(options.historyGate));
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { claude: new FakeRewindClient(session) },
     logger: createTestLogger(),
     idFactory: () => "00000000-0000-4000-8000-000000000901",
@@ -142,6 +143,7 @@ describe("AgentManager rewind", () => {
 
     const session = new RejectingInterruptSession();
     const manager = new AgentManager({
+      serverId: "srv_test",
       clients: { claude: new FakeRewindClient(session) },
       logger: createTestLogger(),
       idFactory: () => "00000000-0000-4000-8000-000000000902",

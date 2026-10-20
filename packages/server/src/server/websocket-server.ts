@@ -1,3 +1,4 @@
+import { Subagents } from "./subagents/index.js";
 import { HOST_ROUTE_OPCODE } from "@getpaseo/protocol/binary-frames/index";
 import { DaemonLinkEndpoint, VirtualHostSocket } from "./connected-hosts/index.js";
 import { ConnectedHosts } from "./connected-hosts/index.js";
@@ -465,6 +466,7 @@ interface OwnedSessionConnection extends SessionConnectionBase {
 type SessionConnection = ReconnectableSessionConnection | OwnedSessionConnection;
 
 interface SocketSessionOptions {
+  subagentAuthority: NonNullable<SessionOptions["subagentAuthority"]>;
   sourceId?: string;
   clientId: string;
   appVersion: string | null;
@@ -531,7 +533,10 @@ function requireWebSocketServices(params: {
  * WebSocket server that only accepts sockets + parses/forwards messages to the session layer.
  */
 export class VoiceAssistantWebSocketServer {
+  private readonly subagents: Subagents;
+  private ownerAdmission: SessionAdmission = OWNER_SESSION_ADMISSION;
   private readonly hostRuntimes = new Set<Awaited<ReturnType<typeof createDaemonHostRuntime>>>();
+  private readonly ownedSocketSources = new WeakMap<WebSocketLike, string>();
   private readonly ownedSockets = new WeakSet<WebSocketLike>();
 
   public async createHostRuntime(authority: HostRuntimeAuthority) {
@@ -551,6 +556,7 @@ export class VoiceAssistantWebSocketServer {
             },
           );
         }
+        if (authority.sourceId) this.ownedSocketSources.set(socket, authority.sourceId);
         this.ownedSockets.add(socket);
         await this.attachExternalSocket(socket, undefined, admission);
       },
@@ -740,7 +746,32 @@ export class VoiceAssistantWebSocketServer {
     this.workspaceAutoName = workspaceAutoName;
     this.downloadTokenStore = downloadTokenStore;
     this.paseoHome = paseoHome;
-    this.connectedHosts = new ConnectedHosts(paseoHome, { serverId, label: getHostName() });
+    this.connectedHosts = new ConnectedHosts(
+      paseoHome,
+      { serverId, label: getHostName() },
+      (destination) => this.subagents.assertHostRemovable(destination),
+    );
+    this.subagents = new Subagents({
+      home: paseoHome,
+      serverId,
+      runtime: (authority) => this.createHostRuntime(authority),
+      resolveAuthority: (principalId) => this.resolveRelationshipAdmission(principalId),
+    });
+    this.connectedHosts.observe(() => {
+      void this.connectedHosts
+        .list()
+        .then((directory) => this.subagents.hostsChanged(directory))
+        .catch((error) =>
+          this.logger.warn({ err: error }, "Failed to reconcile subagent host availability"),
+        );
+    });
+    this.agentManager.setAgentArchivedCallback(async (agentId) => {
+      const record = await this.agentStorage.get(agentId);
+      await this.subagents.parentArchived(
+        { serverId, agentId },
+        record?.workspaceId ? { serverId, workspaceId: record.workspaceId } : undefined,
+      );
+    });
     this.passwordHash = auth?.password;
     this.worktreesRoot = daemonRuntimeConfig?.worktreesRoot;
     this.daemonConfigStore = daemonConfigStore;
@@ -1084,10 +1115,19 @@ export class VoiceAssistantWebSocketServer {
     return { closed };
   }
 
+  private async resolveRelationshipAdmission(principalId: string): Promise<SessionAdmission> {
+    if (principalId === "owner") return this.ownerAdmission;
+    throw Object.assign(
+      new Error("This principal has no supported durable relationship authority"),
+      { code: "unsupported_capability" },
+    );
+  }
+
   public updatePrincipalPermissions(
     principalId: string,
     permissions: readonly DaemonPermission[],
   ): void {
+    if (principalId === "owner") this.ownerAdmission = { principalId, permissions };
     for (const [socket, link] of this.hostLinks) {
       if (this.sessions.get(socket)?.principalId === principalId) {
         link.close("permission_denied");
@@ -1121,10 +1161,16 @@ export class VoiceAssistantWebSocketServer {
     if (this.connectionLifecycle === "starting") {
       this.connectionLifecycle = "accepting";
     }
+    void this.subagents
+      .recover()
+      .catch((error) =>
+        this.logger.warn({ err: error }, "Failed to recover subagent relationships"),
+      );
   }
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    await this.subagents.close();
     await Promise.allSettled([...this.hostRuntimes].map((runtime) => runtime.dispose()));
     this.hostRuntimes.clear();
     await this.connectedHosts.close();
@@ -1536,6 +1582,19 @@ export class VoiceAssistantWebSocketServer {
       onLifecycleIntent: (intent) => {
         this.onLifecycleIntent?.(intent);
       },
+      subagentAuthority: () => {
+        if (!connection) throw new Error("Session admission is not ready");
+        if (connection.hubExecutionAgents)
+          throw Object.assign(
+            new Error("Execution-scoped subagent relationships are not supported"),
+            { code: "unsupported_capability" },
+          );
+        return {
+          principalId: connection.principalId,
+          sourceId: connection.session.getHostSourceId(),
+          permissionCeiling: connection.session.getPermissions(),
+        };
+      },
       hubExecutionAgents: admission.hubExecutionAgents,
       hubRelationships: this.hubRelationships ?? undefined,
     });
@@ -1561,6 +1620,8 @@ export class VoiceAssistantWebSocketServer {
 
   private createSocketSession(options: SocketSessionOptions): Session {
     return new Session({
+      subagents: this.subagents,
+      subagentAuthority: options.subagentAuthority,
       connectedHosts: this.connectedHosts,
       getConnectedHostBufferedAmount: () => {
         let total = 0;
@@ -1935,6 +1996,13 @@ export class VoiceAssistantWebSocketServer {
     pluginId?: string,
   ): void {
     if (pluginId) return;
+    for (const socket of connection.sockets) {
+      const ownedSource = this.ownedSocketSources.get(socket);
+      if (ownedSource) {
+        connection.session.setHostSource(ownedSource);
+        return;
+      }
+    }
     const producer = hello.producer;
     const sourceId =
       hello.routed && producer
@@ -1957,6 +2025,7 @@ export class VoiceAssistantWebSocketServer {
       ...(this.serverCapabilities ? { capabilities: this.serverCapabilities } : {}),
       features: {
         connectedHosts: true,
+        fleetSubagents: true,
         hostMultiplexing: true,
         usageSources: true,
         ownedSubscriptions: true,

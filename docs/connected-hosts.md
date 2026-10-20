@@ -29,6 +29,10 @@ principal. An ordinary direct B consumer does not become that producer by supply
 The optional `server_info.sourceId` reports this producer identity separately from the authenticated admission principal.
 Trusted server plugins retain the authority of their runtime; they are not sandboxed by this feature.
 
+A managed child has a qualified `{serverId, agentId}` address on every host. The parent's daemon owns membership and lifecycle intent; a destination's parent pointer is metadata. Workspace comparisons include the server ID, so matching workspace strings on different hosts do not share lifecycle ownership. Preserve the archive policy in [agent lifecycle](agent-lifecycle.md).
+
+Durable relationships retain a stable authority reference and creation ceiling, never live credentials or execution capabilities. Recovery must resolve current authority through its owner. Derived runtime sessions cannot authorize their own recovery. Execution-scoped admissions and non-owner durable references without a supported authority resolver fail explicitly; do not recover them through the daemon owner's MCP runtime.
+
 ## Connections and recovery
 
 The shared Node connector owns the target grammar and each connection attempt, including a fresh
@@ -51,6 +55,10 @@ before retrying a mutation.
 Ordinary non-recoverable mutations are not automatically replayed. Existing acknowledged/idempotent
 creation recovery retains its request identity and resumes through the ordinary creation lifecycle. Multiplexing changes only the transport: ordinary permission
 RPC codes pass through unchanged, and connection/recovery behavior matches direct clients.
+
+Creation cancellation fences a reserved creation identity before admission. An admitted receipt can precede resource readiness and cannot be reported as canceled. Observe its current receipt and later changes through the ordinary SDK instead of replaying an uncertain prompt. Parent archive retains a pending obligation until cancellation or destination lifecycle confirmation; explicit forget removes local membership without claiming the destination changed.
+
+Run journals retain submission and provider-turn identity. Restarted nonterminal evidence is interrupted, and subsequent evidence must match that turn. Idle and reconnect do not prove completion. A storage failure retains observed evidence with pending durability; a later read retries persistence. Notification recovery must preserve checkpoint identity and this durability distinction.
 
 Text session envelopes carry a channel identifier. Binary routing adds an opcode, a bounded UTF-8
 channel identifier, and the original terminal or file-transfer bytes. It never converts those bytes to

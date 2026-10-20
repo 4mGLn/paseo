@@ -910,6 +910,12 @@ async function hostWire(b: TestPaseoDaemon) {
   const http = createServer();
   const wss = new WebSocketServer({ server: http });
   const frames: { binary: boolean; bytes: Buffer; direction: "toB" | "fromB" }[] = [];
+  const responses: SessionOutboundMessage[] = [];
+  const holds = new Set<{
+    matches(message: SessionOutboundMessage): boolean;
+    send: (() => void)[];
+    captured(): void;
+  }>();
   let connections = 0;
   wss.on("connection", (downstream) => {
     connections++;
@@ -930,7 +936,30 @@ async function hostWire(b: TestPaseoDaemon) {
     upstream.on("message", (data, binary) => {
       const bytes = Buffer.from(data as Buffer);
       frames.push({ binary, bytes, direction: "fromB" });
-      if (downstream.readyState === 1) downstream.send(bytes, { binary });
+      const send = () => {
+        if (downstream.readyState === 1) downstream.send(bytes, { binary });
+      };
+      const payload = binary ? decodeHostRouteFrame(bytes)?.payload : bytes;
+      if (payload) {
+        try {
+          let envelope = JSON.parse(Buffer.from(payload).toString());
+          while (envelope.type === "session" && envelope.message?.type === "hosts.route.frame")
+            envelope = JSON.parse(envelope.message.payload.data);
+          if (envelope.type === "session") {
+            const validated = WSOutboundMessageSchema.parse(envelope);
+            if (validated.type === "session") responses.push(validated.message);
+            const hold = [...holds].find((candidate) => candidate.matches(envelope.message));
+            if (hold) {
+              hold.send.push(send);
+              hold.captured();
+              return;
+            }
+          }
+        } catch {
+          /* Non-JSON binary frames remain ordinary transport traffic. */
+        }
+      }
+      send();
     });
     upstream.on("error", () => downstream.close());
     upstream.on("close", () => downstream.close());
@@ -946,10 +975,26 @@ async function hostWire(b: TestPaseoDaemon) {
   const address = http.address();
   if (!address || typeof address === "string") throw new Error("Missing wire port");
   return {
+    responses,
     connection: `127.0.0.1:${address.port}`,
     frames,
     connections: () => connections,
     active: () => wss.clients.size,
+    holdResponses(matches: (message: SessionOutboundMessage) => boolean) {
+      let captured!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        captured = resolve;
+      });
+      const hold = { matches, send: [] as (() => void)[], captured };
+      holds.add(hold);
+      return {
+        ready,
+        release() {
+          holds.delete(hold);
+          for (const send of hold.send.splice(0)) send();
+        },
+      };
+    },
     retarget(next: TestPaseoDaemon) {
       destination = next;
       for (const socket of wss.clients) socket.close();
@@ -1129,7 +1174,9 @@ test("channel output accounts for escaped text, awaits physical drain, and prese
   expect(wss.clients.size).toBe(1);
 });
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
 test.skipIf(process.platform !== "linux" || !existsSync("/usr/sbin/sshd"))(
   "real SSH shares one tunnel across scopes and owns fresh attempts after recovery",
   async () => {
@@ -1530,7 +1577,10 @@ test("disposing a daemon-owned runtime closes its source session and failed admi
   const active = await sessions();
   expect(active[0]).toBe(before[0]! + 1);
   expect(active[1]).toBe(before[1]! + 1);
-  await runtime.dispose();
+  const disposing = runtime.dispose();
+  expect(runtime.dispose()).toBe(disposing);
+  await expect(runtime.client(a.daemon.getServerId())).rejects.toThrow("disposed");
+  await disposing;
   await expect.poll(sessions).toEqual(before);
   await expect(runtime.directory()).rejects.toThrow("disposed");
   const revoked = Object.assign(new Error("Runtime authority was revoked"), {
@@ -1545,4 +1595,933 @@ test("disposing a daemon-owned runtime closes its source session and failed admi
     }),
   ).rejects.toMatchObject({ code: "access_denied" });
   await expect.poll(sessions).toEqual(before);
+});
+
+test("SDK creation persists a qualified parent without resolving a colliding agent on the child host", async () => {
+  const a = await daemon();
+  const root = await mkdtemp(join(tmpdir(), "paseo-parent-address-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const b = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => b.close());
+  const origin = await api(a);
+  const destination = await api(b);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const id = crypto.randomUUID();
+  const parent = await origin.paseo.agents.create({
+    agentId: id,
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+    title: "Parent on A",
+  });
+  await destination.paseo.agents.create({
+    agentId: id,
+    cwd: b.staticDir,
+    config: { provider: "codex/test" },
+    title: "Unrelated on B",
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  const child = await workspace.agents.create({
+    config: { provider: "codex/test" },
+    parent,
+    title: "Child on B",
+  });
+  expect(child.current()?.parent).toEqual(parent.address);
+  expect((await b.daemon.agentStorage.get(child.id))?.parent).toEqual(parent.address);
+  await b.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  const restored = next.paseo.agents.ref(child.id);
+  expect((await restored.refresh())?.agent.parent).toEqual(parent.address);
+  expect((await restarted.daemon.agentStorage.get(child.id))?.parent).toEqual(parent.address);
+});
+
+test("parent capability owns local and fleet membership, idempotent creation and restart recovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-subagent-owner-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => a.close());
+  const b = await daemon();
+  const origin = await api(a);
+  const destination = await api(b);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  const local = await parent.subagents.create({
+    config: { provider: "codex/test" },
+    idempotencyKey: "local-child",
+  });
+  const input = {
+    serverId: b.daemon.getServerId(),
+    workspaceId: workspace.id,
+    config: { provider: "codex/test" },
+    idempotencyKey: "fleet-child",
+  };
+  const [first, second] = await Promise.all([
+    parent.subagents.create(input),
+    parent.subagents.create(input),
+  ]);
+  expect(first.address).toEqual(second.address);
+  expect(local.address.serverId).toBe(parent.address.serverId);
+  expect(first.address.serverId).toBe(b.daemon.getServerId());
+  expect((await parent.subagents.list()).rows.map((row) => row.child)).toEqual(
+    expect.arrayContaining([local.address, first.address]),
+  );
+  const viewer = createHostClient(`127.0.0.1:${a.port}`, {
+    clientId: crypto.randomUUID(),
+    sessionPermissions: ["daemon.read", "workspace.read"],
+    reconnect: { enabled: false },
+  });
+  cleanup.push(async () => {
+    await viewer.close();
+  });
+  await viewer.connect();
+  const viewerApi = createPaseoApi(viewer);
+  cleanup.push(() => viewerApi.dispose());
+  await expect(
+    viewerApi.agents.ref(parent.id).subagents.create({ ...input, idempotencyKey: "unauthorized" }),
+  ).rejects.toMatchObject({ code: "access_denied" });
+  expect(
+    (await destination.paseo.agents.list({ includeBackground: true })).entries.filter(
+      (entry) => entry.agent.parent?.agentId === parent.id,
+    ),
+  ).toHaveLength(1);
+  await a.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  const restoredParent = next.paseo.agents.ref(parent.id);
+  expect((await restoredParent.subagents.list()).rows.map((row) => row.child)).toEqual(
+    expect.arrayContaining([local.address, first.address]),
+  );
+  await online(next.paseo);
+  const recovered = await restoredParent.subagents.create(input);
+  expect(recovered.address).toEqual(first.address);
+});
+
+test("retained derived sessions cannot supply durable principal authority", async () => {
+  const a = await daemon();
+  const owner = await api(a);
+  const parent = await owner.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const permissions = ["daemon.read", "workspace.read", "workspace.write"] as const;
+  let available = true;
+  const runtime = await a.daemon.createHostRuntime({
+    permissionCeiling: permissions,
+    resolveAdmission: async () => {
+      if (!available)
+        throw Object.assign(new Error("Origin authority removed"), { code: "access_denied" });
+      return { principalId: "external-principal", permissions };
+    },
+  });
+  cleanup.push(() => runtime.dispose());
+  const derived = await runtime.client(parent.serverId);
+  cleanup.push(() => derived.dispose());
+  const heldParent = derived.agents.ref(parent.id);
+  await expect(
+    heldParent.subagents.create({ config: { provider: "codex/test" } }),
+  ).rejects.toMatchObject({ code: "unsupported_capability" });
+  available = false;
+  // The derived socket is still alive and readable; it must not become an authority owner.
+  expect((await heldParent.refresh())?.agent.id).toBe(parent.id);
+  await expect(
+    heldParent.subagents.create({ config: { provider: "codex/test" } }),
+  ).rejects.toMatchObject({ code: "unsupported_capability" });
+  await expect(heldParent.subagents.list()).rejects.toMatchObject({
+    code: "unsupported_capability",
+  });
+  const observation = heldParent.subagents.observe();
+  await expect(observation.ready).rejects.toMatchObject({ code: "unsupported_capability" });
+  await observation.release();
+  expect((await parent.subagents.list()).rows).toEqual([]);
+});
+
+test("qualified parent archive preserves workspace and open-tab policy", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  const destination = await api(b);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspaceId = parent.current()!.workspaceId!;
+  const other = await origin.paseo.workspaces.create({
+    source: { kind: "directory", path: a.staticDir },
+  });
+  await destination.paseo.workspaces.create({
+    workspaceId,
+    source: { kind: "directory", path: b.staticDir },
+  });
+  const same = await parent.subagents.create({ config: { provider: "codex/test" } });
+  const separate = await parent.subagents.create({
+    workspaceId: other.id,
+    config: { provider: "codex/test" },
+  });
+  const open = await parent.subagents.create({
+    config: { provider: "codex/test" },
+    labels: { "paseo.open-agent-tab.test": "true" },
+  });
+  const fleet = await parent.subagents.create({
+    serverId: b.daemon.getServerId(),
+    workspaceId,
+    config: { provider: "codex/test" },
+  });
+  await parent.archive();
+  expect((await same.refresh())?.agent.archivedAt).toEqual(expect.any(String));
+  for (const child of [separate, open, fleet]) {
+    const snapshot = (await child.refresh())!.agent;
+    expect(snapshot.archivedAt).toBeNull();
+    expect(snapshot.parent).toBeNull();
+  }
+  const rows = (await parent.subagents.list()).rows;
+  expect(rows.find((row) => row.child.agentId === same.id)?.phase).toBe("archived");
+  expect(rows.filter((row) => row.phase === "detached")).toHaveLength(3);
+});
+
+test("parent archive retains a truthful detach obligation across unavailable destination and origin restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-pending-detach-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => a.close());
+  const b = await daemon();
+  const origin = await api(a);
+  const destination = await api(b);
+  const saved = await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  const child = await parent.subagents.create({
+    serverId: b.daemon.getServerId(),
+    workspaceId: workspace.id,
+    config: { provider: "codex/test" },
+  });
+  await origin.paseo.hosts.update(saved.registrationId, { enabled: false });
+  await parent.archive();
+  const pending = (await parent.subagents.list()).rows[0]!;
+  expect(pending).toMatchObject({
+    child: child.address,
+    phase: "detach_pending",
+    freshness: "unavailable",
+  });
+  const directChild = destination.paseo.agents.ref(child.id);
+  expect((await directChild.refresh())?.agent).toMatchObject({
+    parent: parent.address,
+    archivedAt: null,
+  });
+  await expect(origin.paseo.hosts.remove(saved.registrationId)).rejects.toMatchObject({
+    code: "relationships_pending",
+  });
+  await a.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  const restored = next.paseo.agents.ref(parent.id);
+  expect((await restored.subagents.list()).rows[0]).toMatchObject({
+    child: child.address,
+    phase: "detach_pending",
+  });
+  expect((await directChild.refresh())?.agent.parent).toEqual(parent.address);
+  await next.paseo.hosts.update(saved.registrationId, { enabled: true });
+  await online(next.paseo);
+  await expect.poll(async () => (await restored.subagents.list()).rows[0]?.phase).toBe("detached");
+  expect((await directChild.refresh())?.agent).toMatchObject({ parent: null, archivedAt: null });
+  expect(
+    (await destination.paseo.agents.list({ includeBackground: true })).entries.filter(
+      (entry) => entry.agent.id === child.id,
+    ),
+  ).toHaveLength(1);
+});
+
+test("explicit detach stays pending offline and forgetting releases only origin membership", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  const destination = await api(b);
+  const saved = await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  const backendRuntimeCount = async () =>
+    Number(/Host runtimes: (\d+)/.exec((await origin.client.collectDiagnostics()).diagnostic)![1]);
+  const beforeRuntimeCount = await backendRuntimeCount();
+  const input = {
+    serverId: b.daemon.getServerId(),
+    workspaceId: workspace.id,
+    config: { provider: "codex/test" },
+    idempotencyKey: "kept-child",
+  };
+  const child = await parent.subagents.create(input);
+  await origin.paseo.hosts.update(saved.registrationId, { enabled: false });
+  expect(await parent.subagents.detach(child.address)).toMatchObject({
+    child: child.address,
+    phase: "detach_pending",
+    freshness: "unavailable",
+  });
+  const directChild = destination.paseo.agents.ref(child.id);
+  expect((await directChild.refresh())?.agent).toMatchObject({
+    parent: parent.address,
+    archivedAt: null,
+  });
+  await parent.subagents.forget(child.address);
+  expect((await parent.subagents.list()).rows).toEqual([]);
+  await expect.poll(backendRuntimeCount).toBe(beforeRuntimeCount);
+  await origin.paseo.hosts.remove(saved.registrationId);
+  expect((await directChild.refresh())?.agent).toMatchObject({
+    parent: parent.address,
+    archivedAt: null,
+  });
+  await expect(parent.subagents.create(input)).rejects.toMatchObject({
+    code: "relationship_forgotten",
+  });
+});
+
+test.each(["forget", "archive"] as const)(
+  "a delayed creation response cannot overwrite newer %s intent",
+  async (intent) => {
+    const root = await mkdtemp(join(tmpdir(), "paseo-delayed-intent-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    cleanup.push(() => a.close());
+    const b = await daemon();
+    const wire = await hostWire(b);
+    const origin = await api(a);
+    const destination = await api(b);
+    await origin.paseo.hosts.add({ connection: wire.connection });
+    await online(origin.paseo);
+    const parent = await origin.paseo.agents.create({
+      cwd: a.staticDir,
+      config: { provider: "codex/test" },
+    });
+    const workspace = await destination.paseo.workspaces.create({
+      source: { kind: "directory", path: b.staticDir },
+    });
+    const heldCreation = wire.holdResponses((message) => message.type === "agent.create.response");
+    const creating = parent.subagents.create({
+      serverId: b.daemon.getServerId(),
+      workspaceId: workspace.id,
+      config: { provider: "codex/test" },
+      idempotencyKey: "delayed",
+    });
+    void creating.catch(() => {});
+    await Promise.race([
+      heldCreation.ready,
+      creating.then(() => {
+        throw new Error("Creation resolved before its response was held");
+      }),
+    ]);
+    const row = (await parent.subagents.list()).rows[0]!;
+    expect(row.phase).toBe("creating");
+    if (intent === "forget") await parent.subagents.forget(row.child);
+    else await parent.archive();
+    const responsesBeforeCompletion = wire.responses.length;
+    const heldRefresh = wire.holdResponses((message) => message.type === "fetch_agent_response");
+    heldCreation.release();
+    // The completion can start ordinary reads, but must preserve the already committed lifecycle decision.
+    await heldRefresh.ready;
+    const directory = await parent.subagents.list();
+    heldRefresh.release();
+    const created = await creating;
+    if (intent === "forget") expect(directory.rows).toEqual([]);
+    else expect(directory.rows[0]?.phase).toBe("detached");
+    expect(created.address).toEqual(row.child);
+    expect(
+      wire.responses
+        .slice(responsesBeforeCompletion)
+        .filter(
+          (message) => message.type === "fetch_agents_response" && message.payload.subscriptionId,
+        ),
+    ).toEqual([]);
+    if (intent === "forget") {
+      await parent.archive();
+      expect(
+        (await destination.paseo.agents.ref(row.child.agentId).refresh())?.agent.archivedAt,
+      ).toBeNull();
+    }
+    await a.close();
+    const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+    cleanup.push(() => restarted.close());
+    const next = await api(restarted);
+    const restored = next.paseo.agents.ref(parent.id);
+    if (intent === "forget") {
+      expect((await restored.subagents.list()).rows).toEqual([]);
+      await restored.archive();
+      expect(
+        (await destination.paseo.agents.ref(row.child.agentId).refresh())?.agent.archivedAt,
+      ).toBeNull();
+    } else expect((await restored.subagents.list()).rows[0]?.phase).toBe("detached");
+  },
+);
+
+test("forget remains authoritative while a child snapshot observation is being established", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-refresh-intent-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => a.close());
+  const b = await daemon();
+  const wire = await hostWire(b);
+  const origin = await api(a);
+  const destination = await api(b);
+  await origin.paseo.hosts.add({ connection: wire.connection });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  const held = wire.holdResponses((message) => message.type === "fetch_agents_response");
+  const child = await parent.subagents.create({
+    serverId: b.daemon.getServerId(),
+    workspaceId: workspace.id,
+    config: { provider: "codex/test" },
+  });
+  const directChild = destination.paseo.agents.ref(child.id);
+  await directChild.detach();
+
+  await held.ready;
+  const forgetting = parent.subagents.forget(child.address);
+  await expect.poll(async () => (await parent.subagents.list()).rows.length).toBe(0);
+  held.release();
+  await forgetting;
+  expect((await parent.subagents.list()).rows).toEqual([]);
+  await parent.archive();
+  expect((await directChild.refresh())?.agent.archivedAt).toBeNull();
+  await a.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  expect((await next.paseo.agents.ref(parent.id).subagents.list()).rows).toEqual([]);
+});
+
+test("run checkpoints retain submission identity, permission/resume and terminal results across destination restart", async () => {
+  const a = await daemon();
+  const root = await mkdtemp(join(tmpdir(), "paseo-run-checkpoint-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const b = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => b.close());
+  const origin = await api(a);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const runtime = origin.paseo.hosts.runtime();
+  cleanup.push(() => runtime.dispose());
+  const target = await runtime.client(b.daemon.getServerId());
+  cleanup.push(() => target.dispose());
+  const child = await target.agents.create({
+    cwd: b.staticDir,
+    config: { provider: "codex/test", modeId: "default" },
+  });
+  expect(await child.runs.get("never-submitted")).toBeNull();
+  await child.send("Reply with CHECKPOINT_FIRST", { messageId: "first-submission" });
+  await expect
+    .poll(async () => (await child.runs.get("first-submission"))?.status)
+    .toBe("completed");
+  const first = (await child.runs.get("first-submission"))!;
+  expect(first).toMatchObject({
+    agent: child.address,
+    submissionId: "first-submission",
+    turnId: expect.any(String),
+    status: "completed",
+  });
+  expect(first.checkpoints.at(-1)).toMatchObject({ kind: "completed", result: expect.any(String) });
+  await child.send('printf "ok" > permission.txt', { messageId: "permission-submission" });
+  await expect
+    .poll(async () => (await child.runs.get("permission-submission"))?.status)
+    .toBe("permission");
+  const permission = (await child.refresh())!.agent.pendingPermissions[0]!;
+  expect((await child.runs.get("permission-submission"))?.checkpoints.at(-1)).toMatchObject({
+    kind: "permission",
+    permissionRequestId: permission.id,
+  });
+  await child.respondToPermission({ requestId: permission.id, response: { behavior: "allow" } });
+  await expect
+    .poll(async () => (await child.runs.get("permission-submission"))?.status)
+    .toBe("completed");
+  const second = (await child.runs.get("permission-submission"))!;
+  expect(second.turnId).not.toBe(first.turnId);
+  expect(second.checkpoints.map((checkpoint) => checkpoint.kind)).toEqual(
+    expect.arrayContaining(["submitted", "running", "permission", "resumed", "completed"]),
+  );
+  expect(await child.runs.get("first-submission")).toEqual(first);
+  await b.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  const restored = next.paseo.agents.ref(child.id);
+  expect(await restored.runs.get("first-submission")).toEqual(first);
+  expect(await restored.runs.get("permission-submission")).toEqual(second);
+  expect(await restored.runs.get("never-submitted")).toBeNull();
+});
+
+test.each(["detach", "archive"] as const)(
+  "ordinary child %s confirms terminal membership and releases the relationship observation",
+  async (action) => {
+    const a = await daemon();
+    const b = await daemon();
+    const origin = await api(a);
+    const destination = await api(b);
+    await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+    await online(origin.paseo);
+    const count = async () =>
+      Number(
+        /Host runtimes: (\d+)/.exec((await origin.client.collectDiagnostics()).diagnostic)![1],
+      );
+    const before = await count();
+    const parent = await origin.paseo.agents.create({
+      cwd: a.staticDir,
+      config: { provider: "codex/test" },
+    });
+    const workspace = await destination.paseo.workspaces.create({
+      source: { kind: "directory", path: b.staticDir },
+    });
+    const child = await parent.subagents.create({
+      serverId: b.daemon.getServerId(),
+      workspaceId: workspace.id,
+      config: { provider: "codex/test" },
+    });
+    await destination.paseo.agents.ref(child.id)[action]();
+    await expect
+      .poll(async () => (await parent.subagents.list()).rows[0]?.phase)
+      .toBe(action === "detach" ? "detached" : "archived");
+    await expect.poll(count).toBe(before);
+  },
+);
+
+test("run result never inherits an earlier turn answer when the next turn fails without output", async () => {
+  const instance = await daemon();
+  const { paseo } = await api(instance);
+  const agent = await paseo.agents.create({
+    cwd: instance.staticDir,
+    config: { provider: "codex/test" },
+  });
+  await agent.send("Reply with FIRST_ANSWER", { messageId: "answered" });
+  await expect.poll(async () => (await agent.runs.get("answered"))?.status).toBe("completed");
+  expect((await agent.runs.get("answered"))?.checkpoints.at(-1)?.result).not.toBe("");
+  await agent.send("Emit a turn failure", { messageId: "empty-failure" });
+  await expect.poll(async () => (await agent.runs.get("empty-failure"))?.status).toBe("failed");
+  expect((await agent.runs.get("empty-failure"))?.checkpoints.at(-1)).toMatchObject({
+    kind: "failed",
+    result: "",
+  });
+});
+
+test("permission run across destination restart exposes interrupted evidence without replaying its prompt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-interrupted-run-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const first = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => first.close());
+  const origin = await api(first);
+  const agent = await origin.paseo.agents.create({
+    cwd: first.staticDir,
+    config: { provider: "codex/test", modeId: "default" },
+  });
+  await agent.send('printf "ok" > interrupted.txt', { messageId: "unfinished" });
+  await expect.poll(async () => (await agent.runs.get("unfinished"))?.status).toBe("permission");
+  const before = (await agent.runs.get("unfinished"))!;
+  await first.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  const restored = next.paseo.agents.ref(agent.id);
+  const run = await restored.runs.get("unfinished");
+  expect(run).toMatchObject({
+    agent: agent.address,
+    submissionId: "unfinished",
+    turnId: before.turnId,
+    status: "interrupted",
+  });
+  expect(run?.checkpoints.slice(0, -1)).toEqual(before.checkpoints);
+  expect(run?.checkpoints.at(-1)).toMatchObject({ kind: "interrupted" });
+  expect(await restored.runs.get("unfinished")).toEqual(run);
+});
+
+test("provider admission survives a journal write failure without being reported as a rejected turn", async () => {
+  let journalPath = "";
+  let release!: () => void;
+  const terminalGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  cleanup.push(async () => release());
+  const instance = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      onStartTurn: () => {
+        rmSync(journalPath);
+        mkdirSync(journalPath);
+      },
+      beforeTurnComplete: () => terminalGate,
+    }),
+  });
+  cleanup.push(() => instance.close());
+  const { paseo } = await api(instance);
+  const agent = await paseo.agents.create({
+    cwd: instance.staticDir,
+    config: { provider: "codex/test" },
+  });
+  journalPath = join(
+    instance.paseoHome,
+    "agent-runs",
+    `${createHash("sha256").update(agent.id).digest("hex")}.json`,
+  );
+  await agent.send("Reply with ADMITTED_ONCE", { messageId: "accepted-with-storage-failure" });
+  const run = await agent.runs.get("accepted-with-storage-failure");
+  expect(run).toMatchObject({ status: "running", turnId: expect.any(String) });
+  expect(run?.checkpoints.map((checkpoint) => checkpoint.kind)).not.toContain("failed");
+  rmSync(journalPath, { recursive: true });
+  release();
+  await expect
+    .poll(async () => (await agent.runs.get("accepted-with-storage-failure"))?.status)
+    .toBe("completed");
+});
+
+test("terminal checkpoint storage failure preserves provider completion and retries durable evidence", async () => {
+  let journalPath = "";
+  let release!: () => void;
+  let reached!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  cleanup.push(async () => release());
+  const instance = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      beforeTurnComplete: async () => {
+        reached();
+        await gate;
+        await rm(journalPath);
+        await mkdir(journalPath);
+      },
+    }),
+  });
+  cleanup.push(() => instance.close());
+  const { paseo } = await api(instance);
+  const agent = await paseo.agents.create({
+    cwd: instance.staticDir,
+    config: { provider: "codex/test" },
+  });
+  journalPath = join(
+    instance.paseoHome,
+    "agent-runs",
+    `${createHash("sha256").update(agent.id).digest("hex")}.json`,
+  );
+  await agent.send("Reply with TERMINAL_EVIDENCE", { messageId: "terminal-storage-failure" });
+  await ready;
+  const finished = agent.waitForFinish(2000);
+  release();
+  expect((await finished).status).toBe("idle");
+  expect(await agent.runs.get("terminal-storage-failure")).toMatchObject({
+    status: "completed",
+    durability: "pending",
+  });
+  await rm(journalPath, { recursive: true });
+  expect(await agent.runs.get("terminal-storage-failure")).toMatchObject({
+    status: "completed",
+    durability: "persisted",
+  });
+});
+
+test("creation cancellation survives destination restart and fences delayed submissions by reserved identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-create-cancel-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const first = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => first.close());
+  const origin = await api(first);
+  const agentId = crypto.randomUUID();
+  const idempotencyKey = "reserved-before-admission";
+  expect(await origin.paseo.creations.cancelAgent({ agentId, idempotencyKey })).toEqual({
+    status: "canceled",
+    reservedAgent: { serverId: first.daemon.getServerId(), agentId },
+  });
+  await expect(
+    origin.paseo.creations.cancelAgent({ agentId: crypto.randomUUID(), idempotencyKey }),
+  ).rejects.toMatchObject({ code: "agent_request_key_conflict" });
+  const viewer = createHostClient(`127.0.0.1:${first.port}`, {
+    clientId: crypto.randomUUID(),
+    sessionPermissions: ["daemon.read", "workspace.read"],
+    reconnect: { enabled: false },
+  });
+  cleanup.push(() => viewer.close());
+  await viewer.connect();
+  const viewerApi = createPaseoApi(viewer);
+  cleanup.push(() => viewerApi.dispose());
+  await expect(
+    viewerApi.creations.cancelAgent({
+      agentId: crypto.randomUUID(),
+      idempotencyKey: "unauthorized-cancellation",
+    }),
+  ).rejects.toMatchObject({ code: "access_denied" });
+  await first.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  await expect(
+    next.paseo.agents.create({
+      agentId,
+      idempotencyKey,
+      cwd: restarted.staticDir,
+      config: { provider: "codex/test" },
+      prompt: "Never execute this delayed submission",
+    }),
+  ).rejects.toMatchObject({ code: "creation_canceled" });
+  await expect(
+    next.paseo.agents.create({
+      agentId: crypto.randomUUID(),
+      idempotencyKey,
+      cwd: restarted.staticDir,
+      config: { provider: "codex/test" },
+    }),
+  ).rejects.toMatchObject({ code: "agent_request_key_conflict" });
+  expect(await next.paseo.agents.ref(agentId).refresh()).toBeNull();
+  expect(await next.paseo.creations.cancelAgent({ agentId, idempotencyKey })).toMatchObject({
+    status: "canceled",
+  });
+});
+
+test("creation cancellation reports admitted work before provider resource readiness and never overwrites its runner", async () => {
+  let release!: () => void;
+  let reached!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  cleanup.push(async () => release());
+  let prompts = 0;
+  const instance = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      beforeCreateSession: async (config) => {
+        if (!config.internal) {
+          reached();
+          await gate;
+        }
+      },
+      onStartTurn: (_prompt, config) => {
+        if (!config.internal) prompts++;
+      },
+    }),
+  });
+  cleanup.push(() => instance.close());
+  const { paseo } = await api(instance);
+  const agentId = crypto.randomUUID();
+  const idempotencyKey = "admitted-before-cancel";
+  const creating = paseo.agents.create({
+    agentId,
+    idempotencyKey,
+    cwd: instance.staticDir,
+    config: { provider: "codex/test" },
+    prompt: "Execute exactly once",
+  });
+  void creating.catch(() => {});
+  await ready;
+  const cancellation = await paseo.creations.cancelAgent({ agentId, idempotencyKey });
+  expect(cancellation).toMatchObject({
+    status: "admitted",
+    reservedAgent: { serverId: instance.daemon.getServerId(), agentId },
+    creation: { agentId, phase: "accepted" },
+  });
+  expect(cancellation.status === "admitted" && cancellation.creation.agent).toBeUndefined();
+  release();
+  await creating;
+  expect(await paseo.creations.cancelAgent({ agentId, idempotencyKey })).toMatchObject({
+    status: "admitted",
+    creation: { phase: "completed" },
+  });
+  expect(prompts).toBe(1);
+  const observation = paseo.creations.observeAgent(idempotencyKey);
+  expect((await observation.ready).snapshot).toMatchObject({ phase: "completed", agentId });
+  await observation.release();
+});
+
+test("parent archive cancels an unadmitted durable creation after origin restart without a stray child", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-unadmitted-child-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => a.close());
+  const b = await daemon();
+  const origin = await api(a);
+  const destination = await api(b);
+  const saved = await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  await origin.paseo.hosts.update(saved.registrationId, { enabled: false });
+  await expect(
+    parent.subagents.create({
+      serverId: b.daemon.getServerId(),
+      workspaceId: workspace.id,
+      config: { provider: "codex/test" },
+      idempotencyKey: "unadmitted",
+      prompt: "Must never be replayed",
+    }),
+  ).rejects.toMatchObject({ code: "host_disabled" });
+  const row = (await parent.subagents.list()).rows[0]!;
+  expect(row.phase).toBe("creating");
+  expect(await destination.paseo.agents.ref(row.child.agentId).refresh()).toBeNull();
+  await parent.archive();
+  expect((await parent.subagents.list()).rows[0]?.phase).toBe("detach_pending");
+  await a.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  const restored = next.paseo.agents.ref(parent.id);
+  await next.paseo.hosts.update(saved.registrationId, { enabled: true });
+  await online(next.paseo);
+  await expect.poll(async () => (await restored.subagents.list()).rows[0]?.phase).toBe("canceled");
+  expect(await destination.paseo.agents.ref(row.child.agentId).refresh()).toBeNull();
+  await next.paseo.hosts.remove(saved.registrationId);
+});
+
+test("parent lifecycle recovers an admitted creation that becomes ready after origin restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paseo-admitted-child-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const a = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => a.close());
+  let release!: () => void;
+  let reached!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  cleanup.push(async () => release());
+  const b = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      beforeCreateSession: async (config) => {
+        if (!config.internal) {
+          reached();
+          await gate;
+        }
+      },
+    }),
+  });
+  cleanup.push(() => b.close());
+  const origin = await api(a);
+  const destination = await api(b);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  const creating = parent.subagents.create({
+    serverId: b.daemon.getServerId(),
+    workspaceId: workspace.id,
+    config: { provider: "codex/test" },
+    idempotencyKey: "admitted-child",
+    prompt: "Run once after admission",
+  });
+  void creating.catch(() => {});
+  await ready;
+  const row = (await parent.subagents.list()).rows[0]!;
+  await parent.archive();
+  expect((await parent.subagents.list()).rows[0]).toMatchObject({
+    phase: "detach_pending",
+    error: { code: "creation_pending" },
+  });
+  await a.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const next = await api(restarted);
+  await online(next.paseo);
+  const restored = next.paseo.agents.ref(parent.id);
+  await expect
+    .poll(async () => (await restored.subagents.list()).rows[0]?.error?.code)
+    .toBe("creation_pending");
+  release();
+  await expect.poll(async () => (await restored.subagents.list()).rows[0]?.phase).toBe("detached");
+  expect((await destination.paseo.agents.ref(row.child.agentId).refresh())?.agent).toMatchObject({
+    parent: null,
+    archivedAt: null,
+  });
+});
+
+test("failed admitted creation exposes its failure through lifecycle recovery and forget releases its receipt observation", async () => {
+  const a = await daemon();
+  let attempts = 0;
+  const b = await createTestPaseoDaemon({
+    agentClients: createTestAgentClients({
+      beforeCreateSession: async (config) => {
+        if (!config.internal) {
+          attempts++;
+          throw new Error("Provider startup rejected before resource creation");
+        }
+      },
+    }),
+  });
+  cleanup.push(() => b.close());
+  const origin = await api(a);
+  const destination = await api(b);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  await online(origin.paseo);
+  const parent = await origin.paseo.agents.create({
+    cwd: a.staticDir,
+    config: { provider: "codex/test" },
+  });
+  const workspace = await destination.paseo.workspaces.create({
+    source: { kind: "directory", path: b.staticDir },
+  });
+  await expect(
+    parent.subagents.create({
+      serverId: b.daemon.getServerId(),
+      workspaceId: workspace.id,
+      config: { provider: "codex/test" },
+      idempotencyKey: "failed-admitted",
+    }),
+  ).rejects.toThrow("Provider startup rejected");
+  const row = (await parent.subagents.list()).rows[0]!;
+  await parent.archive();
+  expect((await parent.subagents.list()).rows[0]).toMatchObject({
+    phase: "detach_pending",
+    freshness: "current",
+    error: {
+      code: "creation_failed",
+      message: expect.stringContaining("Provider startup rejected"),
+    },
+  });
+  expect(attempts).toBe(1);
+  await parent.subagents.forget(row.child);
+  await expect
+    .poll(async () =>
+      Number(
+        /Host runtimes: (\d+)/.exec((await origin.client.collectDiagnostics()).diagnostic)![1],
+      ),
+    )
+    .toBe(0);
+  expect((await parent.subagents.list()).rows).toEqual([]);
+  expect(attempts).toBe(1);
 });

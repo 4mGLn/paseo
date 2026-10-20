@@ -1,3 +1,5 @@
+import { AgentRunGetRequestSchema, AgentRunGetResponseSchema } from "./agent-runs.js";
+import { AgentAddressSchema, WorkspaceAddressSchema } from "./addresses.js";
 import { AgentMessageSchema } from "./agent-message.js";
 import {
   HostsListRequestSchema,
@@ -830,6 +832,7 @@ const AgentActiveTurnPayloadSchema = z.object({
 });
 
 export const AgentSnapshotPayloadSchema = z.object({
+  parent: AgentAddressSchema.nullable().optional(),
   id: z.string(),
   provider: AgentProviderSchema,
   cwd: z.string(),
@@ -865,6 +868,7 @@ export const AgentSnapshotPayloadSchema = z.object({
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
 
 export const AgentListItemPayloadSchema = z.object({
+  parent: AgentAddressSchema.nullable().optional(),
   id: z.string(),
   shortId: z.string(),
   title: z.string().nullable(),
@@ -925,6 +929,7 @@ export const AudioPlayedMessageSchema = z.object({
 });
 
 const AgentDirectoryFilterSchema = z.object({
+  agentIds: z.array(z.string()).optional(),
   labels: z.record(z.string(), z.string()).optional(),
   projectKeys: z.array(z.string()).optional(),
   statuses: z.array(AgentStatusSchema).optional(),
@@ -1725,6 +1730,7 @@ export const CreateAgentWorktreeTargetSchema = z.discriminatedUnion("mode", [
 export type CreateAgentWorktreeTarget = z.infer<typeof CreateAgentWorktreeTargetSchema>;
 
 export const CreateAgentRequestMessageSchema = z.object({
+  parent: AgentAddressSchema.nullable().optional(),
   type: z.literal("create_agent_request"),
   // Legacy create_agent_request uses a separate initial-message receipt when keyed.
   idempotencyKey: z.string().min(1).max(512).optional(),
@@ -3220,7 +3226,106 @@ export const SubscriptionReleaseResponseSchema = z.object({
   payload: z.object({ requestId: z.string(), subscriptionId: z.string() }),
 });
 
+export const SubagentRelationshipSchema = z.object({
+  id: z.string(),
+  parent: AgentAddressSchema,
+  child: AgentAddressSchema,
+  workspace: WorkspaceAddressSchema.optional(),
+  phase: z.enum([
+    "creating",
+    "attached",
+    "detach_pending",
+    "lifecycle_pending",
+    "canceled",
+    "detached",
+    "archived",
+    "forgotten",
+  ]),
+  snapshot: AgentSnapshotPayloadSchema.optional(),
+  observedAt: z.string().nullable(),
+  freshness: z.enum(["current", "stale", "unavailable"]),
+  error: z.object({ code: z.string(), message: z.string() }).nullable(),
+});
+export type SubagentRelationship = z.infer<typeof SubagentRelationshipSchema>;
+export const SubagentDirectorySchema = z.object({
+  parent: AgentAddressSchema,
+  rows: z.array(SubagentRelationshipSchema),
+});
+export type SubagentDirectory = z.infer<typeof SubagentDirectorySchema>;
+export const SubagentCreateInputSchema = z.object({
+  serverId: z.string().min(1),
+  idempotencyKey: z.string().min(1).max(512),
+  input: CreateAgentRequestMessageSchema.omit({
+    type: true,
+    requestId: true,
+    callerAgentId: true,
+    parent: true,
+  }).extend({ agentId: z.string().uuid().optional() }),
+});
+export type SubagentCreateInput = z.infer<typeof SubagentCreateInputSchema>;
+export const SubagentsCreateRequestSchema = z.object({
+  type: z.literal("agent.subagents.create.request"),
+  requestId: z.string(),
+  parentId: z.string(),
+  ...SubagentCreateInputSchema.shape,
+});
+export const SubagentsCreateResponseSchema = z.object({
+  type: z.literal("agent.subagents.create.response"),
+  payload: z.object({ requestId: z.string(), child: AgentAddressSchema }),
+});
+export const SubagentsListRequestSchema = z.object({
+  type: z.literal("agent.subagents.list.request"),
+  requestId: z.string(),
+  parentId: z.string(),
+  observe: z.boolean().optional(),
+});
+export const SubagentsListResponseSchema = z.object({
+  type: z.literal("agent.subagents.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    directory: SubagentDirectorySchema,
+    subscriptionId: z.string().optional(),
+  }),
+});
+export const SubagentsDetachRequestSchema = z.object({
+  type: z.literal("agent.subagents.detach.request"),
+  requestId: z.string(),
+  parentId: z.string(),
+  child: AgentAddressSchema,
+});
+export const SubagentsDetachResponseSchema = z.object({
+  type: z.literal("agent.subagents.detach.response"),
+  payload: z.object({ requestId: z.string(), relationship: SubagentRelationshipSchema }),
+});
+export const SubagentsForgetRequestSchema = z.object({
+  type: z.literal("agent.subagents.forget.request"),
+  requestId: z.string(),
+  parentId: z.string(),
+  child: AgentAddressSchema,
+});
+export const SubagentsForgetResponseSchema = z.object({
+  type: z.literal("agent.subagents.forget.response"),
+  payload: z.object({ requestId: z.string() }),
+});
+export const SubagentsChangedSchema = z.object({
+  type: z.literal("agent.subagents.changed"),
+  payload: z.object({ subscriptionId: z.string(), directory: SubagentDirectorySchema }),
+});
+
+export const AgentCreationCancelRequestSchema = z.object({
+  type: z.literal("agent.create.cancel.request"),
+  requestId: z.string(),
+  idempotencyKey: z.string().min(1),
+  agentId: z.string().uuid(),
+});
+
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
+  AgentCreationCancelRequestSchema,
+  AgentRunGetRequestSchema,
+  SubagentsDetachRequestSchema,
+  SubagentsForgetRequestSchema,
+  SubagentsCreateRequestSchema,
+  SubagentsListRequestSchema,
   HostsListRequestSchema,
   HostsAddRequestSchema,
   HostsUpdateRequestSchema,
@@ -3623,6 +3728,7 @@ export const ServerInfoStatusPayloadSchema = z
         backgroundWorkspaces: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
         connectedHosts: z.boolean().optional(),
+        fleetSubagents: z.boolean().optional(),
         hostMultiplexing: z.boolean().optional(),
         usageSources: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
@@ -4938,6 +5044,19 @@ export const CreationSnapshotSchema = z.object({
   failedStage: z.enum(["workspace", "agent", "prompt"]).optional(),
   outcomeUnknown: z.boolean().optional(),
 });
+export const AgentCreationCancellationSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("canceled"), reservedAgent: AgentAddressSchema }),
+  z.object({
+    status: z.literal("admitted"),
+    reservedAgent: AgentAddressSchema,
+    creation: CreationSnapshotSchema,
+  }),
+]);
+export type AgentCreationCancellation = z.infer<typeof AgentCreationCancellationSchema>;
+export const AgentCreationCancelResponseSchema = z.object({
+  type: z.literal("agent.create.cancel.response"),
+  payload: z.object({ requestId: z.string(), cancellation: AgentCreationCancellationSchema }),
+});
 export type CreationSnapshot = z.infer<typeof CreationSnapshotSchema>;
 export type AgentCreateRequest = z.infer<typeof AgentCreateRequestSchema>;
 export type WorkspaceInitialAgent = z.infer<typeof WorkspaceInitialAgentSchema>;
@@ -4964,6 +5083,7 @@ export const AgentCreateResponseSchema = z.object({
     requestId: z.string(),
     agent: AgentSnapshotPayloadSchema.nullable(),
     error: z.string().nullable(),
+    errorCode: z.string().optional(),
     creation: CreationSnapshotSchema.optional(),
   }),
 });
@@ -6903,6 +7023,13 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
 });
 
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  AgentCreationCancelResponseSchema,
+  AgentRunGetResponseSchema,
+  SubagentsDetachResponseSchema,
+  SubagentsForgetResponseSchema,
+  SubagentsCreateResponseSchema,
+  SubagentsListResponseSchema,
+  SubagentsChangedSchema,
   HostsListResponseSchema,
   HostsChangedSchema,
   HostsAddResponseSchema,

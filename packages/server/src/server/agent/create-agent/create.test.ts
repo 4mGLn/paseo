@@ -17,6 +17,7 @@ const logger = createTestLogger();
 
 function createRealAgentManager(storage: AgentStorage): AgentManager {
   return new AgentManager({
+    serverId: "srv_test",
     clients: createTestAgentClients(),
     registry: storage,
     logger,

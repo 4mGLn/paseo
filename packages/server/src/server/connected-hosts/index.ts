@@ -60,6 +60,7 @@ export class ConnectedHosts {
   constructor(
     private readonly home: string,
     private readonly self: HostDirectory["self"],
+    private readonly assertRemovable: (serverId: string) => Promise<void> = async () => {},
   ) {
     this.ready = this.load();
     void this.ready.catch(() => {});
@@ -215,6 +216,7 @@ export class ConnectedHosts {
           "permission_denied",
           "Only the source or access manager can remove this host. Disable it to stop access.",
         );
+      if (row.serverId) await this.assertRemovable(row.serverId);
       const rows = this.rows.filter((entry) => entry !== row);
       await this.persist(rows);
       this.stop(id, "host_unknown");

@@ -341,7 +341,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -383,7 +383,7 @@ describe("ScheduleService", () => {
       const service = createScheduleService({
         paseoHome: tempDir,
         logger: createTestLogger(),
-        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
         agentStorage,
         providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
         now: () => now,
@@ -435,7 +435,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -462,7 +462,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -502,7 +502,7 @@ describe("ScheduleService", () => {
       const service = createScheduleService({
         paseoHome: tempDir,
         logger: createTestLogger(),
-        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
         agentStorage,
         providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
         now: () => now,
@@ -537,7 +537,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -586,7 +586,7 @@ describe("ScheduleService", () => {
       const service = createScheduleService({
         paseoHome: tempDir,
         logger: createTestLogger(),
-        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
         agentStorage,
         providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
         now: () => now,
@@ -615,7 +615,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -651,7 +651,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -684,6 +684,7 @@ describe("ScheduleService", () => {
 
   test("executes new-agent schedules through AgentManager with real fake clients", async () => {
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -724,6 +725,7 @@ describe("ScheduleService", () => {
 
   test("delivers agent-target schedules through the steer-or-interrupt path", async () => {
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -758,6 +760,7 @@ describe("ScheduleService", () => {
 
   test("titles scheduled new agents from the schedule prompt", async () => {
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -801,7 +804,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       createDirectoryWorkspace: createScheduleDirectoryWorkspace,
@@ -838,6 +841,7 @@ describe("ScheduleService", () => {
       createArchiveWorkspace,
     } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -906,6 +910,7 @@ describe("ScheduleService", () => {
       createArchiveWorkspace,
     } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -970,6 +975,7 @@ describe("ScheduleService", () => {
       createArchiveWorkspace,
     } = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -1024,7 +1030,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -1087,7 +1093,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -1129,6 +1135,7 @@ describe("ScheduleService", () => {
     const createdInputs: Parameters<ScheduleServiceOptions["createAgent"]>[0][] = [];
     const runPrompts: AgentPromptInput[] = [];
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -1198,6 +1205,7 @@ describe("ScheduleService", () => {
   test("scheduled new-agent run output falls back to final text and curated timeline", async () => {
     let runCount = 0;
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -1278,6 +1286,7 @@ describe("ScheduleService", () => {
 
   test("scheduled new-agent cancellations fail the run", async () => {
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -1345,6 +1354,7 @@ describe("ScheduleService", () => {
     logger.child = (() => logger) as typeof logger.child;
     const archiveError = new Error("archive exploded");
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -1552,6 +1562,7 @@ describe("ScheduleService", () => {
     }
 
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: { claude: new PromptEchoScheduleClient() },
       registry: agentStorage,
@@ -1736,6 +1747,7 @@ describe("ScheduleService", () => {
 
     const client = new CountingScheduleClient();
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: { claude: client },
       registry: agentStorage,
@@ -1838,6 +1850,7 @@ describe("ScheduleService", () => {
     }
 
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: {
         claude: {
@@ -1893,6 +1906,7 @@ describe("ScheduleService", () => {
 
   test("defaults new-agent modeId to provider's unattended mode", async () => {
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients: createTestAgentClients(),
       registry: agentStorage,
@@ -1962,6 +1976,7 @@ describe("ScheduleService", () => {
       isAvailable: () => opencodeClient.isAvailable(),
     } satisfies AgentClient;
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients,
       registry: agentStorage,
@@ -2033,6 +2048,7 @@ describe("ScheduleService", () => {
       isAvailable: () => claudeClient.isAvailable(),
     } satisfies AgentClient;
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger: createTestLogger(),
       clients,
       providerDefinitions: { claude: TEST_CLAUDE_PROVIDER_DEFINITION },
@@ -2118,7 +2134,7 @@ describe("ScheduleService", () => {
     const service1 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2143,7 +2159,7 @@ describe("ScheduleService", () => {
     const service2 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2160,7 +2176,7 @@ describe("ScheduleService", () => {
     const service1 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2189,7 +2205,7 @@ describe("ScheduleService", () => {
     const service2 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2205,7 +2221,7 @@ describe("ScheduleService", () => {
     const service1 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2249,7 +2265,7 @@ describe("ScheduleService", () => {
     const service2 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2274,7 +2290,7 @@ describe("ScheduleService", () => {
     const service1 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2317,7 +2333,7 @@ describe("ScheduleService", () => {
     const service2 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2351,7 +2367,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2396,7 +2412,7 @@ describe("ScheduleService", () => {
   });
 
   test("rejects archived target agents before loading them", async () => {
-    const manager = new AgentManager({ logger: createTestLogger() });
+    const manager = new AgentManager({ serverId: "srv_test", logger: createTestLogger() });
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
@@ -2461,7 +2477,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2484,7 +2500,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2508,7 +2524,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2531,7 +2547,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2555,7 +2571,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2591,7 +2607,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2652,7 +2668,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2685,7 +2701,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2718,7 +2734,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2750,7 +2766,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2776,7 +2792,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2801,7 +2817,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2846,7 +2862,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2881,7 +2897,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2907,7 +2923,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -2974,7 +2990,7 @@ describe("ScheduleService", () => {
     const service1 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3018,7 +3034,7 @@ describe("ScheduleService", () => {
     const service2 = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3041,7 +3057,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3073,7 +3089,7 @@ describe("ScheduleService", () => {
     service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3104,7 +3120,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3136,7 +3152,7 @@ describe("ScheduleService", () => {
       const service = createScheduleService({
         paseoHome: tempDir,
         logger: createTestLogger(),
-        agentManager: new AgentManager({ logger: createTestLogger() }),
+        agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
         agentStorage,
         providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
         now: () => now,
@@ -3171,7 +3187,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3207,7 +3223,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3232,7 +3248,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3270,7 +3286,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3301,7 +3317,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3324,7 +3340,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3366,7 +3382,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3401,7 +3417,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3456,7 +3472,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3482,7 +3498,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3520,7 +3536,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3550,7 +3566,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,
@@ -3596,7 +3612,7 @@ describe("ScheduleService", () => {
     const service = createScheduleService({
       paseoHome: tempDir,
       logger: createTestLogger(),
-      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger: createTestLogger() }),
       agentStorage,
       providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
       now: () => now,

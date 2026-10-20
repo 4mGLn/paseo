@@ -1,3 +1,5 @@
+import { AgentRuns } from "./runs/index.js";
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import { projectTimelineRows } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
@@ -7,6 +9,7 @@ import { basename, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import {
   AGENT_LIFECYCLE_STATUSES,
+  shouldDetachFromArchivedParent,
   type AgentLifecycleStatus,
 } from "@getpaseo/protocol/agent-lifecycle";
 import {
@@ -314,10 +317,13 @@ export interface CreateAgentOptions {
   initialTitle?: string | null;
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
+  parent?: AgentAddress | null;
   owner?: AgentOwner;
 }
 
 export interface AgentManagerOptions {
+  runJournalDirectory?: string;
+  serverId: string;
   pluginLifecycle?: PluginLifecycle;
   /** An internal workspace makes every agent created inside it internal. */
   clients?: ProviderClientMap;
@@ -408,6 +414,7 @@ interface ManagedAgentBase {
    * Null/undefined for legacy agents created before ownership stamping.
    */
   workspaceId?: string;
+  parent?: AgentAddress | null;
   owner?: AgentOwner;
   capabilities: AgentCapabilityFlags;
   config: AgentSessionConfig;
@@ -547,6 +554,7 @@ interface WriteLabelsResult {
 }
 
 interface AgentMetadataPatch {
+  parent?: AgentAddress | null;
   title?: string;
   labels?: AgentLabelPatch;
 }
@@ -697,17 +705,6 @@ function getFirstUserMessageTextFromRows(rows: readonly AgentTimelineRow[]): str
   return null;
 }
 
-function shouldDetachFromArchivedParent(
-  parent: Pick<StoredAgentRecord, "workspaceId">,
-  child: StoredAgentRecord,
-): boolean {
-  const isCrossWorkspace =
-    parent.workspaceId !== undefined &&
-    child.workspaceId !== undefined &&
-    parent.workspaceId !== child.workspaceId;
-  return isCrossWorkspace || hasOpenAgentTab(child.labels);
-}
-
 function detachedAgentLabelPatch(labels: Record<string, string>): AgentLabelPatch {
   const patch: AgentLabelPatch = { [PARENT_AGENT_ID_LABEL]: null };
   for (const label of Object.keys(labels)) {
@@ -747,6 +744,7 @@ export class AgentManager {
   private readonly sessionEventTails = new Map<string, Promise<void>>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
   private readonly foregroundMutationTails = new Map<string, Promise<void>>();
+  private readonly runJournal: AgentRuns;
   private readonly runs = new AgentRunState();
   private readonly subscribers = new Set<SubscriptionRecord>();
   private readonly idFactory: () => string;
@@ -776,7 +774,14 @@ export class AgentManager {
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
   private acceptingAgentRegistrations = true;
 
+  private readonly serverId: string;
+
   constructor(options: AgentManagerOptions) {
+    this.serverId = options.serverId;
+    this.runJournal = new AgentRuns({
+      serverId: options.serverId,
+      directory: options.runJournalDirectory,
+    });
     this.pluginLifecycle = options.pluginLifecycle;
     this.idFactory = options?.idFactory ?? (() => randomUUID());
     this.registry = options?.registry;
@@ -859,6 +864,10 @@ export class AgentManager {
 
   setAgentAttentionCallback(callback: AgentAttentionCallback): void {
     this.onAgentAttention = callback;
+  }
+
+  getAgentRun(agentId: string, submissionId: string) {
+    return this.runJournal.get(agentId, submissionId);
   }
 
   setAgentArchivedCallback(callback: AgentArchivedCallback): void {
@@ -1316,6 +1325,7 @@ export class AgentManager {
       labels: options.labels,
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
+      parent: options.parent,
       owner: options.owner,
       historyPrimed: true,
     });
@@ -1347,6 +1357,7 @@ export class AgentManager {
       lastUserMessageAt?: Date | null;
       labels?: Record<string, string>;
       workspaceId?: string;
+      parent?: AgentAddress | null;
       owner?: AgentOwner;
       attention?: AttentionState;
     },
@@ -1379,6 +1390,7 @@ export class AgentManager {
       lastUserMessageAt?: Date | null;
       labels?: Record<string, string>;
       workspaceId?: string;
+      parent?: AgentAddress | null;
       owner?: AgentOwner;
       attention?: AttentionState;
     },
@@ -1623,6 +1635,7 @@ export class AgentManager {
       return this.registerSession(session, storedConfig, agentId, {
         labels: existing.labels,
         workspaceId: existing.workspaceId,
+        parent: existing.parent,
         owner: existing.owner,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
@@ -1903,7 +1916,17 @@ export class AgentManager {
         ) {
           return;
         }
-        if (shouldDetachFromArchivedParent(parent, currentChild)) {
+        if (
+          shouldDetachFromArchivedParent({
+            parentWorkspace: parent.workspaceId
+              ? { serverId: this.serverId, workspaceId: parent.workspaceId }
+              : undefined,
+            childWorkspace: currentChild.workspaceId
+              ? { serverId: this.serverId, workspaceId: currentChild.workspaceId }
+              : undefined,
+            hasOpenTab: hasOpenAgentTab(currentChild.labels),
+          })
+        ) {
           await this.detachAgentUnlocked(currentChild.id);
         } else if (this.agents.has(currentChild.id)) {
           await this.archiveAgentUnlocked(currentChild.id);
@@ -1986,6 +2009,7 @@ export class AgentManager {
         provider: record.provider,
         cwd: record.cwd,
         workspaceId: record.workspaceId,
+        parent: record.parent,
         owner: record.owner,
         session: null,
         capabilities: STORED_AGENT_CAPABILITIES,
@@ -2154,6 +2178,7 @@ export class AgentManager {
 
     const nextRecord = {
       ...record,
+      ...(patch.parent !== undefined ? { parent: patch.parent } : {}),
       ...(patch.title ? { title: patch.title } : {}),
       ...(patch.labels ? { labels: applyLabelPatch(record.labels, patch.labels) } : {}),
       updatedAt: this.nextStoredUpdatedAt(record),
@@ -2179,36 +2204,36 @@ export class AgentManager {
     const liveAgent = this.agents.get(agentId);
     if (liveAgent) {
       const previousParentAgentId = getParentAgentIdFromLabels(liveAgent.labels);
-      if (!previousParentAgentId) {
+      const previous = {
+        parent: liveAgent.parent,
+        labels: liveAgent.labels,
+        updatedAt: liveAgent.updatedAt,
+      };
+      liveAgent.parent = null;
+      liveAgent.labels = applyLabelPatch(
+        liveAgent.labels,
+        detachedAgentLabelPatch(liveAgent.labels),
+      );
+      this.touchUpdatedAt(liveAgent);
+      try {
         await this.persistSnapshot(liveAgent);
-        const record = await registry.get(agentId);
-        if (!record) {
-          throw new Error(`Agent not found in storage after detach: ${agentId}`);
-        }
-        return { record, live: true, previousParentAgentId: null };
+      } catch (error) {
+        Object.assign(liveAgent, previous);
+        throw error;
       }
-
-      const { record } = await this.writeLabels(agentId, detachedAgentLabelPatch(liveAgent.labels));
-      if (!record) {
-        throw new Error(`Agent not found in storage after detach: ${agentId}`);
-      }
+      this.emitState(liveAgent, { persist: false });
+      const record = await registry.get(agentId);
+      if (!record) throw new Error(`Agent not found in storage after detach: ${agentId}`);
       return { record, live: true, previousParentAgentId };
     }
-
     const record = await registry.get(agentId);
-    if (!record) {
-      throw new Error(`Agent not found: ${agentId}`);
-    }
+    if (!record) throw new Error(`Agent not found: ${agentId}`);
     const previousParentAgentId = getParentAgentIdFromLabels(record.labels);
-    if (!previousParentAgentId) {
-      return { record, live: false, previousParentAgentId: null };
-    }
-
-    const result = await this.writeLabels(agentId, detachedAgentLabelPatch(record.labels));
-    if (!result.record) {
-      throw new Error(`Agent not found in storage after detach: ${agentId}`);
-    }
-    return { record: result.record, live: false, previousParentAgentId };
+    const detached = await this.writeStoredMetadata(agentId, {
+      parent: null,
+      labels: detachedAgentLabelPatch(record.labels),
+    });
+    return { record: detached, live: false, previousParentAgentId };
   }
 
   notifyAgentState(agentId: string): void {
@@ -2546,7 +2571,19 @@ export class AgentManager {
   }): Promise<string> {
     const { agent, agentId, pendingRun, prompt, options } = params;
     try {
+      const submissionId = options?.clientMessageId ?? pendingRun.token;
+      await this.runJournal.prepare(agentId, submissionId);
       const result = await agent.session.startTurn(prompt, options);
+      try {
+        await this.runJournal.start(agentId, submissionId, result.turnId);
+      } catch (error) {
+        // The provider already admitted this turn. A journal failure cannot turn
+        // accepted work into a rejection or justify submitting the prompt again.
+        this.logger.error(
+          { err: error, agentId, submissionId, turnId: result.turnId },
+          "Failed to persist admitted run identity",
+        );
+      }
       if (pendingRun.settled) {
         throw new Error(`Agent ${agentId} run was canceled before its turn started`);
       }
@@ -2564,6 +2601,12 @@ export class AgentManager {
       }
       agent.pendingReplacement = false;
       const errorMsg = error instanceof Error ? error.message : "Failed to start turn";
+      if (!(error instanceof Error && "code" in error && error.code === "submission_exists"))
+        await this.runJournal
+          .failAdmission(agentId, options?.clientMessageId ?? pendingRun.token, errorMsg)
+          .catch((journalError) => {
+            this.logger.error({ err: journalError, agentId }, "Failed to persist rejected run");
+          });
       pendingRun.start = { status: "failed", error: errorMsg };
       // A terminal rejection belongs after the submitted prompt even though no provider turn exists.
       if (options?.clientMessageId) {
@@ -3574,6 +3617,7 @@ export class AgentManager {
       initialTitle?: string | null;
       publishWhenReady?: boolean;
       workspaceId?: string;
+      parent?: AgentAddress | null;
       owner?: AgentOwner;
     },
   ): Promise<ManagedAgent> {
@@ -3752,6 +3796,7 @@ export class AgentManager {
           attention?: AttentionState;
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
+          parent?: AgentAddress | null;
           owner?: AgentOwner;
         }
       | undefined;
@@ -3762,6 +3807,7 @@ export class AgentManager {
       provider: config.provider,
       cwd: config.cwd,
       workspaceId: options?.workspaceId,
+      parent: options?.parent,
       owner: options?.owner,
       session,
       capabilities: session.capabilities,
@@ -4325,6 +4371,13 @@ export class AgentManager {
 
     const flags: StreamEventFlags = { shouldDispatchEvent: true, shouldNotifyWaiters: true };
 
+    const runResult = this.getRunResult(
+      agent.id,
+      eventTurnId,
+      event,
+      options?.fromHistory === true,
+      terminalDisposition,
+    );
     const dispatchPromise = this.dispatchStreamEventByType({
       agent,
       event,
@@ -4339,6 +4392,13 @@ export class AgentManager {
     }
 
     if (!options?.fromHistory) {
+      if (terminalDisposition !== "stale")
+        await this.runJournal.capture(agent.id, eventTurnId, event, runResult).catch((error) => {
+          this.logger.error(
+            { err: error, agentId: agent.id, turnId: eventTurnId },
+            "Failed to persist provider checkpoint",
+          );
+        });
       if (isTurnTerminalEvent(event)) {
         this.runs.settleTerminalRun(agent.id, eventTurnId);
         if (isForegroundEvent) {
@@ -4354,6 +4414,22 @@ export class AgentManager {
     this.traceHandleStreamEventEnd(agent, event, eventTurnId, flags);
 
     return flags.shouldNotifyWaiters;
+  }
+
+  private getRunResult(
+    agentId: string,
+    turnId: string | undefined,
+    event: AgentStreamEvent,
+    fromHistory: boolean,
+    disposition: ActiveTurnTerminalDisposition,
+  ): string {
+    if (fromHistory || disposition === "stale" || !isTurnTerminalEvent(event)) return "";
+    // Read provider output before terminal handlers append presentation-only errors.
+    return this.timelineStore
+      .getRows(agentId)
+      .filter((row) => row.turnId === turnId)
+      .flatMap((row) => (row.item.type === "assistant_message" ? [row.item.text] : []))
+      .join("");
   }
 
   private traceHandleStreamEventStart(
@@ -5104,6 +5180,7 @@ export class AgentManager {
 
   private async flushTasks(options: { includeAgentRegistrations: boolean }): Promise<void> {
     this.agentStreamCoalescer.flushAll();
+    await this.runJournal.flush();
     // Drain tasks, including tasks spawned while awaiting.
     while (
       this.backgroundTasks.size > 0 ||

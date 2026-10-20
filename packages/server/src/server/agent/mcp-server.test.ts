@@ -1598,6 +1598,7 @@ describe("create_agent MCP tool", () => {
     const workdir = await mkdtemp(join(tmpdir(), "mcp-public-helper-removal-"));
     const storage = new AgentStorage(join(workdir, "agents"), logger);
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: createTestAgentClients(),
       registry: storage,
       logger,
@@ -3547,6 +3548,7 @@ describe("create_agent MCP tool", () => {
     const parentClient = new HeldTurnAgentClient("claude", false);
     const childClient = new HeldTurnAgentClient("codex", false, { finishTurnsDuringStart: true });
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { claude: parentClient, codex: childClient },
       registry: storage,
       logger,
@@ -3761,6 +3763,7 @@ describe("create_agent MCP tool", () => {
     const workdir = await mkdtemp(join(tmpdir(), "mcp-workspace-inherit-"));
     const storage = new AgentStorage(join(workdir, "agents"), logger);
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: createTestAgentClients(),
       registry: storage,
       logger,
@@ -4277,7 +4280,12 @@ describe("send_agent_prompt MCP tool", () => {
       const client = new HeldTurnAgentClient("codex", true, {
         steerResult: available ? "accepted" : "unavailable",
       });
-      const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+      const manager = new AgentManager({
+        serverId: "srv_test",
+        clients: { codex: client },
+        registry: storage,
+        logger,
+      });
       try {
         const parent = await manager.createAgent(
           { provider: "codex", cwd: existingCwd },
@@ -4336,7 +4344,12 @@ describe("send_agent_prompt MCP tool", () => {
         finishDuringSteer: true,
         rejectSteer: rejected,
       });
-      const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+      const manager = new AgentManager({
+        serverId: "srv_test",
+        clients: { codex: client },
+        registry: storage,
+        logger,
+      });
       let mcpClient: Client | undefined;
       try {
         const parent = await manager.createAgent(
@@ -4411,7 +4424,12 @@ describe("send_agent_prompt MCP tool", () => {
         finishDuringSteer,
         rejectSteer: true,
       });
-      const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+      const manager = new AgentManager({
+        serverId: "srv_test",
+        clients: { codex: client },
+        registry: storage,
+        logger,
+      });
       let mcpClient: Client | undefined;
       try {
         const parent = await manager.createAgent(
@@ -4483,7 +4501,12 @@ describe("send_agent_prompt MCP tool", () => {
         finishDuringSteer: false,
         rejectSteer: true,
       });
-      const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+      const manager = new AgentManager({
+        serverId: "srv_test",
+        clients: { codex: client },
+        registry: storage,
+        logger,
+      });
       let mcpClient: Client | undefined;
       try {
         const parent = await manager.createAgent(
@@ -4700,6 +4723,7 @@ describe("send_agent_prompt MCP tool", () => {
       const parentClient = new HeldTurnAgentClient("claude", false);
       const childClient = new HeldTurnAgentClient("codex", true);
       const agentManager = new AgentManager({
+        serverId: "srv_test",
         clients: { claude: parentClient, codex: childClient },
         registry: storage,
         logger,
@@ -4779,6 +4803,7 @@ describe("send_agent_prompt MCP tool", () => {
       const parentClient = new HeldTurnAgentClient("claude", false);
       const childClient = new HeldTurnAgentClient("codex", true);
       const agentManager = new AgentManager({
+        serverId: "srv_test",
         clients: { claude: parentClient, codex: childClient },
         registry: storage,
         logger,
@@ -4856,6 +4881,7 @@ describe("send_agent_prompt MCP tool", () => {
     const parentClient = new HeldTurnAgentClient("claude", false);
     const childClient = new HeldTurnAgentClient("codex", true);
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { claude: parentClient, codex: childClient },
       registry: storage,
       logger,
@@ -4912,6 +4938,7 @@ describe("send_agent_prompt MCP tool", () => {
     const parentClient = new HeldTurnAgentClient("claude", false);
     const childClient = new HeldTurnAgentClient("codex", true);
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { claude: parentClient, codex: childClient },
       registry: storage,
       logger,
@@ -4978,6 +5005,7 @@ describe("send_agent_prompt MCP tool", () => {
     const parentClient = new HeldTurnAgentClient("claude", false);
     const childClient = new HeldTurnAgentClient("codex", true);
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { claude: parentClient, codex: childClient },
       registry: storage,
       logger,
@@ -5039,6 +5067,7 @@ describe("send_agent_prompt MCP tool", () => {
     const parentClient = new HeldTurnAgentClient("claude", false);
     const childClient = new HeldTurnAgentClient("codex", true);
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { claude: parentClient, codex: childClient },
       registry: storage,
       logger,
@@ -5113,6 +5142,7 @@ describe("send_agent_prompt MCP tool to an OMP child", () => {
     const parentClient = new HeldTurnAgentClient("claude", false);
     const omp = new FakeOmp();
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: {
         claude: parentClient,
         omp: new OmpAgentClient({

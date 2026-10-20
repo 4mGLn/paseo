@@ -958,6 +958,7 @@ test("create_agent_request keeps requested child cwd when grouped under an exist
     };
     const agentStorage = new AgentStorage(path.join(workdir, "agents"), asSessionLogger(logger));
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { codex: new CreateAgentTestClient() },
       registry: agentStorage,
       logger: asSessionLogger(logger),
@@ -1113,6 +1114,7 @@ test("create_agent_request launches from an exact subdirectory in a created work
     };
     const agentStorage = new AgentStorage(path.join(workdir, "agents"), asSessionLogger(logger));
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { codex: new CreateAgentTestClient() },
       registry: agentStorage,
       logger: asSessionLogger(logger),
@@ -1262,6 +1264,7 @@ test("create_agent_request does not title an existing workspace from the agent p
     };
     const agentStorage = new AgentStorage(path.join(workdir, "agents"), asSessionLogger(logger));
     const agentManager = new AgentManager({
+      serverId: "srv_test",
       clients: { codex: new CreateAgentTestClient() },
       registry: agentStorage,
       logger: asSessionLogger(logger),

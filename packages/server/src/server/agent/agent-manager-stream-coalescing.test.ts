@@ -247,6 +247,7 @@ function createHarness(options?: { provider?: AgentProvider }): Harness {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-stream-coalescing-"));
   const client = new TestAgentClient(options?.provider ?? "codex");
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { [client.provider]: client },
     idFactory: createIdFactory(),
     logger: createTestLogger(),

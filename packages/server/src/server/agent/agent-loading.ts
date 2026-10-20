@@ -117,7 +117,11 @@ export async function ensureAgentLoaded(
         handle,
         buildConfigOverrides(record),
         agentId,
-        { ...extractTimestamps(record), attention: extractAttention(record) },
+        {
+          ...extractTimestamps(record),
+          parent: record.parent,
+          attention: extractAttention(record),
+        },
         record.archivedAt ? { purpose: "history" } : undefined,
       );
       deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");
@@ -134,6 +138,7 @@ export async function ensureAgentLoaded(
       snapshot = await deps.agentManager.createAgent(config, agentId, {
         labels: record.labels,
         workspaceId: record.workspaceId,
+        parent: record.parent,
         owner: record.owner,
       });
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");

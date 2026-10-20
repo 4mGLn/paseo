@@ -322,3 +322,40 @@ test("observer failures are logged without failing creation", async () => {
     }),
   );
 });
+
+test("cancellation preserves an admitted outcome-unknown receipt after owner restart", async () => {
+  const f = await fixture();
+  const entered = deferred();
+  const input: CreationInput = {
+    kind: "agent",
+    key: "interrupted-admission",
+    request: { task: "start exactly once" },
+    agentId: agent.id,
+    hasAgent: true,
+    hasPrompt: true,
+    exists: async () => false,
+    readAgent: async () => null,
+    createAgent: async () => {
+      entered.resolve();
+      return new Promise(() => {});
+    },
+  };
+  void f.service.create(input);
+  await entered.promise;
+  const restarted = new CreationService(f.directory, silentLogger);
+  expect(await restarted.cancelAgent(input.key, agent.id)).toMatchObject({
+    status: "admitted",
+    creation: { phase: "accepted", agentId: agent.id },
+  });
+  const observation = await restarted.subscribe("agent", input.key, () => {});
+  expect(observation.snapshot).toMatchObject({
+    phase: "failed",
+    failedStage: "agent",
+    outcomeUnknown: true,
+  });
+  expect(await restarted.cancelAgent(input.key, agent.id)).toMatchObject({
+    status: "admitted",
+    creation: { phase: "failed", outcomeUnknown: true },
+  });
+  observation.unsubscribe();
+});

@@ -141,6 +141,7 @@ test("unexpected Codex app-server exit fails the active run and agent", async ()
   const workdir = mkdtempSync(join(tmpdir(), "codex-process-exit-"));
   const appServer = createFakeCodexAppServer();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProcessExitCodexClient([appServer]) },
     logger,
   });
@@ -201,6 +202,7 @@ test("replacement self-heals when Codex reports that the tracked turn is already
     }),
   });
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProcessExitCodexClient([appServer]) },
     logger,
   });
@@ -253,6 +255,7 @@ test("intentional agent close stays clean while a Codex turn is active", async (
   const workdir = mkdtempSync(join(tmpdir(), "codex-process-close-"));
   const appServer = createFakeCodexAppServer();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProcessExitCodexClient([appServer]) },
     logger,
   });
@@ -302,6 +305,7 @@ test("idle Codex app-server exit reconnects without publishing a failed turn", a
   const exitedAppServer = createFakeCodexAppServer();
   const replacementAppServer = createFakeCodexAppServer();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ProcessExitCodexClient([exitedAppServer, replacementAppServer]),
     },
@@ -355,6 +359,7 @@ test("failed reconnect preserves manager events for a later successful run", asy
   });
   const successfulReconnect = createFakeCodexAppServer();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ProcessExitCodexClient([exitedAppServer, failedReconnect, successfulReconnect]),
     },
@@ -395,6 +400,7 @@ test("unexpected exit fails an autonomous Codex turn", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "codex-process-autonomous-exit-"));
   const appServer = createFakeCodexAppServer();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProcessExitCodexClient([appServer]) },
     logger,
   });
@@ -436,6 +442,7 @@ test("provider permissions do not survive an unexpected exit and reconnect", asy
   const exitedAppServer = createFakeCodexAppServer();
   const replacementAppServer = createFakeCodexAppServer();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ProcessExitCodexClient([exitedAppServer, replacementAppServer]),
     },
@@ -512,6 +519,7 @@ test("idle provider exit preserves a synthetic plan approval across reconnect", 
   const exitedAppServer = createFakeCodexAppServer();
   const replacementAppServer = createFakeCodexAppServer();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ProcessExitCodexClient([exitedAppServer, replacementAppServer]),
     },

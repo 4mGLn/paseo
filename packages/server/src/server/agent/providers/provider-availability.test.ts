@@ -122,6 +122,7 @@ describe("default provider availability", () => {
     const workdir = makeTempDir("provider-availability-manager-work-");
     const storage = new AgentStorage(join(workdir, "agents"), createTestLogger());
     const manager = new AgentManager({
+      serverId: "srv_test",
       clients: {
         codex: new CodexAppServerAgentClient(createTestLogger()),
       },
@@ -144,6 +145,7 @@ describe("default provider availability", () => {
     const workdir = makeTempDir("provider-availability-resume-work-");
     const storage = new AgentStorage(join(workdir, "agents"), createTestLogger());
     const manager = new AgentManager({
+      serverId: "srv_test",
       clients: {
         codex: new CodexAppServerAgentClient(createTestLogger()),
       },

@@ -48,6 +48,7 @@ test("loads archived records for history and active records with the interactive
     isAvailable: async () => await baseClient.isAvailable(),
   };
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -87,6 +88,7 @@ test("resuming a stored agent keeps its unread flag and its last-activity time",
   const logger = createTestLogger();
   const storage = new AgentStorage(path.join(root, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: createTestAgentClients(),
     registry: storage,
     logger,
@@ -149,6 +151,7 @@ test("loads an archived agent's history after its working directory is removed",
   const logger = createTestLogger();
   const storage = new AgentStorage(path.join(root, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: createTestAgentClients(),
     registry: storage,
     logger,

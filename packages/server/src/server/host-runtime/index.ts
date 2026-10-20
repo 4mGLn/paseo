@@ -6,6 +6,7 @@ import type { DaemonPermission } from "@getpaseo/protocol/messages";
 import type { SessionAdmission } from "../websocket-server.js";
 
 export interface HostRuntimeAuthority {
+  sourceId?: string;
   permissionCeiling: readonly DaemonPermission[];
   resolveAdmission(): Promise<SessionAdmission>;
 }
@@ -103,21 +104,25 @@ class OwnedHostRuntime extends HostRuntime {
 
   override dispose(): Promise<void> {
     if (this.ownedDisposal) return this.ownedDisposal;
-    this.ownedDisposal = (async () => {
-      try {
-        await super.dispose();
-      } finally {
-        try {
-          await this.originApi.dispose();
-        } finally {
-          try {
-            await this.originClient.close();
-          } finally {
-            this.onDisposed(this);
-          }
-        }
-      }
-    })();
+    this.stopAcquisitions();
+    this.ownedDisposal = Promise.resolve().then(() => this.disposeOwnedResources());
     return this.ownedDisposal;
+  }
+  private async disposeOwnedResources(): Promise<void> {
+    try {
+      try {
+        // This adapter owns the transport. Stop it before dependent releases
+        // that cannot receive acknowledgments through a stopping daemon.
+        await this.originClient.close();
+      } finally {
+        await super.dispose();
+      }
+    } finally {
+      try {
+        await this.originApi.dispose();
+      } finally {
+        this.onDisposed(this);
+      }
+    }
   }
 }

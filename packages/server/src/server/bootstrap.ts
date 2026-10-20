@@ -952,6 +952,8 @@ export async function createPaseoDaemon(
   });
   const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
   const agentManager = new AgentManager({
+    runJournalDirectory: path.join(config.paseoHome, "agent-runs"),
+    serverId,
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,

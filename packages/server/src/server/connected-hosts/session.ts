@@ -74,8 +74,8 @@ export class ConnectedHostSession {
       "Host operation failed. Check the connection and retry.",
     );
     if (error instanceof HostError) failure = error;
-    else if (error instanceof Error && "code" in error && error.code === "invalid_connection")
-      failure = new HostError("invalid_connection", error.message);
+    else if (error instanceof Error && "code" in error && typeof error.code === "string")
+      failure = new HostError(error.code, error.message);
     if (message.type === "hosts.route.frame.request") {
       const route = this.routes.get(message.routeId);
       if (route && route.source === this.delivery.currentSource)

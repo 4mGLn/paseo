@@ -65,9 +65,13 @@ export class HostRuntime {
     return api.agents.ref(agentId);
   }
 
+  protected stopAcquisitions(): void {
+    this.disposed = true;
+  }
+
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;
-    this.disposed = true;
+    this.stopAcquisitions();
     this.disposal = (async () => {
       const results = await Promise.allSettled([...this.scopes].map((scope) => scope.dispose()));
       // Acquisitions that finish after disposal release themselves before rejecting callers.

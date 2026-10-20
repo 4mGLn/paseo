@@ -299,6 +299,7 @@ describe("PluginAgentClientRegistry", () => {
       },
     });
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger,
       clients: { "plugin-direct": registry["plugin-direct"].createClient(logger) },
       providerDefinitions: { "plugin-direct": registry["plugin-direct"] },

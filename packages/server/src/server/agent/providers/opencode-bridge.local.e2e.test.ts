@@ -33,7 +33,7 @@ test("real OpenCode server advertises agent-scoped notification descriptions", a
   const logger = createTestLogger();
   const providerSnapshotManager = new ProviderSnapshotManager({ logger });
   const dependencies = {
-    agentManager: new AgentManager({ logger }),
+    agentManager: new AgentManager({ serverId: "srv_test", logger }),
     agentStorage: new AgentStorage(path.join(root, "agents"), logger),
     providerSnapshotManager,
     logger,

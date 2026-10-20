@@ -1,3 +1,5 @@
+import { observeAgent } from "./agents/observation.js";
+import { safeRandomId } from "./daemon-client-transport-utils.js";
 import { createHostActions, type PaseoHostActions } from "./hosts/index.js";
 import type { AgentAddress } from "@getpaseo/protocol/addresses";
 export type { AgentAddress, WorkspaceAddress } from "@getpaseo/protocol/addresses";
@@ -9,6 +11,8 @@ export type { OwnedSubscription, SubscriptionObserver } from "./connection/index
 import type { DaemonClientConfig } from "./daemon-client.js";
 import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
 import type {
+  SubagentRelationship,
+  SubagentDirectory,
   AgentSnapshotPayload,
   CreationSnapshot,
   CreateAgentRequestMessage,
@@ -252,7 +256,7 @@ export interface PaseoAgentCreateOptions {
   onEvent?: (snapshot: CreationSnapshot) => void;
   config: PaseoAgentConfig;
   cwd: string;
-  parent?: string | PaseoAgentHandle;
+  parent?: string | PaseoAgentHandle | AgentAddress;
   title?: PaseoAgentSessionConfig["title"];
   env?: CreateAgentRequestMessage["env"];
   prompt?: string;
@@ -344,7 +348,28 @@ export interface PaseoAgentTimelineHandle {
   subscribe(handler: (event: PaseoAgentTimelineEvent) => void): PaseoAgentTimelineSubscription;
 }
 
+export type PaseoSubagentCreateOptions = Omit<PaseoAgentCreateOptions, "parent" | "cwd"> & {
+  serverId?: string;
+  workspaceId?: string;
+  cwd?: string;
+};
+export interface PaseoSubagentActions {
+  detach(child: AgentAddress): Promise<SubagentRelationship>;
+  forget(child: AgentAddress): Promise<void>;
+  create(input: PaseoSubagentCreateOptions): Promise<PaseoAgentHandle>;
+  list(): Promise<SubagentDirectory>;
+  observe(): OwnedSubscription<SubagentDirectory>;
+}
+export type { SubagentDirectory, SubagentRelationship } from "@getpaseo/protocol/messages";
+export type { AgentRunRecord, AgentRunCheckpoint } from "@getpaseo/protocol/agent-runs";
 export interface PaseoAgentHandle {
+  observe(): OwnedSubscription<PaseoAgent>;
+  readonly runs: {
+    get(
+      submissionId: string,
+    ): Promise<import("@getpaseo/protocol/agent-runs").AgentRunRecord | null>;
+  };
+  readonly subagents: PaseoSubagentActions;
   readonly id: string;
   readonly serverId: string;
   readonly address: AgentAddress;
@@ -491,7 +516,17 @@ export interface PaseoConfigActions {
   ): Promise<{ requestId: string; config: MutableDaemonConfig }>;
 }
 
+export interface PaseoCreationActions {
+  observeAgent(idempotencyKey: string): ReturnType<DaemonClient["observeAgentCreation"]>;
+  /** Cancel only pre-admission creation; admitted work retains its existing receipt. */
+  cancelAgent(input: {
+    idempotencyKey: string;
+    agentId: string;
+  }): Promise<import("@getpaseo/protocol/messages").AgentCreationCancellation>;
+}
+
 export interface PaseoApi {
+  readonly creations: PaseoCreationActions;
   readonly hosts: PaseoHostActions;
   dispose(): Promise<void>;
   observeEvents: DaemonClient["observeEvents"];
@@ -534,9 +569,11 @@ export function createPaseoClient(config: PaseoClientConfig): PaseoClient {
 
 function toDaemonAgentCreateOptions(
   options: PaseoAgentCreateOptions,
+  serverId: string | null,
   placement?: { workspaceId: string; cwd: string },
 ): CreateAgentRequestOptions {
   const { config: agentConfig, cwd, parent, title, prompt, ...requestOptions } = options;
+  const parentAddress = normalizeParentAddress(parent, serverId);
   const { provider: providerModel, options: providerOptions, ...runtimeConfig } = agentConfig;
   const { provider, model } = parseProviderModel(providerModel);
   return {
@@ -550,7 +587,11 @@ function toDaemonAgentCreateOptions(
       ...(providerOptions !== undefined ? { providerOptions } : {}),
     },
     ...(placement ? { workspaceId: placement.workspaceId } : {}),
-    ...(parent ? { callerAgentId: resolveAgentId(parent) } : {}),
+    ...(parentAddress ? { parent: parentAddress } : {}),
+    ...(parentAddress?.serverId === serverId &&
+    (typeof parent === "string" || (parent && "address" in parent))
+      ? { callerAgentId: parentAddress.agentId }
+      : {}),
     ...(prompt !== undefined ? { initialPrompt: prompt } : {}),
   };
 }
@@ -588,17 +629,85 @@ export function createPaseoApi(
       workspaceListeners.delete(handler);
     };
   };
+  const hosts = createHostActions(daemonClient, {
+    own,
+    signal: lifetime.signal,
+    api: createPaseoApi,
+  });
+  let subagentRuntime: import("./hosts/runtime.js").HostRuntime | undefined;
   const createAgentHandle = createAgentHandleFactory(
     daemonClient,
     listenAgents,
     (agentId, handler) => own(() => daemonClient.subscribeAgentTimeline(agentId, handler)),
     lifetime.signal,
+    (agentId) => own(() => observeAgent(daemonClient, agentId)),
+    (parentId) => ({
+      detach: (child) => {
+        if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
+        return daemonClient.detachSubagent(parentId, child);
+      },
+      forget: (child) => {
+        if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
+        return daemonClient.forgetSubagent(parentId, child);
+      },
+      list: () => {
+        if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
+        return daemonClient.listSubagents(parentId);
+      },
+      observe: () => own(() => daemonClient.observeSubagents(parentId)),
+      create: async ({ serverId, idempotencyKey, ...input }) => {
+        if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
+        const normalized = toDaemonAgentCreateOptions(
+          { ...input, cwd: input.cwd ?? "" },
+          daemonClient.getServerId(),
+        );
+        const child = await daemonClient.createSubagent(parentId, {
+          serverId: serverId ?? requireServerIdentity(daemonClient.getServerId()),
+          idempotencyKey: idempotencyKey ?? safeRandomId(),
+          input: { ...normalized, labels: input.labels ?? {}, config: normalized.config! },
+        });
+        subagentRuntime ??= hosts.runtime();
+        const handle = await subagentRuntime.agent(child);
+        await handle.refresh();
+        return handle;
+      },
+    }),
   );
   const createAgent = async (
     options: PaseoAgentCreateOptions,
     placement?: { workspaceId: string; cwd: string },
   ) => {
-    const agent = await daemonClient.createAgent(toDaemonAgentCreateOptions(options, placement));
+    const { parent, ...input } = options;
+    if (
+      parent &&
+      typeof parent !== "string" &&
+      "subagents" in parent &&
+      daemonClient.getLastServerInfoMessage()?.features?.fleetSubagents === true
+    ) {
+      return parent.subagents.create({
+        ...input,
+        serverId: requireServerIdentity(daemonClient.getServerId()),
+        workspaceId: placement?.workspaceId,
+      });
+    }
+    if (
+      typeof parent === "string" &&
+      daemonClient.getLastServerInfoMessage()?.features?.fleetSubagents === true
+    ) {
+      return createAgentHandle(parent).subagents.create({
+        ...input,
+        workspaceId: placement?.workspaceId,
+      });
+    }
+    const normalized = toDaemonAgentCreateOptions(options, daemonClient.getServerId(), placement);
+    // COMPAT(qualifiedSubagents): existing local parent creation on pre-fleet daemons.
+    // Added in v0.12; remove after 2027-04-20 once the host floor supports fleet subagents.
+    if (
+      normalized.callerAgentId &&
+      daemonClient.getLastServerInfoMessage()?.features?.fleetSubagents !== true
+    )
+      delete normalized.parent;
+    const agent = await daemonClient.createAgent(normalized);
     return createAgentHandle(agent);
   };
   const terminals = createTerminalActions(daemonClient, async (workspaceId) => {
@@ -705,7 +814,14 @@ export function createPaseoApi(
 
   return {
     dispose,
-    hosts: createHostActions(daemonClient, { own, signal: lifetime.signal, api: createPaseoApi }),
+    creations: {
+      observeAgent: (key) => own(() => daemonClient.observeAgentCreation(key)),
+      cancelAgent: (input) => {
+        if (lifetime.signal.aborted) throw new Error("Paseo API is disposed");
+        return daemonClient.cancelAgentCreation(input);
+      },
+    },
+    hosts,
     observeEvents,
     terminals,
     projects: {
@@ -723,7 +839,12 @@ export function createPaseoApi(
         openWorkspace(daemonClient, createWorkspaceHandle, input, requestId),
       create: async ({ requestId, agent, ...options }) => {
         const result = await daemonClient.createWorkspace(
-          { ...options, ...(agent ? { agent: toDaemonAgentCreateOptions(agent) } : {}) },
+          {
+            ...options,
+            ...(agent
+              ? { agent: toDaemonAgentCreateOptions(agent, daemonClient.getServerId()) }
+              : {}),
+          },
           requestId,
         );
         if (result.error || !result.workspace) {
@@ -872,6 +993,8 @@ function createAgentHandleFactory(
   listen: (handler: PaseoAgentUpdateHandler) => () => void,
   subscribeTimeline: DaemonClient["subscribeAgentTimeline"],
   signal: AbortSignal,
+  observeSnapshot: (agentId: string) => OwnedSubscription<PaseoAgent>,
+  subagents: (parentId: string) => PaseoSubagentActions,
 ): AgentHandleFactory {
   const assertActive = () => {
     if (signal.aborted) throw new Error("Paseo API is disposed");
@@ -881,6 +1004,31 @@ function createAgentHandleFactory(
     let current = typeof agent === "string" ? null : agent;
 
     const handle: PaseoAgentHandle = {
+      observe: () => {
+        assertActive();
+        const observation = observeSnapshot(id);
+        observation.subscribe({
+          snapshot: (snapshot) => {
+            current = snapshot;
+          },
+          update: (message) => {
+            if (
+              message.type === "agent_update" &&
+              message.payload.kind === "upsert" &&
+              message.payload.agent.id === id
+            )
+              current = message.payload.agent;
+          },
+        });
+        return observation;
+      },
+      runs: {
+        get: (submissionId) => {
+          assertActive();
+          return daemonClient.getAgentRun(id, submissionId);
+        },
+      },
+      subagents: subagents(id),
       id,
       get serverId() {
         const serverId = daemonClient.getServerId();
@@ -1053,8 +1201,20 @@ function resolveWorkspaceId(workspace: string | PaseoWorkspaceHandle): string {
   return typeof workspace === "string" ? workspace : workspace.id;
 }
 
-function resolveAgentId(agent: string | PaseoAgentHandle): string {
-  return typeof agent === "string" ? agent : agent.id;
+function normalizeParentAddress(
+  parent: PaseoAgentCreateOptions["parent"],
+  serverId: string | null,
+): AgentAddress | undefined {
+  if (!parent) return undefined;
+  if (typeof parent === "string")
+    return { serverId: requireServerIdentity(serverId), agentId: parent };
+  if ("address" in parent) return parent.address;
+  return parent;
+}
+
+function requireServerIdentity(serverId: string | null): string {
+  if (!serverId) throw new Error("Connect to the host before addressing a parent agent");
+  return serverId;
 }
 
 function parseProviderModel(selection: string): { provider: string; model: string } {

@@ -460,6 +460,7 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   cwd?: string;
   env?: CreateAgentRequestMessage["env"];
   workspaceId?: string;
+  parent?: CreateAgentRequestMessage["parent"];
   callerAgentId?: string;
   initialPrompt?: string;
   idempotencyKey?: string;
@@ -1678,6 +1679,96 @@ export class DaemonClient {
         code: "unsupported_capability",
       });
   }
+  requireFleetSubagents(): void {
+    if (this.lastServerInfoMessage?.features?.fleetSubagents !== true)
+      throw Object.assign(new Error("Update the host to use fleet subagents"), {
+        code: "unsupported_capability",
+      });
+  }
+  observeAgentCreation(idempotencyKey: string) {
+    this.requireFleetSubagents();
+    return this.observe("creation.subscribe.response", {
+      type: "creation.subscribe.request",
+      kind: "agent",
+      idempotencyKey,
+    });
+  }
+  async cancelAgentCreation(input: { idempotencyKey: string; agentId: string }) {
+    this.requireFleetSubagents();
+    return (
+      await this.sendCorrelatedSessionRequest({
+        message: { type: "agent.create.cancel.request", ...input },
+        responseType: "agent.create.cancel.response",
+      })
+    ).cancellation;
+  }
+  async getAgentRun(agentId: string, submissionId: string) {
+    this.requireFleetSubagents();
+    return (
+      await this.sendCorrelatedSessionRequest({
+        message: { type: "agent.runs.get.request", agentId, submissionId },
+        responseType: "agent.runs.get.response",
+      })
+    ).run;
+  }
+  async createSubagent(
+    parentId: string,
+    input: import("@getpaseo/protocol/messages").SubagentCreateInput,
+  ) {
+    this.requireFleetSubagents();
+    return (
+      await this.sendCorrelatedSessionRequest({
+        message: { type: "agent.subagents.create.request", parentId, ...input },
+        responseType: "agent.subagents.create.response",
+      })
+    ).child;
+  }
+  async detachSubagent(
+    parentId: string,
+    child: import("@getpaseo/protocol/addresses").AgentAddress,
+  ) {
+    this.requireFleetSubagents();
+    return (
+      await this.sendCorrelatedSessionRequest({
+        message: { type: "agent.subagents.detach.request", parentId, child },
+        responseType: "agent.subagents.detach.response",
+      })
+    ).relationship;
+  }
+  async forgetSubagent(
+    parentId: string,
+    child: import("@getpaseo/protocol/addresses").AgentAddress,
+  ): Promise<void> {
+    this.requireFleetSubagents();
+    await this.sendCorrelatedSessionRequest({
+      message: { type: "agent.subagents.forget.request", parentId, child },
+      responseType: "agent.subagents.forget.response",
+    });
+  }
+  async listSubagents(parentId: string) {
+    this.requireFleetSubagents();
+    return (
+      await this.sendCorrelatedSessionRequest({
+        message: { type: "agent.subagents.list.request", parentId },
+        responseType: "agent.subagents.list.response",
+      })
+    ).directory;
+  }
+  observeSubagents(
+    parentId: string,
+  ): OwnedSubscription<import("@getpaseo/protocol/messages").SubagentDirectory> {
+    this.requireFleetSubagents();
+    return this.owned.observe(async (accept) => {
+      const result = await this.sendCorrelatedSessionRequest({
+        message: { type: "agent.subagents.list.request", parentId, observe: true },
+        responseType: "agent.subagents.list.response",
+      });
+      if (!result.subscriptionId) throw new Error("Host omitted subagent subscription identity");
+      const snapshot = { ...result.directory, subscriptionId: result.subscriptionId };
+      accept(snapshot);
+      return snapshot;
+    });
+  }
   async listHosts(): Promise<HostDirectory> {
     this.requireConnectedHosts();
     return (
@@ -2552,6 +2643,7 @@ export class DaemonClient {
   observeAgents(
     options: Omit<FetchAgentsOptions, "subscribe"> = {},
   ): OwnedSubscription<FetchAgentsPayload> {
+    if (options.filter?.agentIds) this.requireFleetSubagents();
     if (options.includeBackground || options.filter?.includeBackground)
       this.requireBackgroundWorkspaces();
     const { signal, requestId, timeout, ...query } = options;
@@ -2585,6 +2677,7 @@ export class DaemonClient {
     if (options?.includeBackground || options?.filter?.includeBackground)
       this.requireBackgroundWorkspaces();
     if (options?.subscribe) {
+      if (options.filter?.agentIds) this.requireFleetSubagents();
       if (options.subscribe.subscriptionId !== undefined)
         throw new Error("Subscription IDs are assigned by the host");
       const subscription = this.observeAgents(options);
@@ -3094,12 +3187,16 @@ export class DaemonClient {
   }
 
   async createAgent(options: CreateAgentRequestOptions): Promise<AgentSnapshotPayload> {
+    if (options.parent) this.requireFleetSubagents();
     if (options.background !== undefined) this.requireBackgroundWorkspaces();
     const result = await this.creations.createAgent({
       ...options,
       config: resolveAgentConfig(options),
     });
-    if (result.error || !result.agent) throw new Error(result.error ?? "Agent creation failed");
+    if (result.error || !result.agent)
+      throw Object.assign(new Error(result.error ?? "Agent creation failed"), {
+        code: result.errorCode,
+      });
     return result.agent;
   }
 
@@ -3115,6 +3212,7 @@ export class DaemonClient {
       config,
       ...(options.env ? { env: options.env } : {}),
       ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      ...(options.parent !== undefined ? { parent: options.parent } : {}),
       ...(options.callerAgentId !== undefined ? { callerAgentId: options.callerAgentId } : {}),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
       idempotencyKey: options.idempotencyKey,
@@ -7270,6 +7368,7 @@ function resolveAgentConfig(options: CreateAgentRequestOptions): AgentSessionCon
     onEvent: _onEvent,
     idempotencyKey: _idempotencyKey,
     clientMessageId: _clientMessageId,
+    parent: _parent,
     callerAgentId: _callerAgentId,
     outputSchema: _outputSchema,
     attachments: _attachments,

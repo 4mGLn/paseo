@@ -650,7 +650,7 @@ async function startAndSteerThroughManager(
       return session;
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
   const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
     workspaceId: undefined,
   });
@@ -672,6 +672,7 @@ test("uses an injected timeline store without making it a production requirement
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-timeline-store-"));
   const store = new RecordingTimelineStore();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     durableTimelineStore: store,
     logger,
@@ -727,6 +728,7 @@ test("refreshing an agent replaces the injected timeline store instead of append
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new HistoryClient() },
     durableTimelineStore: store,
     logger,
@@ -790,6 +792,7 @@ test("a failed history replay leaves the committed timeline intact", async () =>
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new FlakyHistoryClient() },
     durableTimelineStore: store,
     logger,
@@ -843,6 +846,7 @@ test("retries provider history hydration after a stream failure", async () => {
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new (class extends TestAgentClient {
         override async resumeSession(
@@ -913,6 +917,7 @@ test("orders an accepted steer before output emitted while acknowledgement is pe
   const session = new HeldAcceptedSteerSession({ provider: "codex", cwd: process.cwd() });
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-order-"));
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new (class extends TestAgentClient {
         override async createSession(): Promise<AgentSession> {
@@ -981,6 +986,7 @@ test("orders buffered pre-steer output before an immediately accepted steer", as
   const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-buffer-order-"));
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new (class extends TestAgentClient {
         override async createSession(): Promise<AgentSession> {
@@ -1050,6 +1056,7 @@ test("orders a concurrent replacement after a pending accepted steer", async () 
   const session = new HeldAcceptedSteerSession({ provider: "codex", cwd: process.cwd() });
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-replace-order-"));
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new (class extends TestAgentClient {
         override async createSession(): Promise<AgentSession> {
@@ -1121,6 +1128,7 @@ test("does not replace a newer foreground turn after unavailable steer fallback 
     }
   })();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     beforeSteerUnavailableFallback: async () => {
       entered.resolve();
@@ -1187,7 +1195,7 @@ test("steers a tracked autonomous turn without creating a replacement run", asyn
       return session;
     }
   })();
-  const manager = new AgentManager({ clients: { claude: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { claude: client }, logger });
   let agentId: string | null = null;
 
   try {
@@ -1267,7 +1275,7 @@ test("ambiguous steer failure leaves the active turn untouched", async () => {
       return session;
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
   let agentId: string | null = null;
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -1306,7 +1314,7 @@ test("steering records concurrent early echoes as canonical submitted prompts", 
       return session;
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
   let agentId: string | null = null;
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -1412,6 +1420,7 @@ async function createControlledInterruptFixture(options: {
     }
   })();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: new AgentStorage(join(workdir, "agents"), logger),
     logger,
@@ -1650,6 +1659,7 @@ const logger = createTestLogger();
 test("does not register a session that finishes starting after shutdown begins", async () => {
   const client = new HeldAgentCreationClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     logger,
     idFactory: () => "00000000-0000-4000-8000-000000000100",
@@ -1678,6 +1688,7 @@ test("does not register a session that finishes starting after shutdown begins",
 test("flush waits for rejected session cleanup that starts after shutdown", async () => {
   const client = new HeldAgentCreationAndCloseClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     logger,
     idFactory: () => "00000000-0000-4000-8000-000000000098",
@@ -1721,6 +1732,7 @@ test("does not persist an initializing session after shutdown closes it", async 
   const client = new HeldRuntimeInfoClient();
   const agentId = "00000000-0000-4000-8000-000000000099";
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -1760,6 +1772,7 @@ test("reload leaves a closed durable snapshot when shutdown starts during the sw
   const client = new HeldReloadCloseClient();
   const agentId = "00000000-0000-4000-8000-000000000097";
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -1810,6 +1823,7 @@ test("reload does not create a replacement when the closed snapshot cannot be pe
   const client = new HeldReloadCloseClient();
   const agentId = "00000000-0000-4000-8000-000000000096";
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -1857,6 +1871,7 @@ test("normalizeConfig injects the provider default model while leaving mode omit
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -1881,6 +1896,7 @@ test("normalizeConfig injects the provider default model while leaving mode omit
 test("normalizeConfig leaves Claude mode omitted", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-claude-default-test-"));
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { claude: new TestAgentClient("claude") },
     logger,
   });
@@ -1903,10 +1919,7 @@ test("normalizeConfig does not ask the provider to synthesize an omitted mode", 
     }
   }
   const client = new CapabilityAwareClient();
-  const manager = new AgentManager({
-    clients: { codex: client },
-    logger,
-  });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
 
   const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
     workspaceId: undefined,
@@ -1921,6 +1934,7 @@ test("createAgent forwards request env into the spawned provider process", async
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-env-test-"));
   const client = new EnvProbeAgentClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -1957,6 +1971,7 @@ test("normalizeConfig strips legacy 'default' model id", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -2005,6 +2020,7 @@ test("listDraftCommands returns no commands without guessing a missing model", a
   }
   const client = new DraftCommandClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2052,6 +2068,7 @@ test("listDraftCommands uses explicit model config without default model fetchin
   }
   const client = new DraftCommandClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2103,6 +2120,7 @@ test("listDraftFeatures does not start a fallback session without a model", asyn
   }
   const client = new DraftFeatureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2150,6 +2168,7 @@ test("listDraftFeatures uses client feature listing without a model", async () =
   }
   const client = new DraftFeatureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2199,6 +2218,7 @@ test("listDraftFeatures uses explicit model config without default model fetchin
   }
   const client = new DraftFeatureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2230,6 +2250,7 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
   const storage = new AgentStorage(storagePath, logger);
   const client = new TestAgentClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2263,6 +2284,7 @@ test("daemon append system prompt is injected into Pi configs", async () => {
   const storage = new AgentStorage(storagePath, logger);
   const client = new TestAgentClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       pi: client as unknown as AgentClient,
     },
@@ -2385,6 +2407,7 @@ test("setAgentMode persists the selected mode across session reload", async () =
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ModeAwareClient(),
     },
@@ -2439,7 +2462,12 @@ test("reload releases the original writer before resuming the same session", asy
     }
   }
   const client = new ExclusiveWriterClient();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
   try {
     const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
@@ -2463,7 +2491,12 @@ test("opening during reload waits for the replacement", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-open-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const client = new HeldReloadCloseClient();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
   try {
     const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
@@ -2496,7 +2529,12 @@ test("closing during reload leaves the replacement closed", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-close-race-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const client = new HeldReloadCloseClient();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
   try {
     const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
@@ -2521,6 +2559,7 @@ test("retrying a timed-out reload waits for the original close to finish", async
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const client = new HeldReloadCloseClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -2558,7 +2597,12 @@ test("failed reload retains the closed agent for a later resume", async () => {
     }
   }
   const client = new FailingResumeClient();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
   try {
     const created = await manager.createAgent(
       { provider: "codex", cwd: workdir, title: "Keep me" },
@@ -2629,6 +2673,7 @@ test.each(["hang", "reject"])(
 
     const client = new HangingCloseClient();
     const manager = new AgentManager({
+      serverId: "srv_test",
       clients: {
         codex: client,
       },
@@ -2801,6 +2846,7 @@ test("listProviderAvailability uses registered client keys, including custom pro
   };
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       zai: customClient,
     },
@@ -2837,6 +2883,7 @@ test("createAgent passes daemon launch env through the provider launch context",
 
   const client = new CaptureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2888,6 +2935,7 @@ test("createAgent passes persistSession to provider create options", async () =>
 
   const client = new CaptureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -2915,6 +2963,7 @@ test("createAgent persists workspaceId on the stored record and emits it in the 
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -2959,6 +3008,7 @@ test("createAgent injects paseo MCP server only into provider launch config", as
 
   const client = new CaptureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -3044,6 +3094,7 @@ test("createAgent closes and rejects a provider session that cannot honor MCP se
 
   const agentId = "00000000-0000-4000-8000-000000000107";
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new UnsupportedMcpClient() },
     registry: storage,
     logger,
@@ -3090,6 +3141,7 @@ test("resumeAgentFromPersistence closes and rejects a session that cannot honor 
 
   const agentId = "00000000-0000-4000-8000-000000000108";
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new UnsupportedResumeClient() },
     registry: storage,
     logger,
@@ -3139,6 +3191,7 @@ test("reloadAgentSession preserves the live session when its replacement cannot 
 
   let paseoToolPolicy = { disabledTools: ["list_agents"] };
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new UnsupportedReloadClient() },
     registry: new AgentStorage(join(workdir, "agents"), logger),
     logger,
@@ -3207,6 +3260,7 @@ test("createAgent passes native Paseo tools through launch context without inter
 
   const client = new NativeToolsClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -3271,6 +3325,7 @@ test("createAgent allows best-effort internal MCP when the provider session repo
 
   const client = new CaptureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -3338,6 +3393,7 @@ test("uses each provider's current policy for new sessions and snapshots it by a
     },
   };
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex, claude },
     registry: storage,
     logger,
@@ -3418,6 +3474,7 @@ test("keeps the global Paseo-tools gate outside provider policy and MCP injectio
 
   const enabledClient = new McpClient();
   const enabledManager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: enabledClient },
     registry: storage,
     logger,
@@ -3438,6 +3495,7 @@ test("keeps the global Paseo-tools gate outside provider policy and MCP injectio
   const disabledClient = new McpClient();
   let catalogFactoryCalls = 0;
   const disabledManager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: disabledClient },
     registry: storage,
     logger,
@@ -3468,6 +3526,7 @@ test("resumeAgentFromPersistence replaces stored internal paseo MCP with current
   const storage = new AgentStorage(storagePath, logger);
   const client = new McpCapableTestAgentClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -3522,6 +3581,7 @@ test("resumeAgentFromPersistence drops stored internal paseo MCP when runtime in
   const storage = new AgentStorage(storagePath, logger);
   const client = new TestAgentClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -3566,6 +3626,7 @@ test("createAgent preserves a user-provided paseo MCP config", async () => {
 
   const client = new CaptureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -3604,6 +3665,7 @@ test("createAgent fails when cwd does not exist", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -3628,6 +3690,7 @@ test("createAgent reports configured providers when provider is unknown", async 
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -3659,6 +3722,7 @@ test("createAgent reports available providers when selected provider is unavaila
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new UnavailableCodexClient(),
       claude: new TestAgentClient(),
@@ -3702,6 +3766,7 @@ test("createAgent rejects a disabled provider without creating a session", async
     },
   } satisfies Partial<Record<AgentProvider, Pick<ProviderDefinition, "enabled">>>;
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: disabledClient,
     },
@@ -3730,6 +3795,7 @@ test("updateProviderRegistry re-enables a previously disabled provider", async (
   const storage = new AgentStorage(storagePath, logger);
   const client = new TestAgentClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     providerDefinitions: {
       codex: { enabled: false },
@@ -3761,6 +3827,7 @@ test("updateProviderRegistry disables a previously enabled provider", async () =
   const storage = new AgentStorage(storagePath, logger);
   const client = new TestAgentClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     providerDefinitions: {
       codex: { enabled: true },
@@ -3786,6 +3853,7 @@ test("updateProviderRegistry registers a previously unknown provider", async () 
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {},
     providerDefinitions: {},
     registry: storage,
@@ -3822,6 +3890,7 @@ test("updateProviderRegistry removes providers omitted from the next registry", 
 
   const removedClient = new RemovedProviderClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient(), [removedProvider]: removedClient },
     providerDefinitions: {
       codex: { enabled: true },
@@ -3873,6 +3942,7 @@ test("retires loaded agents when their plugin provider is replaced", async () =>
   const original = new OriginalPluginClient();
   const replacement = new TestAgentClient(provider);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { [provider]: original },
     providerDefinitions: { [provider]: { enabled: true } },
     registry: storage,
@@ -3939,6 +4009,7 @@ test("a prompt after provider replacement reopens the stale session", async () =
   const staleClient = new StalePluginClient();
   const replacement = new ResumeTrackingTestAgentClient(provider);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { [provider]: staleClient },
     providerDefinitions: { [provider]: { enabled: true } },
     registry: storage,
@@ -4017,6 +4088,7 @@ test("a replacement prompt recovers when the retired session fails to start", as
 
   const replacement = new ResumeTrackingTestAgentClient(provider);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { [provider]: new StaleReplacementClient() },
     providerDefinitions: { [provider]: { enabled: true } },
     registry: storage,
@@ -4067,6 +4139,7 @@ test("createAgent passes explicit model strings through to the provider", async 
   }
   const client = new CaptureModelClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -4143,6 +4216,7 @@ test("resumeAgentFromPersistence keeps metadata config, applies overrides, and p
 
   const client = new ResumeCaptureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -4291,6 +4365,7 @@ test("importProviderSession imports the selected session without listing and pub
 
   const client = new ImportClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -4394,6 +4469,7 @@ test("reloadAgentSession passes daemon launch env through the provider launch co
 
   const client = new ReloadCaptureClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -4485,6 +4561,7 @@ test("reloadAgentSession preserves timeline and does not force history replay", 
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new HistoryProbeClient(),
     },
@@ -4543,6 +4620,7 @@ test("reloadAgentSession clears provider children before rehydrating from disk",
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProviderChildClient() },
     registry: storage,
     logger,
@@ -4584,6 +4662,7 @@ test("reloadAgentSession terminalizes running provider children when preserving 
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProviderChildClient() },
     registry: storage,
     logger,
@@ -4629,6 +4708,7 @@ test("hydrateTimelineFromProvider restores and broadcasts provider children from
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProviderChildHistoryClient() },
     registry: storage,
     logger,
@@ -4682,6 +4762,7 @@ test("force provider hydration removes children absent from current history", as
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ProviderChildForceClient() },
     registry: storage,
     logger,
@@ -4720,6 +4801,7 @@ test("reloadAgentSession preserves current title when config title is unset", as
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -4754,6 +4836,7 @@ test("setTitle bumps updatedAt and persists title in the same snapshot write", a
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -4790,6 +4873,7 @@ test("updateAgentMetadata bumps updatedAt for stored agents", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -4833,6 +4917,7 @@ test("persists live mode, model, and thinking changes without an external snapsh
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -4890,6 +4975,7 @@ test("model changes persist the resolved thinking and fresh provider handle befo
   }
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ModelClient() },
     registry: storage,
     logger,
@@ -4939,6 +5025,7 @@ test("later explicit config mutations win over events emitted by earlier mutatio
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ConfigMutationClient() },
     logger,
     idFactory: () => "00000000-0000-4000-8000-000000000134",
@@ -4981,6 +5068,7 @@ test("setAgentThinkingOption adopts the session's effective clamped level", asyn
 
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ClampingClient() },
     registry: storage,
     logger,
@@ -5023,6 +5111,7 @@ test("setAgentThinkingOption surfaces a failed state read and keeps the previous
 
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new UnreadableStateClient() },
     registry: storage,
     logger,
@@ -5060,6 +5149,7 @@ test("session config drift events update state through the stream channel", asyn
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ConfigEventClient(),
     },
@@ -5141,6 +5231,7 @@ test("setLabels merges and persists labels", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5174,6 +5265,7 @@ test("detachAgent removes relationship lifecycle labels from a live agent and em
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5234,6 +5326,7 @@ test("detachAgent removes relationship lifecycle labels from a stored-only agent
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5282,6 +5375,7 @@ test("archiveAgent does not cascade to a detached former child", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5320,6 +5414,7 @@ test("runAgent persists finished attention and idle status without an external s
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5353,6 +5448,7 @@ test("archiveSnapshot clears persisted attention and normalizes running status",
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5402,6 +5498,7 @@ test("archiveSnapshot dispatches archived state for stored-only agents", async (
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -5440,6 +5537,7 @@ test("markAgentUnread dispatches stored attention to every subscriber", async ()
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-mark-unread-dispatch-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -5602,6 +5700,7 @@ test("reloadAgentSession cancels active run and resumes existing session once th
 
   const client = new DelayedPersistenceClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -5655,6 +5754,7 @@ test("fetchTimeline returns a bounded reset window when cursor epoch is stale", 
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5731,6 +5831,7 @@ test("getTimelineRows falls back to the in-memory timeline when no durable store
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5775,6 +5876,7 @@ test("getAgent does not expose committed history internals once manager owns the
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5832,6 +5934,7 @@ test("streams coalesced assistant chunks and retains the projected message", asy
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new StreamingAssistantClient(),
     },
@@ -5933,6 +6036,7 @@ test("fetchTimeline supports older-history pagination with before seq", async ()
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -5997,6 +6101,7 @@ test("does not trim committed history", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -6104,6 +6209,7 @@ test("hydrateTimeline preserves assistant chunk, reasoning, and tool timeline hi
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ChunkedAssistantHistoryClient(),
     },
@@ -6186,6 +6292,7 @@ test("hydrateTimeline preserves reasoning between assistant chunks", async () =>
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ReasoningInterleavedHistoryClient(),
     },
@@ -6220,6 +6327,7 @@ test("createAgent fails when generated agent ID is not a UUID", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -6245,6 +6353,7 @@ test("createAgent fails when explicit agent ID is not a UUID", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -6270,6 +6379,7 @@ test("createAgent persists provided title before returning", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -6301,6 +6411,7 @@ test("createAgent populates runtimeInfo after session creation", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -6330,6 +6441,7 @@ test("runAgent refreshes runtimeInfo after completion", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -6381,6 +6493,7 @@ test("waitForAgentEvent does not resolve idle until foreground turn is finalized
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new SlowTerminalClient(),
     },
@@ -6431,6 +6544,7 @@ test("waitForAgentRunStart resolves while a foreground run is still only pending
   const storage = new AgentStorage(storagePath, logger);
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -6500,6 +6614,7 @@ test("waitForAgentRunStart ignores a prior turn error while the next run starts"
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new ErrorThenResumeClient() },
     registry: storage,
     logger,
@@ -6587,6 +6702,7 @@ test("replaceAgentRun does not emit idle or resolve waiters between interrupted 
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ReplaceRunClient(),
     },
@@ -6716,6 +6832,7 @@ test("replaceAgentRun stays running when a stale old terminal arrives before the
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new StaleReplacementClient(),
     },
@@ -6839,6 +6956,7 @@ test("applies live autonomous events and preserves usage omitted from completion
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new LiveEventClient(),
     },
@@ -6944,6 +7062,7 @@ test("ignores stale autonomous terminals without lowering the active turn lifecy
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new LiveEventClient() },
     registry: storage,
     logger,
@@ -7045,6 +7164,7 @@ test("preserves terminal fallback when no active turn identity was observed", as
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new LiveEventClient() },
     registry: storage,
     logger,
@@ -7101,6 +7221,7 @@ test("cancelAgentRun waits for an acknowledged autonomous interrupt to settle", 
 
   const client = new LiveInterruptClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -7192,6 +7313,7 @@ test("failed replacement cancellation preserves an autonomous running state", as
 
   const client = new RejectingLiveInterruptClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -7240,6 +7362,7 @@ test("waitForAgentEvent waitForActive resolves for autonomous live-event run", a
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new LiveEventClient(),
     },
@@ -7303,6 +7426,7 @@ test("autonomous events arriving during foreground run are processed via subscri
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ForegroundClient(),
     },
@@ -7419,6 +7543,7 @@ test("subscribe error isolation: throwing subscriber does not break event flow",
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new IsolationClient(),
     },
@@ -7489,6 +7614,7 @@ test("keeps updatedAt monotonic when user message and run start happen in the sa
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -7645,6 +7771,7 @@ test("runAgent assembles finalText from trailing assistant chunks", async () => 
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new ChunkedAssistantClient(),
     },
@@ -7676,6 +7803,7 @@ test("listAgents excludes internal agents", async () => {
   ];
   let agentCounter = 0;
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -7725,6 +7853,7 @@ test("workspace ownership does not turn an ordinary agent into a disposable help
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const beforeHookCalls: string[] = [];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -7754,6 +7883,7 @@ test("global subscribers receive internal agent events only when they opt in", a
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -7793,6 +7923,7 @@ test("getAgent returns internal agents by ID", async () => {
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -7823,6 +7954,7 @@ test("archiveAgent closes an internal agent without writing a record", async () 
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -7870,6 +8002,7 @@ test("archiveAgent on an internal parent still archives its attached children", 
   const ids = [parentAgentId, childAgentId];
   let agentCounter = 0;
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -7906,6 +8039,7 @@ test("archiveAgent on a parent archives its live internal children", async () =>
   const ids = [parentAgentId, childAgentId];
   let agentCounter = 0;
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -7945,6 +8079,7 @@ test("subscribe does not emit state events for internal agents to global subscri
   ];
   let agentCounter = 0;
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -8000,6 +8135,7 @@ test("subscribe hides provider subagents of internal parents from global subscri
     }
   }
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new InternalProviderChildClient() },
     registry: storage,
     logger,
@@ -8056,6 +8192,7 @@ test("subscribe emits state events for internal agents when subscribed by agentI
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -8092,6 +8229,7 @@ test("subscribe emits state events for internal agents when subscribed by agentI
 
 test("subscribe fails when filter agentId is not a UUID", () => {
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -8112,6 +8250,7 @@ test("onAgentAttention is not called for internal agents", async () => {
   const storage = new AgentStorage(storagePath, logger);
   const attentionCalls: string[] = [];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -8148,6 +8287,7 @@ test("onAgentAttention is not called for delegated child agents", async () => {
   const storage = new AgentStorage(storagePath, logger);
   const attentionCalls: string[] = [];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -8221,6 +8361,7 @@ test("clearAgentAttention on errored agent stays cleared until a new error trans
 
   const attentionReasons: Array<"finished" | "error" | "permission"> = [];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new FailingClient(),
     },
@@ -8327,6 +8468,7 @@ test("streamAgent clears pending run when startTurn fails before a turn id exist
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new FailsOnceClient(),
     },
@@ -8392,6 +8534,7 @@ test("acknowledged cancellation settles a pending run before it has a turn id", 
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new PendingStartClient() },
     registry: new AgentStorage(join(workdir, "agents"), logger),
     logger,
@@ -8430,6 +8573,7 @@ test("archiveAgent persists archivedAt and updatedAt before emitting closed stat
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -8481,6 +8625,7 @@ test("fires onAgentArchived for archived parent and cascaded children", async ()
   const storage = new AgentStorage(storagePath, logger);
   const archivedIds: string[] = [];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -8514,6 +8659,7 @@ test("fires onAgentArchived for stored-only snapshot archives", async () => {
   const storage = new AgentStorage(storagePath, logger);
   const archivedIds: string[] = [];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -8562,7 +8708,12 @@ test("native archive and restore release the loaded session writer", async () =>
   }
   const client = new WriterClient();
   const storage = new AgentStorage(join(workdir, "agents"), logger);
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
@@ -8590,6 +8741,7 @@ test("unarchiveSnapshot skips native provider unarchive for active records", asy
   const storage = new AgentStorage(storagePath, logger);
   const client = new NativeArchiveRecordingClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -8617,6 +8769,7 @@ test("unarchiveSnapshot unarchives native provider storage before clearing archi
   const storage = new AgentStorage(storagePath, logger);
   const client = new NativeArchiveRecordingClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -8658,6 +8811,7 @@ test("unarchiveSnapshotByHandle unarchives native provider storage for the match
   const storage = new AgentStorage(storagePath, logger);
   const client = new NativeArchiveRecordingClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -8691,6 +8845,7 @@ test("unarchiveSnapshot keeps the stored record archived when native unarchive f
   const storage = new AgentStorage(storagePath, logger);
   const client = new NativeArchiveRecordingClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -8720,6 +8875,7 @@ test("archiveAgent cascade archives in-memory children with the full archive con
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -8770,6 +8926,7 @@ test("archiveAgent detaches an open same-workspace child instead of cascading", 
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-open-child-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -8806,6 +8963,7 @@ test("archiveAgent detaches a cross-workspace child even when its tab is closed"
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-cascade-cross-workspace-child-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -8859,6 +9017,7 @@ test("archiveAgent re-reads a child before deciding whether to cascade", async (
 
   const storage = new ChildOpensAfterCascadeListStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -8910,6 +9069,7 @@ test("archiveAgent cannot overtake a received child open-tab update", async () =
 
   const storage = new BlockingOpenMarkerStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -8978,6 +9138,7 @@ test("archiveAgent cascade closes a running child runtime", async () => {
 
   const client = new RunningChildClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -9036,6 +9197,7 @@ test("archiveAgent cascade archives off-memory children with the full archive co
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -9075,6 +9237,7 @@ test("archiveAgent cascade notifies subscribers for in-memory and off-memory chi
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -9153,6 +9316,7 @@ test("archiveAgent cascade surfaces partial child archive failures", async () =>
 
   const storage = new FailingChildArchiveStorage(storagePath, logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -9226,6 +9390,7 @@ test("turn_failed emits a system error assistant timeline message and keeps erro
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TurnFailedClient(),
     },
@@ -9304,6 +9469,7 @@ test("turn_failed surfaces provider code and diagnostic in system error message"
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new DetailedFailureClient(),
     },
@@ -9396,6 +9562,7 @@ test("permission request notifies once without forcing unread attention state", 
 
   const attentionReasons: Array<"finished" | "error" | "permission"> = [];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new PermissionClient(),
     },
@@ -9535,6 +9702,7 @@ test("respondToPermission updates currentModeId after plan approval", async () =
 
   const client = new PlanModeTestClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: client,
     },
@@ -9649,6 +9817,7 @@ test("respondToPermission refreshes features and runtime info after provider-man
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new RefreshingPermissionClient(),
     },
@@ -9762,6 +9931,7 @@ test("respondToPermission emits refreshed state before permission_resolved", asy
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new OrderedPermissionClient(),
     },
@@ -9931,6 +10101,7 @@ test("close during in-flight stream does not clear persistence sessionId", async
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new CloseRaceClient(),
     },
@@ -9974,6 +10145,7 @@ test("closeAgent persists one final closed snapshot", async () => {
   const storage = new AgentStorage(storagePath, logger);
   const applySnapshotSpy = vi.spyOn(storage, "applySnapshot");
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TestAgentClient(),
     },
@@ -10032,7 +10204,7 @@ test("idle agents remain resident until an explicit lifecycle action closes them
       return super.resumeSession(handle, config, launchContext);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
 
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -10060,6 +10232,7 @@ test("archiving a closed parent still cascades to its managed children", async (
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-closed-parent-archive-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -10097,6 +10270,7 @@ test("ensureUnarchivedAgentLoaded does not resume an archived agent", async () =
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-archived-load-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new TestAgentClient() },
     registry: storage,
     logger,
@@ -10139,7 +10313,12 @@ test("a stored-only archive waits for an in-flight resume and then closes it", a
       return super.resumeSession(handle, config, launchContext);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
 
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -10183,7 +10362,12 @@ test("a stored-only archive closes a shared resume before a later protected load
       return super.resumeSession(handle, config, launchContext);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
 
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -10240,7 +10424,12 @@ test("a shared agent load upgrades provider history hydration to broadcast", asy
       })({ provider: "codex", cwd: config?.cwd ?? workdir });
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
 
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -10288,7 +10477,12 @@ test("explicit close cancels running provider subagents before resume", async ()
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-closed-provider-child-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
   const client = new SessionRecordingAgentClient();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
 
   try {
     const parent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -10372,7 +10566,12 @@ test("load waits for an in-flight explicit close and creates one resumed runtime
       return super.resumeSession(handle, config);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
 
   try {
     const created = await manager.createAgent(
@@ -10422,7 +10621,7 @@ test("concurrent explicit closes tear down the runtime once", async () => {
       })(config);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
 
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -10454,7 +10653,12 @@ test("provider close failure retains the runtime for cleanup instead of allowing
       })(config);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
 
   try {
     const created = await manager.createAgent(
@@ -10526,6 +10730,7 @@ test("hydrateTimeline keeps provider user_message items when no canonical user h
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new HistoryUserMessageClient(),
     },
@@ -10591,6 +10796,7 @@ test("hydrateTimeline preserves provider replay timestamps and marks missing one
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: new TimestampedHistoryClient(),
     },
@@ -10662,6 +10868,7 @@ test("provider user_message is recorded from the live stream", async () => {
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new UnexpectedUserMsgClient() },
     registry: storage,
     logger,
@@ -10752,6 +10959,7 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
 
   const client = new SubmittedUserMessageClient();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     registry: storage,
     logger,
@@ -10879,6 +11087,7 @@ test("authoritative timeline records a daemon-handled submitted prompt before it
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new DaemonHandledPromptClient() },
     registry: storage,
     logger,
@@ -10944,7 +11153,7 @@ test("tryRunOutOfBand gives providers the command another agent sent, not its en
       return new SlashCommandSession(config);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
   const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
     workspaceId: undefined,
   });
@@ -11006,6 +11215,7 @@ test("replaceAgentRun succeeds when foreground turn terminal event is never deli
   }
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: new StaleForegroundClient() },
     registry: storage,
     logger,
@@ -11105,6 +11315,7 @@ test.each([
     const includedClient = new RecordingPersistedAgentsClient(includedProvider);
     const skippedClient = new RecordingPersistedAgentsClient(skippedProvider);
     const manager = new AgentManager({
+      serverId: "srv_test",
       clients: { [includedProvider]: includedClient, [skippedProvider]: skippedClient },
       providerDefinitions,
       logger,
@@ -11122,6 +11333,7 @@ test("listImportableSessions includes derived providers that list persisted agen
   const claudeClient = new RecordingPersistedAgentsClient("claude");
   const ompClient = new RecordingPersistedAgentsClient("omp");
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { claude: claudeClient, omp: ompClient },
     providerDefinitions: {
       claude: { enabled: true, derivedFromProviderId: null },
@@ -11141,6 +11353,7 @@ test("listImportableSessions narrows to the providerFilter when supplied", async
   const claudeClient = new RecordingPersistedAgentsClient("claude");
   const codexClient = new RecordingPersistedAgentsClient("codex");
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { claude: claudeClient, codex: codexClient },
     providerDefinitions: {
       claude: { enabled: true, derivedFromProviderId: null },
@@ -11170,6 +11383,7 @@ test("listImportableSessions skips providers that lack supportsSessionListing ev
   });
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { claude: listableClient, acp: nonListableClient },
     providerDefinitions: {
       claude: { enabled: true, derivedFromProviderId: null },
@@ -11196,6 +11410,7 @@ test("listImportableSessions returns healthy rows alongside thrown and timed-out
     const hangingClient = new RecordingPersistedAgentsClient("pi");
     hangingClient.listImportableSessions = async () => await new Promise(() => undefined);
     const manager = new AgentManager({
+      serverId: "srv_test",
       clients: { claude: healthyClient, codex: failingClient, pi: hangingClient },
       providerDefinitions: {
         claude: { enabled: true, derivedFromProviderId: null },
@@ -11278,6 +11493,7 @@ test("listImportableSessions searches every provider result before global rankin
     },
   ];
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { claude: client },
     providerDefinitions: {
       claude: { enabled: true, derivedFromProviderId: null },
@@ -11315,6 +11531,7 @@ test("user_message events wrapping a paseo-system envelope are not added to the 
   });
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex },
     registry: storage,
     logger,
@@ -11356,6 +11573,7 @@ test("user_message events wrapping a paseo-system envelope are not restored duri
   });
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex },
     registry: storage,
     logger,
@@ -11430,6 +11648,7 @@ test("onWorkspaceStateMayHaveChanged is called when a completed shell tool call 
   });
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex },
     registry: storage,
     logger,
@@ -11466,6 +11685,7 @@ test("onWorkspaceStateMayHaveChanged is not called for non-shell tool calls", as
   });
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex },
     registry: storage,
     logger,
@@ -11501,6 +11721,7 @@ test("onWorkspaceStateMayHaveChanged is not called for running shell tool calls"
   });
 
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex },
     registry: storage,
     logger,
@@ -11538,7 +11759,12 @@ test("concurrent native restores run once before resuming the same agent", async
       return super.resumeSession(handle, config);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const manager = new AgentManager({
+    serverId: "srv_test",
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
   let agentId: string | undefined;
   try {
     const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
@@ -11616,6 +11842,7 @@ test("commits startup notices once on create and after restored history", async 
   })();
   const store = new RecordingTimelineStore();
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     durableTimelineStore: store,
     logger,
@@ -11678,7 +11905,7 @@ test("failed startup history closes the session without registering an agent", a
       return new FailingHistorySession({ provider: "codex", cwd: tmpdir() });
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
   try {
     await expect(
       manager.resumeAgentFromPersistence({
@@ -11709,7 +11936,7 @@ test("usage session is a pure read of the live adapter and disappears on close",
       })(config);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
   expect(manager.usageSession("missing")).toBeNull();
   const agent = await manager.createAgent({ provider: "codex", cwd: tmpdir() }, undefined, {
     workspaceId: undefined,
@@ -11736,7 +11963,12 @@ test.each(["live", "history"])(
     const codex = fakeCodexEmitting(
       path === "live" ? { turnItems: [item] } : { historyItems: [item] },
     );
-    const manager = new AgentManager({ clients: { codex }, registry: storage, logger });
+    const manager = new AgentManager({
+      serverId: "srv_test",
+      clients: { codex },
+      registry: storage,
+      logger,
+    });
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
@@ -11788,7 +12020,7 @@ test.each([false, true])(
           ]
         : [],
     });
-    const manager = new AgentManager({ clients: { codex }, logger });
+    const manager = new AgentManager({ serverId: "srv_test", clients: { codex }, logger });
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
@@ -11831,7 +12063,7 @@ test("a rejected agent prompt never becomes a delivered notification", async () 
       return new RejectingSession(config);
     }
   })();
-  const manager = new AgentManager({ clients: { codex: client }, logger });
+  const manager = new AgentManager({ serverId: "srv_test", clients: { codex: client }, logger });
   const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
     workspaceId: undefined,
   });
@@ -11868,7 +12100,7 @@ test.each([false, true])(
         },
       ],
     });
-    const manager = new AgentManager({ clients: { codex }, logger });
+    const manager = new AgentManager({ serverId: "srv_test", clients: { codex }, logger });
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
@@ -11892,3 +12124,52 @@ test.each([false, true])(
     }
   },
 );
+
+test("run journal reload binds subsequent evidence to the original submission and provider turn", async () => {
+  const { AgentRuns } = await import("./runs/index.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "paseo-run-reconcile-"));
+  try {
+    const first = new AgentRuns({ serverId: "srv_original", directory });
+    await first.prepare("agent-original", "submission-original");
+    await first.start("agent-original", "submission-original", "provider-turn-original");
+    const restarted = new AgentRuns({ serverId: "srv_original", directory });
+    expect(await restarted.get("agent-original", "submission-original")).toMatchObject({
+      status: "interrupted",
+      turnId: "provider-turn-original",
+    });
+    await restarted.capture(
+      "agent-original",
+      "unrelated-turn",
+      { type: "turn_completed", provider: "codex" },
+      "Unrelated output",
+    );
+    expect((await restarted.get("agent-original", "submission-original"))?.status).toBe(
+      "interrupted",
+    );
+    await restarted.capture(
+      "agent-original",
+      "provider-turn-original",
+      { type: "turn_completed", provider: "codex" },
+      "Recovered terminal evidence",
+    );
+    const result = await restarted.get("agent-original", "submission-original");
+    expect(result).toMatchObject({
+      agent: { serverId: "srv_original", agentId: "agent-original" },
+      submissionId: "submission-original",
+      turnId: "provider-turn-original",
+      status: "completed",
+      durability: "persisted",
+    });
+    expect(result?.checkpoints.map((checkpoint) => checkpoint.kind)).toEqual([
+      "submitted",
+      "running",
+      "interrupted",
+      "completed",
+    ]);
+    const next = new AgentRuns({ serverId: "srv_original", directory });
+    expect(await next.get("agent-original", "submission-original")).toEqual(result);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

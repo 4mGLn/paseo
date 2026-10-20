@@ -81,7 +81,12 @@ describe("OpenCodeBridge", () => {
     const logger = createTestLogger();
     const clients = createTestAgentClients();
     const agentStorage = new AgentStorage(path.join(paseoHome, "agents"), logger);
-    const agentManager = new AgentManager({ clients, registry: agentStorage, logger });
+    const agentManager = new AgentManager({
+      serverId: "srv_test",
+      clients,
+      registry: agentStorage,
+      logger,
+    });
     const providerSnapshotManager = new ProviderSnapshotManager({ logger, extraClients: clients });
     const dependencies = { agentManager, agentStorage, providerSnapshotManager, logger };
     const bridge = new OpenCodeBridge({ paseoHome, logger });
@@ -466,7 +471,7 @@ describe("OpenCodeBridge", () => {
     const logger = createTestLogger();
     const providerSnapshotManager = new ProviderSnapshotManager({ logger });
     const catalog = createPaseoToolCatalog({
-      agentManager: new AgentManager({ logger }),
+      agentManager: new AgentManager({ serverId: "srv_test", logger }),
       agentStorage: new AgentStorage(paseoHome, logger),
       providerSnapshotManager,
       logger,

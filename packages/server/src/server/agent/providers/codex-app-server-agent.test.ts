@@ -7149,7 +7149,11 @@ describe("Codex interactive resume startup", () => {
           return session;
         },
       };
-      const manager = new AgentManager({ clients: { codex: client }, logger: createTestLogger() });
+      const manager = new AgentManager({
+        serverId: "srv_test",
+        clients: { codex: client },
+        logger: createTestLogger(),
+      });
       let id: string | undefined;
       try {
         const resumed = await manager.resumeAgentFromPersistence(

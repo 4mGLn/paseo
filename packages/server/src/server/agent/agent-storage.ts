@@ -1,3 +1,4 @@
+import { AgentAddressSchema } from "@getpaseo/protocol/addresses";
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -43,6 +44,7 @@ const PERSISTENCE_HANDLE_SCHEMA = z
   .optional();
 
 const STORED_AGENT_SCHEMA = z.object({
+  parent: AgentAddressSchema.nullable().optional(),
   id: z.string(),
   provider: z.string(),
   cwd: z.string(),

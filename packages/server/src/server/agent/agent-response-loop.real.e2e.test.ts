@@ -38,6 +38,7 @@ async function startAgentMcpServer(logger: pino.Logger): Promise<AgentMcpServerH
   const storagePath = path.join(registryDir, "agents");
   const agentStorage = new AgentStorage(storagePath, logger);
   const agentManager = new AgentManager({
+    serverId: "srv_test",
     clients: {},
     registry: agentStorage,
     logger,
@@ -172,6 +173,7 @@ describe("getStructuredAgentResponse (e2e)", () => {
   beforeEach(async () => {
     cwd = mkdtempSync(path.join(tmpdir(), "agent-response-loop-"));
     manager = new AgentManager({
+      serverId: "srv_test",
       clients: createRealProviderClients(["codex", "claude"], logger),
       logger,
     });

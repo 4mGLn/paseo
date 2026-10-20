@@ -123,6 +123,7 @@ export function matchesAgentUpdatesFilter(input: {
   filter?: AgentUpdatesFilter;
 }): boolean {
   const { agent, project, filter } = input;
+  if (filter?.agentIds && !filter.agentIds.includes(agent.id)) return false;
 
   if (filter?.labels) {
     const matchesLabels = Object.entries(filter.labels).every(

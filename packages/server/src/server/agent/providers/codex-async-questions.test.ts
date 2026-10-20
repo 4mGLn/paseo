@@ -186,6 +186,7 @@ test("failed rewind preserves question state", async () => {
 
 async function manage(session: CodexAppServerAgentSession) {
   const manager = new AgentManager({
+    serverId: "srv_test",
     clients: {
       codex: {
         provider: "codex",

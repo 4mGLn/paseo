@@ -22,7 +22,7 @@ test("bridge preserves tool failure messages and classifies invalid requests as 
   const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-7045-"));
   const logger = createTestLogger();
   const providerSnapshotManager = new ProviderSnapshotManager({ logger });
-  const agentManager = new AgentManager({ logger });
+  const agentManager = new AgentManager({ serverId: "srv_test", logger });
   const agentStorage = new AgentStorage(paseoHome, logger);
   const unused = async (): Promise<never> => {
     throw new Error("Unexpected workspace or agent creation");

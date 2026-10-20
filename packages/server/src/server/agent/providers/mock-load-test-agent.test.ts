@@ -500,6 +500,7 @@ describe("MockLoadTestAgentClient", () => {
     try {
       const client = new MockLoadTestAgentClient();
       const manager = new AgentManager({
+        serverId: "srv_test",
         clients: { mock: client },
         idFactory: () => "00000000-0000-4000-8000-000000000001",
         logger: createTestLogger(),

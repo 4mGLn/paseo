@@ -226,6 +226,7 @@ describe("Codex app-server provider (local e2e)", () => {
       const logger = createTestLogger();
       const storage = new AgentStorage(path.join(cwd, "agents"), logger);
       const manager = new AgentManager({
+        serverId: "srv_test",
         clients: { codex: new CodexAppServerAgentClient(logger) },
         registry: storage,
         logger,

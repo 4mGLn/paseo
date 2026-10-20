@@ -83,6 +83,7 @@ export function toStoredAgentRecord(
     lastActivityAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt ? agent.lastUserMessageAt.toISOString() : null,
     title: options?.title ?? null,
+    parent: agent.parent,
     labels: agent.labels,
     lastStatus: agent.lifecycle,
     lastModeId: agent.currentModeId ?? config?.modeId ?? null,
@@ -138,6 +139,7 @@ export function toAgentPayload(
     pendingPermissions: sanitizePendingPermissions(agent.pendingPermissions),
     persistence: projectPersistenceHandleForWire(agent.persistence),
     title: options?.title ?? null,
+    parent: agent.parent,
     labels: agent.labels,
     ...(agent.internal ? { internal: true } : {}),
   };
@@ -249,6 +251,7 @@ export function buildStoredAgentPayload(
     attentionTimestamp: record.attentionTimestamp ?? null,
     archivedAt: record.archivedAt ?? null,
     ...(record.internal ? { internal: true } : {}),
+    parent: record.parent,
     labels: normalizeLabels(record.labels),
     ...(typeof record.lastError === "string" ? { lastError: record.lastError } : {}),
     ...(providerAvailable ? {} : { providerUnavailable: true }),
@@ -273,6 +276,7 @@ export function toAgentListItemPayload(agent: AgentSnapshotPayload): AgentListIt
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp ?? null,
+    parent: agent.parent,
     labels: agent.labels,
     ...(agent.providerUnavailable ? { providerUnavailable: true } : {}),
   };

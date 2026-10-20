@@ -168,7 +168,10 @@ export class CreationClient {
         subscribe: true,
       });
       if (result.creation) this.receive(result.creation);
-      this.finish(operation, result);
+      this.finish(operation, {
+        ...result,
+        errorCode: result.creation?.errorCode ?? result.errorCode,
+      });
     } catch (error) {
       if (
         operation.settled ||

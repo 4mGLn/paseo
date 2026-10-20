@@ -6,6 +6,12 @@ type OutboundOperation = SessionOutboundMessage["type"];
 export type PermissionRequirement = DaemonPermission | readonly DaemonPermission[] | null;
 
 const INBOUND_PERMISSION = {
+  "agent.create.cancel.request": "workspace.write",
+  "agent.runs.get.request": "workspace.read",
+  "agent.subagents.detach.request": "workspace.write",
+  "agent.subagents.forget.request": "workspace.write",
+  "agent.subagents.create.request": "workspace.write",
+  "agent.subagents.list.request": "workspace.read",
   "hosts.list.request": "daemon.read",
   "hosts.add.request": "tunnel.manage",
   "hosts.update.request": "tunnel.manage",
@@ -224,6 +230,13 @@ const INBOUND_PERMISSION = {
 } as const satisfies Record<InboundOperation, PermissionRequirement>;
 
 const OUTBOUND_PERMISSION = {
+  "agent.create.cancel.response": "workspace.write",
+  "agent.runs.get.response": "workspace.read",
+  "agent.subagents.detach.response": "workspace.write",
+  "agent.subagents.forget.response": "workspace.write",
+  "agent.subagents.create.response": "workspace.write",
+  "agent.subagents.list.response": "workspace.read",
+  "agent.subagents.changed": "workspace.read",
   "hosts.list.response": "daemon.read",
   "hosts.changed": "daemon.read",
   "hosts.add.response": "tunnel.manage",

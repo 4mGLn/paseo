@@ -1,3 +1,4 @@
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import type { AgentPromptSource } from "../agent-messages/index.js";
 import type { Logger } from "pino";
 
@@ -56,6 +57,7 @@ export type EnsureWorkspaceForCreate = (
 ) => Promise<string>;
 
 export interface CreateAgentFromSessionInput {
+  parent?: AgentAddress | null;
   kind: "session";
   onAgentReady?: (agent: ManagedAgent) => Promise<void>;
   agentId?: string;
@@ -289,6 +291,7 @@ async function resolveSessionCreateAgent(
   return {
     config: sessionConfig,
     createOptions: {
+      parent: input.parent,
       labels: input.labels,
       initialPrompt: trimmedPrompt,
       env: input.env,

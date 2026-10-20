@@ -91,7 +91,11 @@ function createFinishNotificationScenario(
   Reflect.set(callerAgent, "lifecycle", "idle");
   Reflect.set(callerAgent, "config", { title: "Caller Agent" });
 
-  const agentManager = new AgentManager({ clients: {}, logger: createTestLogger() });
+  const agentManager = new AgentManager({
+    serverId: "srv_test",
+    clients: {},
+    logger: createTestLogger(),
+  });
   Reflect.set(agentManager, "getAgent", (agentId: string) => {
     if (agentId === "child-agent") {
       return childAgent;
@@ -490,7 +494,11 @@ it("does not notify archived callers", async () => {
   const streamAgentSpy = vi.fn(() => (async function* noop() {})());
   const replaceAgentRunSpy = vi.fn(() => (async function* noop() {})());
 
-  const agentManager = new AgentManager({ clients: {}, logger: createTestLogger() });
+  const agentManager = new AgentManager({
+    serverId: "srv_test",
+    clients: {},
+    logger: createTestLogger(),
+  });
   Reflect.set(
     agentManager,
     "getAgent",
@@ -701,6 +709,7 @@ async function createRunStartScenario(startDelayMs: number | null): Promise<{
   const workdir = mkdtempSync(join(tmpdir(), "agent-run-start-budget-"));
   const client = new SlowStartAgentClient(startDelayMs);
   const agentManager = new AgentManager({
+    serverId: "srv_test",
     clients: { codex: client },
     logger: createTestLogger(),
   });

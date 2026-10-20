@@ -1266,6 +1266,7 @@ export class HubRelationshipHarness {
       pino({ level: "silent" }),
     );
     const manager = new AgentManager({
+      serverId: "srv_test",
       clients: createTestAgentClients(),
       registry: storage,
       logger: pino({ level: "silent" }),

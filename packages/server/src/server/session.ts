@@ -1,3 +1,5 @@
+import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import type { Subagents, SubagentAuthority } from "./subagents/index.js";
 import { AgentDirectory } from "./agent/directory.js";
 import { ConnectedHostSession } from "./connected-hosts/index.js";
 import type { ConnectedHosts } from "./connected-hosts/index.js";
@@ -444,6 +446,8 @@ const nodeSessionFileSystem: SessionFileSystem = {
 type AgentMcpTransportFactory = () => Promise<unknown>;
 
 export interface SessionOptions {
+  subagents?: Subagents;
+  subagentAuthority?: () => SubagentAuthority;
   connectedHosts?: ConnectedHosts;
   sourceId?: string;
   routed?: boolean;
@@ -469,7 +473,7 @@ export interface SessionOptions {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   messageReceipts: Pick<MessageReceipts, "send">;
-  creationService: Pick<CreationService, "create" | "subscribe">;
+  creationService: Pick<CreationService, "create" | "subscribe" | "cancelAgent">;
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
@@ -681,6 +685,10 @@ interface ClientActivity {
 }
 
 export class Session {
+  private readonly subagentOptions: Pick<
+    SessionOptions,
+    "subagents" | "subagentAuthority" | "serverId"
+  >;
   private readonly connectedHostSession: ConnectedHostSession | null;
   private routed = false;
   isRouted(): boolean {
@@ -823,7 +831,7 @@ export class Session {
   private readonly workspaceScripts: WorkspaceScriptsService;
   private readonly messageReceipts: Pick<MessageReceipts, "send">;
   private readonly createAgentLifecycleDispatch: CreateAgentLifecycleDispatch;
-  private readonly creationService: Pick<CreationService, "create" | "subscribe">;
+  private readonly creationService: Pick<CreationService, "create" | "subscribe" | "cancelAgent">;
 
   constructor(options: SessionOptions) {
     const {
@@ -885,6 +893,7 @@ export class Session {
     this.browserToolsBroker = options.browserToolsBroker;
     this.clientId = clientId;
     this.authorization = new SessionAuthorization(permissions);
+    this.subagentOptions = options;
 
     this.appVersion = appVersion ?? null;
     this.clientCapabilities = parseClientCapabilities(clientCapabilities);
@@ -2247,6 +2256,118 @@ export class Session {
     }
   }
 
+  private async handleSubagents(
+    message: Extract<
+      SessionInboundMessage,
+      {
+        type:
+          | "agent.subagents.create.request"
+          | "agent.subagents.list.request"
+          | "agent.subagents.detach.request"
+          | "agent.subagents.forget.request";
+      }
+    >,
+  ): Promise<void> {
+    try {
+      await this.executeSubagents(message);
+    } catch (error) {
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: message.requestId,
+          requestType: message.type,
+          code: error instanceof Error && "code" in error ? String(error.code) : "subagent_error",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private async executeSubagents(
+    message: Extract<
+      SessionInboundMessage,
+      {
+        type:
+          | "agent.subagents.create.request"
+          | "agent.subagents.list.request"
+          | "agent.subagents.detach.request"
+          | "agent.subagents.forget.request";
+      }
+    >,
+  ): Promise<void> {
+    const { subagents, subagentAuthority, serverId } = this.subagentOptions;
+    if (!subagents || !subagentAuthority || !serverId)
+      throw new Error("Subagent relationships are not available");
+    const parent = { serverId, agentId: message.parentId };
+    if (message.type === "agent.subagents.create.request") {
+      const child = await subagents.create(parent, message, subagentAuthority());
+      this.emit({
+        type: "agent.subagents.create.response",
+        payload: { requestId: message.requestId, child },
+      });
+      return;
+    }
+    if (message.type === "agent.subagents.detach.request") {
+      const relationship = await subagents.detach(parent, message.child, subagentAuthority());
+      this.emit({
+        type: "agent.subagents.detach.response",
+        payload: { requestId: message.requestId, relationship },
+      });
+      return;
+    }
+    if (message.type === "agent.subagents.forget.request") {
+      await subagents.forget(parent, message.child, subagentAuthority());
+      this.emit({
+        type: "agent.subagents.forget.response",
+        payload: { requestId: message.requestId },
+      });
+      return;
+    }
+    // The session's workspace-read permission authorizes the origin parent directory.
+    if (
+      !(await this.agentStorage.get(parent.agentId)) &&
+      !this.agentManager.getAgent(parent.agentId)
+    )
+      throw new Error("Parent agent not found");
+    if (!message.observe) {
+      this.emit({
+        type: "agent.subagents.list.response",
+        payload: {
+          requestId: message.requestId,
+          directory: await subagents.list(parent, subagentAuthority()),
+        },
+      });
+      return;
+    }
+    let stop = () => {};
+    const owner = this.delivery.begin("subagents", undefined, () => stop(), parent.agentId);
+    try {
+      stop = subagents.observe(() => {
+        void subagents
+          .list(parent, subagentAuthority())
+          .then((directory) => {
+            owner.emit({
+              type: "agent.subagents.changed",
+              payload: { subscriptionId: owner.id, directory },
+            });
+            return undefined;
+          })
+          .catch(() => owner.release());
+      });
+      this.emit({
+        type: "agent.subagents.list.response",
+        payload: {
+          requestId: message.requestId,
+          subscriptionId: owner.id,
+          directory: await subagents.list(parent, subagentAuthority()),
+        },
+      });
+    } catch (error) {
+      await owner.release();
+      throw error;
+    }
+  }
+
   public setPermissions(permissions: readonly DaemonPermission[]): void {
     this.authorization.replacePermissions(permissions);
     this.connectedHostSession?.revoke();
@@ -2828,6 +2949,8 @@ export class Session {
     source?: object,
   ): Promise<void> | undefined {
     switch (msg.type) {
+      case "agent.create.cancel.request":
+        return this.handleAgentCreationCancel(msg);
       case "agent.create.request":
         return this.handleAgentCreation(msg, source);
       case "creation.subscribe.request":
@@ -2839,7 +2962,64 @@ export class Session {
     }
   }
 
+  private async handleAgentCreationCancel(
+    message: Extract<SessionInboundMessage, { type: "agent.create.cancel.request" }>,
+  ): Promise<void> {
+    try {
+      // The originating execution-scoped capability cannot be reduced to ordinary grants.
+      this.subagentOptions.subagentAuthority?.();
+      const result = await this.creationService.cancelAgent(
+        message.idempotencyKey,
+        message.agentId,
+      );
+      const serverId = this.subagentOptions.serverId;
+      if (!serverId) throw new Error("Daemon identity is unavailable");
+      this.emit({
+        type: "agent.create.cancel.response",
+        payload: {
+          requestId: message.requestId,
+          cancellation: { ...result, reservedAgent: { serverId, agentId: message.agentId } },
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: message.requestId,
+          requestType: message.type,
+          code:
+            error instanceof Error && "code" in error
+              ? String(error.code)
+              : "creation_cancel_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private async handleAgentRunGet(
+    message: Extract<SessionInboundMessage, { type: "agent.runs.get.request" }>,
+  ): Promise<void> {
+    const run = await this.agentManager.getAgentRun(message.agentId, message.submissionId);
+    this.emit({ type: "agent.runs.get.response", payload: { requestId: message.requestId, run } });
+  }
+
+  private dispatchSubagentMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    if (msg.type === "agent.runs.get.request") return this.handleAgentRunGet(msg);
+    if (
+      msg.type === "agent.subagents.create.request" ||
+      msg.type === "agent.subagents.list.request" ||
+      msg.type === "agent.subagents.detach.request" ||
+      msg.type === "agent.subagents.forget.request"
+    )
+      return this.handleSubagents(msg);
+  }
+
   private dispatchAgentLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    return this.dispatchSubagentMessage(msg) ?? this.dispatchCoreAgentLifecycleMessage(msg);
+  }
+
+  private dispatchCoreAgentLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "fetch_agents_request":
         return this.handleFetchAgents(msg);
@@ -4155,6 +4335,7 @@ export class Session {
             requestId,
             agent: null,
             error: error instanceof Error ? error.message : String(error),
+            errorCode: error instanceof Error && "code" in error ? String(error.code) : undefined,
           },
         },
         source,
@@ -4355,11 +4536,50 @@ export class Session {
     }
   }
 
+  private async createLegacySubagent(
+    msg: CreateAgentRequestMessage,
+    agentId?: string,
+    onAgentReady?: (agent: AgentSnapshotPayload) => Promise<void>,
+  ): Promise<CreatedAgent | null> {
+    // COMPAT(qualifiedSubagents): normalize pre-fleet caller/label creation at the session edge.
+    // Added in v0.12; remove after 2027-04-20 once all creation callers use parent capabilities.
+    const legacyParentId = msg.callerAgentId ?? msg.labels[PARENT_AGENT_ID_LABEL];
+    const { subagents, subagentAuthority, serverId } = this.subagentOptions;
+    if (legacyParentId && subagents && subagentAuthority && serverId) {
+      const {
+        type: _type,
+        requestId: _requestId,
+        callerAgentId: _caller,
+        parent: _parent,
+        ...input
+      } = msg;
+      const labels = { ...input.labels };
+      delete labels[PARENT_AGENT_ID_LABEL];
+      const child = await subagents.create(
+        { serverId, agentId: legacyParentId },
+        {
+          serverId,
+          idempotencyKey: msg.idempotencyKey ?? msg.requestId,
+          input: { ...input, labels, agentId },
+        },
+        subagentAuthority(),
+      );
+      const record = await this.agentStorage.get(child.agentId);
+      if (!record) throw new Error("Created subagent is not available");
+      const agent = this.buildStoredAgentPayload(record);
+      await onAgentReady?.(agent);
+      return { agent, initialPromptStarted: hasInitialCreationPrompt(msg) };
+    }
+    return null;
+  }
+
   private async createSessionAgent(
     msg: CreateAgentRequestMessage,
     agentId?: string,
     onAgentReady?: (agent: AgentSnapshotPayload) => Promise<void>,
   ): Promise<CreatedAgent> {
+    const delegated = await this.createLegacySubagent(msg, agentId, onAgentReady);
+    if (delegated) return delegated;
     const {
       config,
       worktreeName,
@@ -4450,6 +4670,7 @@ export class Session {
           images,
           attachments,
           git,
+          parent: msg.parent,
           labels: resolvedIntent.intent.labels,
           env,
           provisionalTitle,

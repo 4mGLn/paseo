@@ -255,6 +255,7 @@ describe("configured provider options", () => {
       },
     });
     const manager = new AgentManager({
+      serverId: "srv_test",
       logger,
       clients: { claude: registry.claude.createClient(logger) },
       providerDefinitions: { claude: registry.claude },
