@@ -398,9 +398,6 @@ export interface DaemonClientConfig {
   /** Deliver compact bodies/hash references to a caller-owned snapshot cache.
    * The default keeps public SDK snapshot entries expanded. */
   providerSnapshots?: "wire";
-  routedClient?: boolean;
-  routedServerId?: string;
-  routedFailure?: () => Error | null;
   sessionPermissions?: import("@getpaseo/protocol/messages").DaemonPermission[];
   url: string;
   clientId: string;
@@ -949,6 +946,7 @@ interface Waiter<T> {
   reject(error: Error): void;
   timeoutHandle: ReturnType<typeof setTimeout> | null;
   requestId?: string;
+  submitted: boolean;
 }
 
 interface WaitHandle<T> {
@@ -1006,11 +1004,16 @@ type CorrelatedResponsePayload<TType extends CorrelatedResponseType> =
   CorrelatedResponsePayloads[TType];
 
 export class DaemonConnectionError extends Error {
+  readonly serverId?: string;
+  readonly outcome?: "unknown";
   constructor(
     message: string,
     readonly code: "DAEMON_CONNECTION_LOST" | "DAEMON_REQUEST_TIMEOUT" = "DAEMON_CONNECTION_LOST",
+    context?: { serverId?: string; outcome?: "unknown"; cause?: Error },
   ) {
-    super(message);
+    super(message, context?.cause ? { cause: context.cause } : undefined);
+    this.serverId = context?.serverId;
+    this.outcome = context?.outcome;
     this.name = "DaemonConnectionError";
   }
 }
@@ -1303,6 +1306,8 @@ export class DaemonClient {
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private lastErrorValue: string | null = null;
+  private destinationServerId: string | undefined;
+  private connectionFailure: Error | undefined;
   private authFailureReasonValue: DaemonAuthFailureReason | null = null;
   private connectionState: ConnectionState = { status: "idle" };
   private readonly terminalStreams = new TerminalStreamRouter();
@@ -1500,6 +1505,7 @@ export class DaemonClient {
           }
           this.scheduleReconnect({
             reason,
+            failure: event instanceof Error ? event : undefined,
             event: "TRANSPORT_CLOSE",
             reasonCode: "transport_closed",
           });
@@ -1619,7 +1625,6 @@ export class DaemonClient {
   }
 
   ensureConnected(options?: { verify?: boolean }): void {
-    this.requireRoutedConnection();
     if (this.connectionState.status === "disposed") {
       return;
     }
@@ -1655,7 +1660,7 @@ export class DaemonClient {
           event: "CONNECTION_VERIFICATION_FAILED",
           reasonCode: "liveness_timeout",
         });
-        if (!this.config.routedClient) this.ensureConnected();
+        this.ensureConnected();
       })
       .finally(() => {
         if (this.connectionVerification === transport) this.connectionVerification = null;
@@ -1666,7 +1671,7 @@ export class DaemonClient {
     if (!this.isConnected)
       throw Object.assign(new Error("The managing daemon is offline"), {
         code: "host_offline",
-        serverId: this.config.routedServerId,
+        serverId: this.destinationServerId,
       });
     if (this.lastServerInfoMessage?.features?.connectedHosts !== true)
       throw Object.assign(new Error("Update the managing daemon to use connected hosts"), {
@@ -1907,15 +1912,32 @@ export class DaemonClient {
     this.endTraceSection(isOpen);
   }
 
-  private sendJsonMessage(envelopeType: string, messageType: string, message: unknown): void {
+  private sendJsonMessage(
+    envelopeType: string,
+    messageType: string,
+    message: unknown,
+    submitted?: () => void,
+  ): void {
     this.traceInstant("paseo.ws.message.outbound", {
       envelopeType,
       messageType,
     });
-    this.sendTransportFrame(JSON.stringify(message));
+    this.sendTransportFrame(JSON.stringify(message), submitted);
   }
 
-  private sendTransportFrame(frame: string | Uint8Array | ArrayBuffer): void {
+  private sendSessionPayload(payload: SessionInboundMessage): void {
+    this.sendJsonMessage("session", payload.type, { type: "session", message: payload }, () => {
+      if (!("requestId" in payload) || typeof payload.requestId !== "string") return;
+      for (const waiter of this.waiters) {
+        if (waiter.requestId === payload.requestId) waiter.submitted = true;
+      }
+    });
+  }
+
+  private sendTransportFrame(
+    frame: string | Uint8Array | ArrayBuffer,
+    submitted?: () => void,
+  ): void {
     if (!this.transport) {
       throw this.unavailableError();
     }
@@ -1926,6 +1948,7 @@ export class DaemonClient {
       size: String(getTransportFrameSize(frame)),
     });
     try {
+      submitted?.();
       this.transport.send(frame);
     } finally {
       this.endTraceSection(isOpen);
@@ -1946,7 +1969,7 @@ export class DaemonClient {
     }
     const payload = SessionInboundMessageSchema.parse(message);
     try {
-      this.sendJsonMessage("session", payload.type, { type: "session", message: payload });
+      this.sendSessionPayload(payload);
     } catch (error) {
       if (this.config.suppressSendErrors) {
         return;
@@ -1985,7 +2008,7 @@ export class DaemonClient {
   private sendSessionMessageOrThrow(message: SessionInboundMessage): Promise<void> {
     return this.sendWhenConnected(() => {
       const payload = SessionInboundMessageSchema.parse(message);
-      this.sendJsonMessage("session", payload.type, { type: "session", message: payload });
+      this.sendSessionPayload(payload);
     });
   }
 
@@ -2004,7 +2027,7 @@ export class DaemonClient {
     }
 
     // If connecting, queue the message to be sent once connected
-    if (status === "connecting" && !this.config.routedClient) {
+    if (status === "connecting") {
       return new Promise((resolve, reject) => {
         const timeoutHandle = setTimeout(() => {
           // Remove from queue
@@ -2079,13 +2102,10 @@ export class DaemonClient {
             kind: "error",
             error: new DaemonRpcError({
               requestId: msg.payload.requestId,
-              serverId: this.config.routedServerId,
+              serverId: this.destinationServerId,
               error: msg.payload.error,
               requestType: msg.payload.requestType,
-              code:
-                this.config.routedClient && msg.payload.code === "access_denied"
-                  ? "permission_denied"
-                  : msg.payload.code,
+              code: msg.payload.code,
             }),
           };
         }
@@ -2194,18 +2214,11 @@ export class DaemonClient {
     });
   }
 
-  private requireRoutedConnection(): void {
-    if (this.config.routedClient && !this.isConnected) throw this.unavailableError();
-  }
-
-  private unavailableError(): Error {
-    if (this.config.routedFailure?.()) return this.config.routedFailure()!;
-    if (this.config.routedClient)
-      return Object.assign(new Error(`Host ${this.config.routedServerId} is offline`), {
-        code: "host_offline",
-        serverId: this.config.routedServerId,
-      });
-    return new DaemonConnectionError("Transport not connected");
+  private unavailableError(): DaemonConnectionError {
+    return new DaemonConnectionError("Transport not connected", "DAEMON_CONNECTION_LOST", {
+      serverId: this.destinationServerId,
+      cause: this.connectionFailure,
+    });
   }
 
   private sendSessionMessageStrict(message: SessionInboundMessage): void {
@@ -2214,7 +2227,7 @@ export class DaemonClient {
     }
     const payload = SessionInboundMessageSchema.parse(message);
     try {
-      this.sendJsonMessage("session", payload.type, { type: "session", message: payload });
+      this.sendSessionPayload(payload);
     } catch (error) {
       throw error instanceof Error ? error : new Error(String(error));
     }
@@ -3030,7 +3043,6 @@ export class DaemonClient {
 
   private readonly creations = new CreationClient({
     supports: (feature) => {
-      this.requireRoutedConnection();
       return this.lastServerInfoMessage?.features?.[feature] === true;
     },
     requestId: () => this.createRequestId(),
@@ -6847,16 +6859,18 @@ export class DaemonClient {
 
     // Clear all pending waiters and queued sends since the connection was lost
     // and responses from the previous connection will never arrive.
-    this.clearWaiters(
-      this.config.routedClient
-        ? Object.assign(
-            new Error("Connection lost before result; inspect the destination before retrying"),
-            { code: "outcome_unknown", serverId: this.config.routedServerId },
-          )
-        : new DaemonConnectionError(reason ?? "Connection lost"),
+    const connectionError = new DaemonConnectionError(
+      reason ?? "Connection lost",
+      "DAEMON_CONNECTION_LOST",
+      {
+        serverId: this.destinationServerId,
+        cause: input?.failure,
+      },
     );
-    this.rejectPendingSendQueue(new DaemonConnectionError(reason ?? "Connection lost"));
-    this.rejectPingProbe(new DaemonConnectionError(reason ?? "Connection lost"));
+    this.connectionFailure = input?.failure;
+    this.clearWaiters(connectionError, true);
+    this.rejectPendingSendQueue(connectionError);
+    this.rejectPingProbe(connectionError);
     this.terminalStreams.clearSlots();
     this.lastServerInfoMessage = null;
 
@@ -6994,6 +7008,8 @@ export class DaemonClient {
       const serverInfo = parseServerInfoStatusPayload(consumerMessage.payload);
       if (serverInfo) {
         this.lastServerInfoMessage = serverInfo;
+        this.destinationServerId = serverInfo.serverId;
+        this.connectionFailure = undefined;
         if (this.connectionState.status === "connecting") {
           this.resetConnectTimeout();
           this.reconnectAttempt = 0;
@@ -7077,12 +7093,20 @@ export class DaemonClient {
     }
   }
 
-  private clearWaiters(error: Error): void {
+  private clearWaiters(error: Error, connectionLost = false): void {
     for (const waiter of Array.from(this.waiters)) {
       if (waiter.timeoutHandle) {
         clearTimeout(waiter.timeoutHandle);
       }
-      waiter.reject(error);
+      waiter.reject(
+        connectionLost && waiter.submitted && error instanceof DaemonConnectionError
+          ? new DaemonConnectionError(error.message, error.code, {
+              serverId: error.serverId,
+              outcome: "unknown",
+              cause: error.cause instanceof Error ? error.cause : undefined,
+            })
+          : error,
+      );
     }
     this.waiters.clear();
   }
@@ -7189,6 +7213,7 @@ export class DaemonClient {
         reject: wrappedReject,
         timeoutHandle,
         requestId: options?.requestId,
+        submitted: false,
       };
       this.waiters.add(waiter);
     });
