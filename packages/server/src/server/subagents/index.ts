@@ -1,6 +1,6 @@
 import type { HostDirectory } from "@getpaseo/protocol/hosts";
 import { shouldDetachFromArchivedParent } from "@getpaseo/protocol/agent-lifecycle";
-import { hasOpenAgentTab } from "@getpaseo/protocol/agent-labels";
+import { hasOpenAgentTab, getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { WorkspaceAddressSchema, type WorkspaceAddress } from "@getpaseo/protocol/addresses";
 import type { AgentSnapshotPayload, CreationSnapshot } from "@getpaseo/protocol/messages";
 import { createHash, randomUUID } from "node:crypto";
@@ -19,6 +19,8 @@ import {
 } from "@getpaseo/protocol/messages";
 import { writeJsonFileAtomic } from "../atomic-file.js";
 import type { HostRuntimeAuthority } from "../host-runtime/index.js";
+import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
+import { buildStoredAgentPayload } from "../agent/agent-projections.js";
 
 /** Stored authority contains identity and a ceiling; live admission belongs to the host. */
 export interface SubagentAuthority {
@@ -31,11 +33,9 @@ const AuthoritySchema = z.object({
   sourceId: z.string(),
   permissionCeiling: z.array(DaemonPermissionSchema),
 });
-const RecordSchema = z.object({
+const RelationshipStateSchema = z.object({
   row: SubagentRelationshipSchema,
   authority: AuthoritySchema,
-  creation: SubagentCreateInputSchema,
-  fingerprint: z.string(),
   confirmed: z.enum(["attached", "detached", "archived", "canceled"]).nullable(),
   intent: z.object({
     revision: z.number().int().nonnegative(),
@@ -44,8 +44,24 @@ const RecordSchema = z.object({
     authority: AuthoritySchema,
   }),
 });
+const RecordSchema = z.discriminatedUnion("provenance", [
+  RelationshipStateSchema.extend({
+    provenance: z.literal("creation"),
+    creation: SubagentCreateInputSchema,
+    fingerprint: z.string(),
+  }),
+  RelationshipStateSchema.extend({
+    provenance: z.literal("legacy-local-lifecycle"),
+    creation: z.null(),
+    fingerprint: z.null(),
+  }),
+]);
 type RelationshipRecord = z.infer<typeof RecordSchema>;
 type RelationshipIntent = RelationshipRecord["intent"];
+const LedgerSchema = z.object({
+  records: z.array(RecordSchema),
+  legacyUpgrade: z.object({ complete: z.boolean(), candidates: z.array(z.string()) }),
+});
 
 /** Authoritative parent membership, independent of views and destination metadata. */
 export class Subagents {
@@ -69,11 +85,13 @@ export class Subagents {
   private mutation: Promise<unknown> = Promise.resolve();
   private readonly ready: Promise<void>;
   private closed = false;
+  private legacyUpgrade = { complete: false, candidates: [] as string[] };
 
   constructor(
     private readonly options: {
       home: string;
       serverId: string;
+      agents: Pick<AgentStorage, "list" | "get" | "upsert">;
       runtime(authority: HostRuntimeAuthority): Promise<HostRuntime>;
       resolveAuthority(principalId: string): ReturnType<HostRuntimeAuthority["resolveAdmission"]>;
     },
@@ -83,17 +101,99 @@ export class Subagents {
   }
 
   private async load(): Promise<void> {
-    let records: RelationshipRecord[];
+    let records: RelationshipRecord[] = [];
+    let existing = false;
     try {
-      records = z.array(RecordSchema).parse(JSON.parse(await readFile(this.path(), "utf8")));
+      const ledger = LedgerSchema.parse(JSON.parse(await readFile(this.path(), "utf8")));
+      records = ledger.records;
+      this.legacyUpgrade = ledger.legacyUpgrade;
+      existing = true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     for (const record of records) {
       record.row.freshness = "stale";
       this.records.set(record.row.id, record);
     }
+    if (!this.legacyUpgrade.complete) await this.upgradeLegacyMembership(existing);
+  }
+  initialize(): Promise<void> {
+    return this.ready;
+  }
+
+  private async upgradeLegacyMembership(existing: boolean): Promise<void> {
+    if (!existing) {
+      const agents = await this.options.agents.list();
+      const byId = new Map(agents.map((agent) => [agent.id, agent]));
+      const admission = await this.options.resolveAuthority("owner");
+      const authority: z.infer<typeof AuthoritySchema> = {
+        principalId: "owner",
+        sourceId: "owner",
+        permissionCeiling: admission.permissions.filter((permission) =>
+          ["daemon.read", "workspace.read", "workspace.write"].includes(permission),
+        ),
+      };
+      for (const child of agents) {
+        const parentId = getParentAgentIdFromLabels(child.labels);
+        const parent = parentId ? byId.get(parentId) : undefined;
+        if (
+          !legacyManagedAgent(child) ||
+          child.archivedAt ||
+          !parent ||
+          !legacyManagedAgent(parent) ||
+          child.parent !== undefined
+        )
+          continue;
+        if (
+          [...this.records.values()].some(
+            (record) =>
+              record.row.child.serverId === this.options.serverId &&
+              record.row.child.agentId === child.id,
+          )
+        )
+          continue;
+        const id = createHash("sha256")
+          .update(JSON.stringify(["legacy-local-lifecycle", this.options.serverId, child.id]))
+          .digest("hex");
+        const address = { serverId: this.options.serverId, agentId: parent.id };
+        this.records.set(id, {
+          row: {
+            id,
+            parent: address,
+            child: { serverId: this.options.serverId, agentId: child.id },
+            ...(child.workspaceId
+              ? { workspace: { serverId: this.options.serverId, workspaceId: child.workspaceId } }
+              : {}),
+            phase: "attached",
+            freshness: "stale",
+            observedAt: null,
+            error: null,
+            snapshot: buildStoredAgentPayload({ ...child, parent: address }, [child.provider]),
+          },
+          provenance: "legacy-local-lifecycle",
+          creation: null,
+          fingerprint: null,
+          authority,
+          confirmed: "attached",
+          intent: { kind: "attached", revision: 0, authority },
+        });
+        this.legacyUpgrade.candidates.push(id);
+      }
+      // Persist the bounded candidate set before qualifying agent metadata. A restart
+      // resumes these candidates, never a new scan of subsequently edited labels.
+      await this.persist();
+    }
+    for (const id of this.legacyUpgrade.candidates) {
+      const record = this.records.get(id)!;
+      const child = await this.options.agents.get(record.row.child.agentId);
+      if (!child) continue;
+      if (child.parent === undefined)
+        await this.options.agents.upsert({ ...child, parent: record.row.parent });
+      else if (!child.parent || !sameAddress(child.parent, record.row.parent))
+        throw new Error("Legacy child parent changed during membership upgrade");
+    }
+    this.legacyUpgrade.complete = true;
+    await this.persist();
   }
   private path(): string {
     return join(this.options.home, "subagents.json");
@@ -109,7 +209,10 @@ export class Subagents {
   }
   private async persist(): Promise<void> {
     for (const record of this.records.values()) record.row.phase = relationshipPhase(record);
-    await writeJsonFileAtomic(this.path(), [...this.records.values()]);
+    await writeJsonFileAtomic(this.path(), {
+      records: [...this.records.values()],
+      legacyUpgrade: this.legacyUpgrade,
+    });
     for (const changed of this.listeners) changed();
   }
   async assertHostRemovable(serverId: string): Promise<void> {
@@ -262,6 +365,7 @@ export class Subagents {
         return existing;
       }
       const fresh: RelationshipRecord = {
+        provenance: "creation",
         row: {
           id,
           parent,
@@ -309,10 +413,11 @@ export class Subagents {
     return running;
   }
   private creationKey(record: RelationshipRecord): string {
-    return record.creation.input.idempotencyKey ?? `subagent:${record.row.id}`;
+    return creationRequest(record).input.idempotencyKey ?? `subagent:${record.row.id}`;
   }
   private async createChild(record: RelationshipRecord): Promise<AgentAddress> {
-    const { row, creation } = record;
+    const { row } = record;
+    const creation = creationRequest(record);
     const creationIntent = record.intent;
     try {
       const runtime = await this.runtime(record.authority);
@@ -655,7 +760,7 @@ export class Subagents {
       return null;
     }
     const observation = api.creations.observe({
-      kind: record.creation.workspace ? "workspace" : "agent",
+      kind: creationRequest(record).workspace ? "workspace" : "agent",
       idempotencyKey: this.creationKey(record),
     });
     let latest: CreationSnapshot | null = null;
@@ -705,12 +810,13 @@ export class Subagents {
       const child = await runtime.agent(record.row.child);
       let current = await child.refresh();
       if (!current) {
+        const creation = creationRequest(record);
         const destination = await runtime.client(record.row.child.serverId);
         try {
           if (record.intent !== intent) return;
           const cancellation = await destination.creations.cancel({
-            ...(record.creation.workspace
-              ? { kind: "workspace" as const, workspaceId: record.creation.input.workspaceId! }
+            ...(creation.workspace
+              ? { kind: "workspace" as const, workspaceId: creation.input.workspaceId! }
               : { kind: "agent" as const }),
             idempotencyKey: this.creationKey(record),
             agentId: record.row.child.agentId,
@@ -841,4 +947,17 @@ function terminalPhase(phase: RelationshipRecord["row"]["phase"]): boolean {
   return (
     phase === "detached" || phase === "archived" || phase === "forgotten" || phase === "canceled"
   );
+}
+
+function legacyManagedAgent(agent: StoredAgentRecord): boolean {
+  return !agent.internal && !agent.owner;
+}
+
+function creationRequest(record: RelationshipRecord): SubagentCreateInput {
+  if (record.provenance !== "creation" || !record.creation)
+    throw failure(
+      "agent_not_found",
+      "The adopted existing child is absent; there is no creation to replay or cancel",
+    );
+  return record.creation;
 }

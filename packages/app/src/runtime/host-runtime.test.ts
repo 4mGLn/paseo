@@ -1,4 +1,6 @@
+import { indexedDB as fakeIndexedDb, IDBKeyRange as FakeIDBKeyRange } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryObserver } from "@tanstack/react-query";
 import type { AppStateStatus } from "react-native";
 import {
   bindHostRuntimeAppState,
@@ -13,12 +15,15 @@ import type {
 import { DaemonAuthenticationError } from "@getpaseo/client/internal/daemon-client";
 import type { ConnectionOffer } from "@getpaseo/protocol/connection-offer";
 import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
+import { MutableDaemonConfigSchema } from "@getpaseo/protocol/messages";
+import { daemonConfigQueryKey } from "@/data/daemon-config";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
 import type { HostConnection, HostProfile } from "@/types/host-connection";
 import { defaultHostAppearance } from "@/hosts/appearance";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { isAgentArchiving, setAgentArchiving } from "@/hooks/use-archive-agent";
+import { createAgentArchiveAction } from "@/hooks/use-archive-agent";
 import { queryClient } from "@/data/query-client";
 import {
   HostRuntimeController,
@@ -52,6 +57,16 @@ it("requests the managed connection credential through desktop main without a we
 });
 
 class FakeDaemonClient {
+  private readonly eventListeners = new Set<(message: SessionOutboundMessage) => void>();
+  publishEvent(message: SessionOutboundMessage): void {
+    for (const receive of this.eventListeners) receive(message);
+  }
+  readonly archiveCalls: string[] = [];
+  archiveResponse: Promise<{ archivedAt: string }> | null = null;
+  async archiveAgent(agentId: string): Promise<{ archivedAt: string }> {
+    this.archiveCalls.push(agentId);
+    return this.archiveResponse ?? { archivedAt: new Date().toISOString() };
+  }
   supportsBackgroundWorkspaces(): boolean {
     return false;
   }
@@ -96,7 +111,12 @@ class FakeDaemonClient {
   }
 
   observeEvents() {
-    return subscriptionFixture(Promise.resolve({}), () => () => {});
+    return subscriptionFixture(Promise.resolve({}), (receive) => {
+      this.eventListeners.add(receive);
+      return () => {
+        this.eventListeners.delete(receive);
+      };
+    });
   }
 
   async waitForAgentUpdates(): Promise<void> {
@@ -161,6 +181,29 @@ class FakeDaemonClient {
     return this.state;
   }
 
+  private readonly hostDirectoryListeners = new Set<(message: SessionOutboundMessage) => void>();
+  observeHosts(): ReturnType<DaemonClient["observeHosts"]> {
+    return subscriptionFixture(
+      Promise.resolve({ self: { serverId: this.serverId, label: "Origin" }, hosts: [] }),
+      (receive) => {
+        this.hostDirectoryListeners.add(receive);
+        return () => {
+          this.hostDirectoryListeners.delete(receive);
+        };
+      },
+    );
+  }
+  hostsChanged(): void {
+    for (const receive of this.hostDirectoryListeners)
+      receive({
+        type: "hosts.changed",
+        payload: {
+          subscriptionId: "hosts",
+          directory: { self: { serverId: this.serverId, label: "Origin" }, hosts: [] },
+        },
+      });
+  }
+  public serverId = "srv_test";
   public ownedSubscriptions = true;
   private daemonVersion: string | null = "0.8.0";
 
@@ -168,7 +211,7 @@ class FakeDaemonClient {
     if (this.daemonVersion === null) return null;
     return {
       status: "server_info",
-      serverId: "srv_test",
+      serverId: this.serverId,
       hostname: "test",
       version: this.daemonVersion,
       features: { ownedSubscriptions: this.ownedSubscriptions },
@@ -4440,3 +4483,288 @@ describe("HostRuntimeStore initial connection hint bootstrap", () => {
     expect(store.getHosts()).toHaveLength(0);
   });
 });
+
+it("retains one authority binding for direct and routed consumers without changing a retained direct destination", async () => {
+  globalThis.indexedDB = fakeIndexedDb;
+  globalThis.IDBKeyRange = FakeIDBKeyRange;
+  const prefix = crypto.randomUUID();
+  const aId = `A-${prefix}`;
+  const bId = `B-${prefix}`;
+  const clients = new Map<string, FakeDaemonClient>();
+  const resolutions: Array<{ origin: DaemonClient; serverId: string }> = [];
+  const releases: string[] = [];
+  const routeClient = makeConnectedProbeClient(5);
+  routeClient.serverId = bId;
+  const store = new HostRuntimeStore({
+    storage: createMemoryHostRuntimeStorage(),
+    replicaRowStore: createMemoryReplicaRowStore(),
+    deps: {
+      createClient: ({ host }) => {
+        const client = makeConnectedProbeClient(5);
+        client.serverId = host.serverId;
+        clients.set(host.serverId, client);
+        return client as unknown as DaemonClient;
+      },
+      connectToDaemon: async () => {
+        throw new Error("Probe is not needed");
+      },
+      getClientId: async () => "binding-client",
+    },
+    resolveHostConnection: async (origin, serverId) => {
+      resolutions.push({ origin, serverId });
+      const client =
+        origin === (clients.get(aId) as unknown as DaemonClient) ? routeClient : origin;
+      return {
+        client: client as DaemonClient,
+        release: async () => {
+          releases.push(serverId);
+        },
+      };
+    },
+  });
+  const hosts = [aId, bId].map((serverId) =>
+    makeHost({ serverId, connections: [makeHost().connections[0]!] }),
+  );
+  const initial = new Map<string, { connectionId: string; existingClient: DaemonClient }>();
+  for (const host of hosts) {
+    const client = makeConnectedProbeClient(5);
+    client.serverId = host.serverId;
+    clients.set(host.serverId, client);
+    initial.set(host.serverId, {
+      connectionId: host.connections[0]!.id,
+      existingClient: client as unknown as DaemonClient,
+    });
+  }
+  store.syncHosts(hosts, { initialConnectionByServerId: initial });
+  await onceHostSnapshotMatches(store, aId, (snapshot) => snapshot?.connectionStatus === "online");
+  await onceHostSnapshotMatches(store, bId, (snapshot) => snapshot?.connectionStatus === "online");
+  const direct = store.acquireBinding({ originServerId: bId, serverId: bId });
+  const routed = store.acquireBinding({ originServerId: aId, serverId: bId });
+  const sibling = store.acquireBinding({ originServerId: aId, serverId: bId });
+  try {
+    await Promise.all([direct.binding.ready, routed.binding.ready]);
+    expect(sibling.binding).toBe(routed.binding);
+    expect(direct.binding.runtime.getClient(bId)).toBe(clients.get(bId));
+    expect(routed.binding.runtime.getClient(bId)).toBe(routeClient);
+    expect(direct.binding.sessionStore).not.toBe(routed.binding.sessionStore);
+    expect(direct.binding.namespace).not.toBe(routed.binding.namespace);
+    expect(routed.binding.queries.getDefaultOptions()).toEqual(queryClient.getDefaultOptions());
+    const key = ["schedules", bId];
+    let directFetches = 0;
+    let routedFetches = 0;
+    direct.binding.queries.setQueryData(key, "Direct cache");
+    routed.binding.queries.setQueryData(key, "Routed cache");
+    queryClient.setQueryData(key, "Registry cache");
+    const directObserver = new QueryObserver(direct.binding.queries, {
+      queryKey: key,
+      queryFn: async () => {
+        directFetches++;
+        return "Direct recovered";
+      },
+    });
+    const routedObserver = new QueryObserver(routed.binding.queries, {
+      queryKey: key,
+      queryFn: async () => {
+        routedFetches++;
+        return "Routed recovered";
+      },
+    });
+    const stopDirect = directObserver.subscribe(() => {});
+    const stopRouted = routedObserver.subscribe(() => {});
+    try {
+      expect([directFetches, routedFetches]).toEqual([0, 0]);
+      routeClient.setConnectionState({ status: "disconnected", reason: "Recover routed cache" });
+      routeClient.setConnectionState({ status: "connected" });
+      await expect.poll(() => routed.binding.queries.getQueryData(key)).toBe("Routed recovered");
+      expect([directFetches, routedFetches]).toEqual([0, 1]);
+      expect(direct.binding.queries.getQueryData(key)).toBe("Direct cache");
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false);
+      clients
+        .get(bId)!
+        .setConnectionState({ status: "disconnected", reason: "Recover direct cache" });
+      clients.get(bId)!.setConnectionState({ status: "connected" });
+      await expect.poll(() => direct.binding.queries.getQueryData(key)).toBe("Direct recovered");
+      expect([directFetches, routedFetches]).toEqual([1, 1]);
+    } finally {
+      stopDirect();
+      stopRouted();
+      queryClient.removeQueries({ queryKey: key });
+    }
+    const configKey = daemonConfigQueryKey(bId);
+    const config = MutableDaemonConfigSchema.parse({
+      relay: { enabled: false },
+      mcp: { injectIntoAgents: true },
+    });
+    const directConfig = MutableDaemonConfigSchema.parse({
+      relay: { enabled: true },
+      mcp: { injectIntoAgents: true },
+    });
+    direct.binding.queries.setQueryData(configKey, directConfig);
+    routeClient.publishEvent({
+      type: "status",
+      payload: { status: "daemon_config_changed", config },
+    });
+    await expect.poll(() => routed.binding.queries.getQueryData(configKey)).toEqual(config);
+    expect(direct.binding.queries.getQueryData(configKey)).toEqual(directConfig);
+    const agent = replicaAgent(
+      makeFetchAgentsEntry({
+        id: "same-agent",
+        cwd: "/repo",
+        title: "Direct",
+        updatedAt: new Date().toISOString(),
+      }).agent,
+      bId,
+    );
+    direct.binding.runtime.acceptAgentSnapshot(bId, agent);
+    expect(routed.binding.sessionStore.getState().sessions[bId]?.agents.size).toBe(0);
+    routed.binding.runtime.acceptAgentSnapshot(bId, { ...agent, title: "Routed" });
+    direct.binding.runtime.acceptAgentSnapshot(bId, { ...agent, title: "Late direct" });
+    expect(routed.binding.sessionStore.getState().sessions[bId]?.agents.get(agent.id)?.title).toBe(
+      "Routed",
+    );
+    const archive = createAgentArchiveAction({
+      runtime: routed.binding.runtime,
+      sessionStore: routed.binding.sessionStore,
+      queryClient: routed.binding.queries,
+      unavailableMessage: "Authority unavailable",
+    });
+    const gate = createDeferred<{ archivedAt: string }>();
+    routeClient.archiveResponse = gate.promise;
+    const archiving = archive({ serverId: bId, agentId: agent.id });
+    void archiving.catch(() => {});
+    expect(routeClient.archiveCalls).toEqual([agent.id]);
+    expect(clients.get(bId)!.archiveCalls).toEqual([]);
+    expect(
+      isAgentArchiving({ queryClient: routed.binding.queries, serverId: bId, agentId: agent.id }),
+    ).toBe(true);
+    expect(
+      isAgentArchiving({ queryClient: direct.binding.queries, serverId: bId, agentId: agent.id }),
+    ).toBe(false);
+    expect(
+      direct.binding.sessionStore.getState().sessions[bId]?.agents.get(agent.id)?.archivedAt,
+    ).toBeNull();
+    gate.reject(new Error("Rejected by selected authority"));
+    await expect(archiving).rejects.toThrow("Rejected by selected authority");
+    expect(
+      routed.binding.sessionStore.getState().sessions[bId]?.agents.get(agent.id)?.archivedAt,
+    ).toBeNull();
+    routeClient.setConnectionState({ status: "disconnected", reason: "Route revoked" });
+    expect(routed.binding.runtime.getSnapshot(bId)?.connectionStatus).toBe("error");
+    expect(direct.binding.runtime.getSnapshot(bId)?.connectionStatus).toBe("online");
+    expect(routed.binding.runtime.getClient(bId)).toBe(routeClient);
+    expect(resolutions).toHaveLength(2);
+    // Withdrawal must retire command sources even if the old client stays alive.
+    routeClient.setConnectionState({ status: "connected" });
+    store.syncHosts(hosts.filter((host) => host.serverId === bId));
+    expect(routed.binding.runtime.getClient(bId)).toBeNull();
+    expect(routed.binding.sessionStore.getState().sessions[bId]?.client).toBeNull();
+    expect(routeClient.getConnectionState().status).toBe("connected");
+    routeClient.publishEvent({
+      type: "status",
+      payload: { status: "daemon_config_changed", config: directConfig },
+    });
+    expect(routed.binding.queries.getQueryData(configKey)).toEqual(config);
+    await expect(archive({ serverId: bId, agentId: agent.id })).rejects.toThrow(
+      "Authority unavailable",
+    );
+    expect(routeClient.archiveCalls).toEqual([agent.id]);
+    expect(clients.get(bId)!.archiveCalls).toEqual([]);
+    expect(
+      routed.binding.sessionStore.getState().sessions[bId]?.agents.get(agent.id)?.archivedAt,
+    ).toBeNull();
+    expect(direct.binding.runtime.getSnapshot(bId)?.connectionStatus).toBe("online");
+    expect(direct.binding.sessionStore.getState().sessions[bId]?.client).toBe(clients.get(bId));
+    await routed.release();
+    expect(releases).toEqual([bId]);
+    expect(sibling.binding.sessionStore.getState().sessions[bId]?.agents.get(agent.id)?.title).toBe(
+      "Routed",
+    );
+  } finally {
+    await Promise.all([direct.release(), routed.release(), sibling.release()]);
+    store.syncHosts([]);
+  }
+  expect(releases).toHaveLength(2);
+});
+
+it.each(["after failure", "during acquisition"])(
+  "recovers a cold offline authority when the same origin enables the destination %s",
+  async (timing) => {
+    globalThis.indexedDB = fakeIndexedDb;
+    globalThis.IDBKeyRange = FakeIDBKeyRange;
+    const aId = `cold-A-${crypto.randomUUID()}`;
+    const bId = `cold-B-${crypto.randomUUID()}`;
+    const origin = makeConnectedProbeClient(5);
+    origin.serverId = aId;
+    const target = makeConnectedProbeClient(5);
+    target.serverId = bId;
+    const gate = createDeferred<void>();
+    let attempts = 0;
+    let enabled = false;
+    const store = new HostRuntimeStore({
+      storage: createMemoryHostRuntimeStorage(),
+      replicaRowStore: createMemoryReplicaRowStore(),
+      resolveHostConnection: async (source, destination) => {
+        expect(source).toBe(origin);
+        expect(destination).toBe(bId);
+        attempts++;
+        if (attempts === 1) {
+          await gate.promise;
+          throw new Error("Destination disabled");
+        }
+        if (!enabled) throw new Error("Destination disabled");
+        return { client: target as unknown as DaemonClient, release: async () => {} };
+      },
+      deps: {
+        createClient: () => {
+          throw new Error("Origin must remain the same client");
+        },
+        connectToDaemon: async () => {
+          throw new Error("No new connection");
+        },
+        getClientId: async () => "cold-authority",
+      },
+    });
+    const host = makeHost({ serverId: aId, connections: [makeHost().connections[0]!] });
+    store.syncHosts([host], {
+      initialConnectionByServerId: new Map([
+        [
+          aId,
+          {
+            connectionId: host.connections[0]!.id,
+            existingClient: origin as unknown as DaemonClient,
+          },
+        ],
+      ]),
+    });
+    await onceHostSnapshotMatches(
+      store,
+      aId,
+      (snapshot) => snapshot?.connectionStatus === "online",
+    );
+    origin.setConnectionState({ status: "disconnected", reason: "Cold offline origin" });
+    const retained = store.acquireBinding({ originServerId: aId, serverId: bId });
+    try {
+      origin.setConnectionState({ status: "connected" });
+      await expect.poll(() => attempts).toBe(1);
+      if (timing === "after failure") {
+        gate.resolve();
+        await expect
+          .poll(() => retained.binding.runtime.getSnapshot(bId)?.connectionStatus)
+          .toBe("error");
+      }
+      enabled = true;
+      origin.hostsChanged();
+      gate.resolve();
+      await expect
+        .poll(() => retained.binding.runtime.getSnapshot(bId)?.connectionStatus)
+        .toBe("online");
+      expect(store.getClient(aId)).toBe(origin);
+      expect(retained.binding.runtime.getClient(bId)).toBe(target);
+      expect(attempts).toBeGreaterThanOrEqual(2);
+    } finally {
+      gate.resolve();
+      await retained.release();
+      store.syncHosts([]);
+    }
+  },
+);

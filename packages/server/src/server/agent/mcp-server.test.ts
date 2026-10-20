@@ -67,8 +67,6 @@ import { createTerminalManager, type TerminalManager } from "../../terminal/term
 import { createWorkerTerminalManager } from "../../terminal/worker-terminal-manager.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { PASEO_TOOL_NAMES } from "@getpaseo/protocol/paseo-tool-presentation/index";
-import { MutableDaemonConfigSchema, type AgentProfile } from "@getpaseo/protocol/messages";
-import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { BrowserToolsBroker, BrowserToolsExecuteInput } from "../browser-tools/broker.js";
 import type { BrowserToolsResponsePayload } from "../browser-tools/errors.js";
 import { readPaseoWorktreeMetadata } from "../../utils/worktree-metadata.js";
@@ -4844,7 +4842,7 @@ describe("send_agent_prompt MCP tool", () => {
           });
           expect(childClient.sessions[0]!.prompts).toHaveLength(1);
           expect(parseAgentMessage(childClient.sessions[0]!.prompts[0])).toMatchObject({
-            source: { kind: "agent-message", agentId: parent.id },
+            source: { kind: "agent-message", serverId: "srv_test", agentId: parent.id },
             text: "Ongoing task",
           });
           expect(parentClient.sessions[0]!.prompts).toHaveLength(0);
@@ -5039,7 +5037,7 @@ describe("send_agent_prompt MCP tool", () => {
       await vi.waitFor(() => expect(childSession.prompts).toHaveLength(1));
       expect(parseAgentMessage(childSession.prompts[0])).toEqual({
         id: expect.any(String),
-        source: { kind: "agent-message", agentId: parent.id },
+        source: { kind: "agent-message", serverId: "srv_test", agentId: parent.id },
         text: "Follow up",
       });
       acknowledgeTurnStart();
@@ -6273,202 +6271,6 @@ describe("schedule_logs MCP tool", () => {
   });
 });
 
-describe("provider listing MCP tool", () => {
-  const logger = createTestLogger();
-
-  it("returns providers from the registry, including custom providers", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const provStub = createProviderSnapshotManagerStub();
-    provStub.listRegisteredProviderIds.mockReturnValue(["claude", "zai"]);
-    provStub.listProviders.mockResolvedValue([
-      buildSnapshotEntry({
-        provider: "claude",
-        label: "Claude",
-        description: "Test provider",
-        modes: [{ id: "default", label: "Default", description: "Built-in mode" }],
-      }),
-      buildSnapshotEntry({
-        provider: "zai" as AgentProvider,
-        label: "ZAI",
-        description: "Custom Claude profile",
-        defaultModeId: "default",
-        modes: [{ id: "default", label: "Default", description: "Custom mode" }],
-      }),
-    ]);
-
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: provStub.manager,
-      logger,
-    });
-    const tool = registeredTool(server, "list_providers");
-    const response = await tool.handler({});
-    const modelVisibleText = String(response.content[0]?.text);
-
-    expect(response.structuredContent).toEqual({
-      providers: [
-        {
-          id: "claude",
-          label: "Claude",
-          description: "Test provider",
-          enabled: true,
-          status: "available",
-          modes: [{ id: "default", label: "Default", description: "Built-in mode" }],
-        },
-        {
-          id: "zai",
-          label: "ZAI",
-          status: "available",
-          description: "Custom Claude profile",
-          enabled: true,
-          modes: [{ id: "default", label: "Default", description: "Custom mode" }],
-        },
-      ],
-    });
-    expect(modelVisibleText).toContain("providers_count=2");
-    expect(modelVisibleText).toContain("providers_ids=claude,zai");
-    expect(modelVisibleText).toContain('"providers"');
-  });
-
-  it("returns provider modes from the shared snapshot catalog", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const provStub = createProviderSnapshotManagerStub();
-    provStub.listRegisteredProviderIds.mockReturnValue(["codex"]);
-    provStub.listProviders.mockResolvedValue([
-      buildSnapshotEntry({
-        provider: "codex",
-        label: "Codex",
-        modes: [{ id: "dynamic", label: "Dynamic", description: "Runtime mode" }],
-      }),
-    ]);
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: provStub.manager,
-      logger,
-    });
-    const tool = registeredTool(server, "list_providers");
-
-    const response = await tool.handler({});
-
-    expect(response.structuredContent.providers).toEqual([
-      expect.objectContaining({
-        id: "codex",
-        modes: [{ id: "dynamic", label: "Dynamic", description: "Runtime mode" }],
-      }),
-    ]);
-  });
-
-  it("returns disabled providers with metadata without checking availability", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const provStub = createProviderSnapshotManagerStub();
-    provStub.listRegisteredProviderIds.mockReturnValue(["codex"]);
-    provStub.listProviders.mockResolvedValue([
-      buildSnapshotEntry({
-        provider: "codex",
-        label: "Codex",
-        description: "OpenAI coding agent",
-        enabled: false,
-        modes: [{ id: "read-only", label: "Read Only", description: "No edits" }],
-      }),
-    ]);
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: provStub.manager,
-      logger,
-    });
-    const tool = registeredTool(server, "list_providers");
-    const response = await tool.handler({});
-
-    expect(response.structuredContent).toEqual({
-      providers: [
-        {
-          id: "codex",
-          label: "Codex",
-          description: "OpenAI coding agent",
-          enabled: false,
-          status: "unavailable",
-          modes: [],
-        },
-      ],
-    });
-  });
-});
-
-function daemonConfigStoreStub(agentProfiles?: AgentProfile[]): Pick<DaemonConfigStore, "get"> {
-  const config = MutableDaemonConfigSchema.parse({
-    relay: { enabled: true },
-    mcp: { injectIntoAgents: true },
-    ...(agentProfiles !== undefined ? { agentProfiles } : {}),
-  });
-  return { get: () => config };
-}
-
-describe("agent profile listing MCP tool", () => {
-  const logger = createTestLogger();
-
-  it("returns configured profiles, including notes", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const profiles: AgentProfile[] = [
-      {
-        id: "ui-profile",
-        name: "UI work",
-        provider: "claude",
-        model: "claude-test-model",
-        modeId: "bypassPermissions",
-        thinkingOptionId: "high",
-        featureValues: { fast_mode: true },
-        notes: "Use for UI work: components, layout, design tokens. Not for backend.",
-      },
-    ];
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: createOpenCodeManager().manager,
-      daemonConfigStore: daemonConfigStoreStub(profiles),
-      logger,
-    });
-    const tool = registeredTool(server, "list_profiles");
-
-    const response = await tool.handler({});
-
-    expect(response.structuredContent).toEqual({ profiles });
-  });
-
-  it("returns an empty array when no profiles are configured", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: createOpenCodeManager().manager,
-      daemonConfigStore: daemonConfigStoreStub(),
-      logger,
-    });
-    const tool = registeredTool(server, "list_profiles");
-
-    const response = await tool.handler({});
-
-    expect(response.structuredContent).toEqual({ profiles: [] });
-  });
-
-  it("returns an empty array when no daemon config store is provided", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: createOpenCodeManager().manager,
-      logger,
-    });
-    const tool = registeredTool(server, "list_profiles");
-
-    const response = await tool.handler({});
-
-    expect(response.structuredContent).toEqual({ profiles: [] });
-  });
-});
-
 describe("provider MCP tools", () => {
   const logger = createTestLogger();
 
@@ -6482,113 +6284,6 @@ describe("provider MCP tools", () => {
     });
 
     expect(lookupTool(server, "list_provider_features")).toBeUndefined();
-  });
-
-  it("inspects provider features for a draft agent configuration", async () => {
-    const { agentManager, agentStorage, spies } = createTestDeps();
-    spies.agentManager.listDraftFeatures.mockResolvedValue([
-      {
-        type: "toggle",
-        id: "fast_mode",
-        label: "Fast mode",
-        value: false,
-      },
-    ]);
-    const provStub = createProviderSnapshotManagerStub();
-    provStub.listRegisteredProviderIds.mockReturnValue(["codex"]);
-    const codexEntry = buildSnapshotEntry({
-      provider: "codex",
-      label: "Codex",
-      description: "OpenAI coding agent",
-      modes: [{ id: "full-access", label: "Full Access", description: "Can edit files" }],
-    });
-    provStub.listProviders.mockResolvedValue([codexEntry]);
-    provStub.getProvider.mockResolvedValue(codexEntry);
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: provStub.manager,
-      logger,
-    });
-    const tool = registeredTool(server, "inspect_provider");
-    const input = {
-      provider: "codex/gpt-5.4",
-      cwd: "~/repo",
-      settings: {
-        modeId: "full-access",
-        thinkingOptionId: "high",
-        features: { fast_mode: true },
-      },
-    };
-
-    const parsed = await tool.inputSchema.safeParseAsync(input);
-    expect(parsed.success).toBe(true);
-
-    const response = await tool.handler(input);
-
-    expect(spies.agentManager.listDraftFeatures).toHaveBeenCalledWith({
-      provider: "codex",
-      cwd: expect.stringContaining("repo"),
-      modeId: "full-access",
-      model: "gpt-5.4",
-      thinkingOptionId: "high",
-      featureValues: { fast_mode: true },
-    });
-    expect(response.structuredContent).toEqual({
-      provider: "codex",
-      label: "Codex",
-      description: "OpenAI coding agent",
-      enabled: true,
-      status: "available",
-      modes: [{ id: "full-access", label: "Full Access", description: "Can edit files" }],
-      selectedModel: "gpt-5.4",
-      features: [
-        {
-          type: "toggle",
-          id: "fast_mode",
-          label: "Fast mode",
-          value: false,
-        },
-      ],
-    });
-  });
-
-  it("rejects disabled providers without fetching models", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const provStub = createProviderSnapshotManagerStub();
-    provStub.listRegisteredProviderIds.mockReturnValue(["codex"]);
-    provStub.listModels.mockRejectedValue(new Error("Provider 'codex' is disabled"));
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: provStub.manager,
-      logger,
-    });
-    const tool = registeredTool(server, "list_models");
-
-    await expect(tool.handler({ provider: "codex" })).rejects.toThrow(
-      "Provider 'codex' is disabled",
-    );
-  });
-
-  it("inspect_provider rejects disabled providers without fetching models", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const provStub = createProviderSnapshotManagerStub();
-    provStub.listRegisteredProviderIds.mockReturnValue(["codex"]);
-    provStub.getProvider.mockResolvedValue(
-      buildSnapshotEntry({ provider: "codex", label: "Codex", enabled: false }),
-    );
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      providerSnapshotManager: provStub.manager,
-      logger,
-    });
-    const tool = registeredTool(server, "inspect_provider");
-
-    await expect(tool.handler({ provider: "codex", cwd: "~/repo" })).rejects.toThrow(
-      "Provider 'codex' is disabled",
-    );
   });
 });
 

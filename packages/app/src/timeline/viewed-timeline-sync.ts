@@ -7,18 +7,13 @@ import type { CachedTimeline } from "@/runtime/replica-cache";
 import {
   selectAgentTimelineState,
   useSessionStore,
+  type SessionStoreApi,
   type AgentTimelineCursorState,
   type AgentTimelineState,
 } from "@/stores/session-store";
-import { useCreateFlowStore } from "@/stores/create-flow-store";
 import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
 import { getSendingClientMessageIds } from "@/composer/submission/model";
-import {
-  getInitDeferred,
-  getInitKey,
-  rejectInitDeferred,
-  resolveInitDeferred,
-} from "@/utils/agent-initialization";
+import { getInitKey } from "@/utils/agent-initialization";
 import {
   createSessionAgentStreamReducerQueue,
   type AgentStreamReducerEvent,
@@ -34,12 +29,13 @@ export interface TimelineReplicaStorage {
 }
 
 async function prepareCachedTimeline(input: {
+  store: SessionStoreApi;
   serverId: string;
   agentId: string;
   storage: TimelineReplicaStorage;
   prepareAgent: (agentId: string) => Promise<void>;
 }): Promise<CachedTimeline | undefined> {
-  const before = useSessionStore.getState().sessions[input.serverId];
+  const before = input.store.getState().sessions[input.serverId];
   const beforeTimeline = selectAgentTimelineState(before, input.agentId);
   if (beforeTimeline.status === "synced") return undefined;
   const [stored] = await Promise.all([
@@ -47,7 +43,7 @@ async function prepareCachedTimeline(input: {
     input.prepareAgent(input.agentId),
   ]);
   if (!stored) return undefined;
-  const session = useSessionStore.getState().sessions[input.serverId];
+  const session = input.store.getState().sessions[input.serverId];
   const currentTimeline = selectAgentTimelineState(session, input.agentId);
   const currentHead = session?.agentStreamHead.get(input.agentId);
   if (currentTimeline.status === "synced") return undefined;
@@ -77,7 +73,7 @@ async function prepareCachedTimeline(input: {
       endSeq: null,
     },
   });
-  useSessionStore.getState().applyAgentTimelineResponseState(input.serverId, input.agentId, {
+  input.store.getState().applyAgentTimelineResponseState(input.serverId, input.agentId, {
     items: replacement.tail,
     head: replacement.head,
     range: stored.range,
@@ -104,6 +100,7 @@ class TimelineReplicaOwner implements TimelineReplica {
     private readonly serverId: string,
     private readonly storage: TimelineReplicaStorage,
     private readonly prepareAgent: (agentId: string) => Promise<void>,
+    private readonly store: SessionStoreApi,
   ) {}
 
   async prepare(agentId: string): Promise<void> {
@@ -123,6 +120,7 @@ class TimelineReplicaOwner implements TimelineReplica {
       serverId: this.serverId,
       agentId,
       storage: this.storage,
+      store: this.store,
       prepareAgent: this.prepareAgent,
     });
     if (!stored) return;
@@ -141,7 +139,7 @@ class TimelineReplicaOwner implements TimelineReplica {
   }
 
   timelineUpdated(agentId: string): void {
-    const session = useSessionStore.getState().sessions[this.serverId];
+    const session = this.store.getState().sessions[this.serverId];
     const timeline = selectAgentTimelineState(session, agentId);
     if (timeline.status === "cold") return;
     if (timeline.status === "synced") this.cachedRanges.delete(agentId);
@@ -155,11 +153,17 @@ class TimelineReplicaOwner implements TimelineReplica {
 }
 
 export function createTimelineReplica(input: {
+  store?: SessionStoreApi;
   serverId: string;
   storage: TimelineReplicaStorage;
   prepareAgent: (agentId: string) => Promise<void>;
 }): TimelineReplica {
-  return new TimelineReplicaOwner(input.serverId, input.storage, input.prepareAgent);
+  return new TimelineReplicaOwner(
+    input.serverId,
+    input.storage,
+    input.prepareAgent,
+    input.store ?? useSessionStore,
+  );
 }
 
 export interface TimelinePageResult {
@@ -181,8 +185,12 @@ export function consumeForcedTimelineTailReplacement(
   return { ...payload, reset: true };
 }
 
-function clearAgentInitializingFlag(serverId: string, agentId: string): void {
-  useSessionStore.getState().setInitializingAgents(serverId, (previous) => {
+function clearAgentInitializingFlag(
+  store: SessionStoreApi,
+  serverId: string,
+  agentId: string,
+): void {
+  store.getState().setInitializingAgents(serverId, (previous) => {
     if (previous.get(agentId) !== true) return previous;
     const next = new Map(previous);
     next.set(agentId, false);
@@ -191,6 +199,7 @@ function clearAgentInitializingFlag(serverId: string, agentId: string): void {
 }
 
 function commitProcessedTimeline(input: {
+  store: SessionStoreApi;
   serverId: string;
   payload: TimelineResponsePayload;
   result: ProcessTimelineResponseOutput;
@@ -200,7 +209,7 @@ function commitProcessedTimeline(input: {
 }): void {
   const { serverId, payload, result, timeline, currentCursor, synchronized } = input;
   const agentId = payload.agentId;
-  const store = useSessionStore.getState();
+  const store = input.store.getState();
   if (result.commit !== "discard") {
     store.applyAgentTimelineResponseState(serverId, agentId, {
       items: result.tail,
@@ -232,6 +241,7 @@ function commitProcessedTimeline(input: {
 }
 
 function finalizeProcessedTimeline(input: {
+  store: SessionStoreApi;
   serverId: string;
   agentId: string;
   initKey: string;
@@ -244,17 +254,19 @@ function finalizeProcessedTimeline(input: {
     if (effect.type === "catch_up") input.recoverGap(input.agentId, effect.cursor);
   }
   if (input.result.clearInitializing) {
-    clearAgentInitializingFlag(input.serverId, input.agentId);
+    clearAgentInitializingFlag(input.store, input.serverId, input.agentId);
   }
   if (input.synchronized) {
-    const session = useSessionStore.getState().sessions[input.serverId];
+    const session = input.store.getState().sessions[input.serverId];
     const agent = session?.agents.get(input.agentId) ?? session?.agentDetails.get(input.agentId);
     if (agent && agent.turn.phase === "idle") input.drainQueuedAgentMessage(input.agentId);
   }
-  if (input.result.initResolution === "resolve") resolveInitDeferred(input.initKey);
+  if (input.result.initResolution === "resolve")
+    input.store.initializations.resolveInitDeferred(input.initKey);
 }
 
 function applyAuthoritativeTimelineResponse(input: {
+  store: SessionStoreApi;
   serverId: string;
   payload: TimelineResponsePayload;
   cachedCursor?: AgentTimelineCursorState;
@@ -264,9 +276,9 @@ function applyAuthoritativeTimelineResponse(input: {
   const { serverId, payload } = input;
   const agentId = payload.agentId;
   const initKey = getInitKey(serverId, agentId);
-  const session = useSessionStore.getState().sessions[serverId];
+  const session = input.store.getState().sessions[serverId];
   const timeline = selectAgentTimelineState(session, agentId);
-  const activeInitDeferred = getInitDeferred(initKey);
+  const activeInitDeferred = input.store.initializations.getInitDeferred(initKey);
   const currentCursor =
     timeline.status === "synced" ? (timeline.range ?? undefined) : input.cachedCursor;
   const result = processTimelineResponse({
@@ -281,8 +293,9 @@ function applyAuthoritativeTimelineResponse(input: {
   });
 
   if (result.error) {
-    if (result.clearInitializing) clearAgentInitializingFlag(serverId, agentId);
-    if (result.initResolution === "reject") rejectInitDeferred(initKey, new Error(result.error));
+    if (result.clearInitializing) clearAgentInitializingFlag(input.store, serverId, agentId);
+    if (result.initResolution === "reject")
+      input.store.initializations.rejectInitDeferred(initKey, new Error(result.error));
     return false;
   }
 
@@ -291,8 +304,17 @@ function applyAuthoritativeTimelineResponse(input: {
     hasNewer: payload.hasNewer,
     error: payload.error,
   });
-  commitProcessedTimeline({ serverId, payload, result, timeline, currentCursor, synchronized });
+  commitProcessedTimeline({
+    store: input.store,
+    serverId,
+    payload,
+    result,
+    timeline,
+    currentCursor,
+    synchronized,
+  });
   finalizeProcessedTimeline({
+    store: input.store,
     serverId,
     agentId,
     initKey,
@@ -358,12 +380,14 @@ export interface ViewedTimelineOwner extends ViewedTimelineSync {
 }
 
 export function createViewedTimelineOwner(input: {
+  store?: SessionStoreApi;
   serverId: string;
   replica: TimelineReplica;
   replaceDemandedAgentIds: (agentIds: string[]) => void;
   drainQueuedAgentMessage: (agentId: string) => void;
   ports: ViewedTimelineOwnerPorts;
 }): ViewedTimelineOwner {
+  const store = input.store ?? useSessionStore;
   const forcedTailReplacements = new Set<string>();
   const sync = createViewedTimelineSync({
     ...input.ports,
@@ -379,12 +403,13 @@ export function createViewedTimelineOwner(input: {
     readCursor: (agentId) => input.replica.readCursor(agentId) ?? input.ports.readCursor(agentId),
     replaceDemandedAgentIds: input.replaceDemandedAgentIds,
     onCatchUpEnded: (agentId) =>
-      useCreateFlowStore.getState().clearByAgent({ serverId: input.serverId, agentId }),
+      store.createFlows.getState().clearByAgent({ serverId: input.serverId, agentId }),
   });
   const streamQueue = createSessionAgentStreamReducerQueue({
     serverId: input.serverId,
-    setAgentStreamState: (...args) => useSessionStore.getState().setAgentStreamState(...args),
-    setAgentTimelineCursor: (...args) => useSessionStore.getState().setAgentTimelineCursor(...args),
+    store,
+    setAgentStreamState: (...args) => store.getState().setAgentStreamState(...args),
+    setAgentTimelineCursor: (...args) => store.getState().setAgentTimelineCursor(...args),
     recoverTimelineGap: (agentId, cursor) => sync.recoverGap(agentId, cursor),
     onCommitted: (agentId) => input.replica.timelineUpdated(agentId),
   });
@@ -393,6 +418,7 @@ export function createViewedTimelineOwner(input: {
     applyTimelineResponse(receivedPayload) {
       const payload = consumeForcedTimelineTailReplacement(receivedPayload, forcedTailReplacements);
       const accepted = applyAuthoritativeTimelineResponse({
+        store,
         serverId: input.serverId,
         payload,
         cachedCursor: input.replica.readRange(payload.agentId),

@@ -289,6 +289,7 @@ test("finish notifications tell the parent the child's last assistant message", 
     source: {
       kind: "agent-notification",
       agentId: "child-agent",
+      serverId: "srv_test",
       title: "Child Agent",
       event: "finished",
     },
@@ -325,6 +326,7 @@ test("closing a watched child notifies the caller", async () => {
     source: {
       kind: "agent-notification",
       agentId: "child-agent",
+      serverId: "srv_test",
       title: "Child Agent",
       event: "closed",
     },

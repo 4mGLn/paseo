@@ -23,14 +23,14 @@ export function createScheduleActions(
       return method(...args);
     };
   return {
-    create: action(client.scheduleCreate.bind(client)),
-    list: action(client.scheduleList.bind(client)),
-    inspect: action(client.scheduleInspect.bind(client)),
-    update: action(client.scheduleUpdate.bind(client)),
-    pause: action(client.schedulePause.bind(client)),
-    resume: action(client.scheduleResume.bind(client)),
-    delete: action(client.scheduleDelete.bind(client)),
-    logs: action(client.scheduleLogs.bind(client)),
-    runOnce: action(client.scheduleRunOnce.bind(client)),
+    create: action((...args) => client.scheduleCreate(...args)),
+    list: action((...args) => client.scheduleList(...args)),
+    inspect: action((...args) => client.scheduleInspect(...args)),
+    update: action((...args) => client.scheduleUpdate(...args)),
+    pause: action((...args) => client.schedulePause(...args)),
+    resume: action((...args) => client.scheduleResume(...args)),
+    delete: action((...args) => client.scheduleDelete(...args)),
+    logs: action((...args) => client.scheduleLogs(...args)),
+    runOnce: action((...args) => client.scheduleRunOnce(...args)),
   };
 }

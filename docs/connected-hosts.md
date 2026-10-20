@@ -33,6 +33,10 @@ A managed child has a qualified `{serverId, agentId}` address on every host. The
 
 Durable relationships retain a stable authority reference and creation ceiling, never live credentials or execution capabilities. Recovery must resolve current authority through its owner. Derived runtime sessions cannot authorize their own recovery. Execution-scoped admissions and non-owner durable references without a supported authority resolver fail explicitly; do not recover them through the daemon owner's MCP runtime.
 
+Before accepting new writes, the daemon adopts eligible pre-feature local parent labels into authoritative membership. The upgrade records its bounded candidates before qualifying agent metadata, then resumes those candidates after interruption. It never rescans later label edits. Existing membership, including forgotten entries, takes precedence; explicit null or qualified parent pointers do not establish legacy provenance. Adopted entries preserve the old daemon-owned local lifecycle, not an authenticated creator grant, and contain no creation recipe to replay. Recovery still resolves current owner authority within the retained self-only ceiling.
+
+Provider-owned subagents are descriptors and timelines in `ProviderSubagentStore`, not `AgentStorage` records. They retain their provider observation/cancellation path. Internal managed agents and execution-owned records are separate stored/runtime concepts and are excluded from adoption on both sides of the relationship.
+
 ## Connections and recovery
 
 The shared Node connector owns the target grammar and each connection attempt, including a fresh

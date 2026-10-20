@@ -1,14 +1,8 @@
-import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useHostRuntimeStore, type HostRuntimeStore } from "@/runtime/host-runtime";
 import { useCallback, useMemo } from "react";
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type QueryClient,
-  type QueryKey,
-} from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useSessionStore } from "@/stores/session-store";
+import { useSessionStoreApi, type SessionStoreApi } from "@/stores/session-store";
 import { agentHistoryQueryKey, allAgentHistoryQueryRootKey } from "./agent-history-query-key";
 
 export const ARCHIVE_AGENT_PENDING_QUERY_KEY = ["archive-agent-pending"] as const;
@@ -241,14 +235,15 @@ interface ArchiveAgentMutationContext {
   lists: ArchivedAgentListCacheSnapshot;
 }
 
-function getStoredAgentSnapshot(input: ArchiveAgentInput) {
-  return useSessionStore.getState().sessions[input.serverId]?.agents.get(input.agentId);
+function getStoredAgentSnapshot(store: SessionStoreApi, input: ArchiveAgentInput) {
+  return store.getState().sessions[input.serverId]?.agents.get(input.agentId);
 }
 
 function restoreAgentSnapshot(
+  runtime: HostRuntimeStore,
   input: ArchiveAgentInput & { agent: ReturnType<typeof getStoredAgentSnapshot> },
 ): void {
-  getHostRuntimeStore().restoreAgentSnapshot(input.serverId, input.agentId, input.agent);
+  runtime.restoreAgentSnapshot(input.serverId, input.agentId, input.agent);
 }
 
 function getArchivedAgentListCacheSnapshot(
@@ -299,20 +294,20 @@ function restoreArchivedAgentListCacheSnapshot(
   }
 }
 
-function markAgentArchivedInStore(input: ArchiveAgentInput & { archivedAt: string }): void {
+function markAgentArchivedInStore(
+  runtime: HostRuntimeStore,
+  input: ArchiveAgentInput & { archivedAt: string },
+): void {
   const archivedAt = new Date(input.archivedAt);
   if (Number.isNaN(archivedAt.getTime())) {
     return;
   }
 
-  getHostRuntimeStore().archiveAgentSnapshot(
-    input.serverId,
-    input.agentId,
-    archivedAt.toISOString(),
-  );
+  runtime.archiveAgentSnapshot(input.serverId, input.agentId, archivedAt.toISOString());
 }
 
 interface ApplyArchivedAgentCloseResultsInput {
+  runtime: HostRuntimeStore;
   queryClient: QueryClient;
   serverId: string;
   results: ArchivedAgentCloseResult[];
@@ -325,7 +320,7 @@ export function applyArchivedAgentCloseResults(input: ApplyArchivedAgentCloseRes
   }
 
   for (const result of input.results) {
-    markAgentArchivedInStore({
+    markAgentArchivedInStore(input.runtime, {
       serverId: input.serverId,
       agentId: result.agentId,
       archivedAt: result.archivedAt,
@@ -375,87 +370,69 @@ export function usePendingArchiveAgentIds(serverId: string): ReadonlySet<string>
   );
 }
 
+/** The action owns optimistic state and rollback within its captured authority. */
+export function createAgentArchiveAction({
+  runtime,
+  sessionStore,
+  queryClient,
+  unavailableMessage,
+}: {
+  runtime: HostRuntimeStore;
+  sessionStore: SessionStoreApi;
+  queryClient: QueryClient;
+  unavailableMessage: string;
+}): (input: ArchiveAgentInput) => Promise<void> {
+  return async (input) => {
+    const context: ArchiveAgentMutationContext = {
+      agent: getStoredAgentSnapshot(sessionStore, input),
+      lists: getArchivedAgentListCacheSnapshot(queryClient, input.serverId),
+    };
+    applyArchivedAgentCloseResults({
+      runtime,
+      queryClient,
+      serverId: input.serverId,
+      results: [{ agentId: input.agentId, archivedAt: new Date().toISOString() }],
+      invalidateQueries: false,
+    });
+    setAgentArchiving({ ...input, queryClient, isArchiving: true });
+    try {
+      const client = runtime.getClient(input.serverId);
+      if (!client) throw new Error(unavailableMessage);
+      const result = await client.archiveAgent(input.agentId);
+      markAgentArchivedInStore(runtime, { ...input, archivedAt: result.archivedAt });
+    } catch (error) {
+      restoreAgentSnapshot(runtime, { ...input, agent: context.agent });
+      restoreArchivedAgentListCacheSnapshot(queryClient, input.serverId, context.lists);
+      throw error;
+    } finally {
+      clearArchiveAgentPending({ ...input, queryClient });
+      for (const queryKey of [
+        ["sidebarAgentsList", input.serverId],
+        ["allAgents", input.serverId],
+        agentHistoryQueryKey(input.serverId),
+        allAgentHistoryQueryRootKey(),
+      ])
+        void queryClient.invalidateQueries({ queryKey });
+    }
+  };
+}
+
 export function useArchiveAgent() {
   const queryClient = useQueryClient();
+  const runtime = useHostRuntimeStore();
+  const sessionStore = useSessionStoreApi();
   const { t } = useTranslation();
-
   const pendingQuery = useArchiveAgentPendingQuery();
-
-  const archiveMutation = useMutation({
-    mutationFn: async (input: ArchiveAgentInput): Promise<{ archivedAt: string }> => {
-      const client = useSessionStore.getState().sessions[input.serverId]?.client ?? null;
-      if (!client) {
-        throw new Error(t("common.errors.daemonClientUnavailable"));
-      }
-      return await client.archiveAgent(input.agentId);
-    },
-    onMutate: (input) => {
-      const context: ArchiveAgentMutationContext = {
-        agent: getStoredAgentSnapshot(input),
-        lists: getArchivedAgentListCacheSnapshot(queryClient, input.serverId),
-      };
-      const archivedAt = new Date().toISOString();
-
-      applyArchivedAgentCloseResults({
+  const unavailableMessage = t("common.errors.daemonClientUnavailable");
+  const archiveAgent = useMemo(
+    () =>
+      createAgentArchiveAction({
+        runtime,
+        sessionStore,
         queryClient,
-        serverId: input.serverId,
-        results: [{ agentId: input.agentId, archivedAt }],
-        invalidateQueries: false,
-      });
-      setAgentArchiving({
-        queryClient,
-        serverId: input.serverId,
-        agentId: input.agentId,
-        isArchiving: true,
-      });
-      return context;
-    },
-    onSuccess: (result, input) => {
-      markAgentArchivedInStore({
-        serverId: input.serverId,
-        agentId: input.agentId,
-        archivedAt: result.archivedAt,
-      });
-    },
-    onError: (_error, input, context) => {
-      if (!context) {
-        return;
-      }
-      restoreAgentSnapshot({
-        serverId: input.serverId,
-        agentId: input.agentId,
-        agent: context.agent,
-      });
-      restoreArchivedAgentListCacheSnapshot(queryClient, input.serverId, context.lists);
-    },
-    onSettled: (_result, _error, input) => {
-      clearArchiveAgentPending({
-        queryClient,
-        serverId: input.serverId,
-        agentId: input.agentId,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["sidebarAgentsList", input.serverId],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["allAgents", input.serverId],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: agentHistoryQueryKey(input.serverId),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: allAgentHistoryQueryRootKey(),
-      });
-    },
-  });
-
-  const archiveMutateAsync = archiveMutation.mutateAsync;
-
-  const archiveAgent = useCallback(
-    async (input: ArchiveAgentInput): Promise<void> => {
-      await archiveMutateAsync(input);
-    },
-    [archiveMutateAsync],
+        unavailableMessage,
+      }),
+    [runtime, sessionStore, queryClient, unavailableMessage],
   );
 
   const isArchivingAgent = useCallback(

@@ -1,4 +1,4 @@
-import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useHostRuntimeStore, type HostRuntimeStore } from "@/runtime/host-runtime";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -87,6 +87,8 @@ import {
   selectAgentTurnPresentation,
   type Agent,
   useSessionStore,
+  useSessionStoreApi,
+  type SessionStoreApi,
 } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
@@ -97,7 +99,7 @@ import type { PendingPermission } from "@/types/shared";
 import type { StreamItem, TodoEntry } from "@/types/stream";
 import type { ViewedTimelineStatus, ViewedTimelineUiBridge } from "@/timeline/viewed-timeline-sync";
 import { useArchiveFinishedSubagents, useSubagentsForParent } from "@/subagents";
-import { getInitDeferred, getInitKey } from "@/utils/agent-initialization";
+import { getInitKey } from "@/utils/agent-initialization";
 import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
@@ -288,6 +290,8 @@ function shouldStoreFetchedAgentInActiveDirectory(agent: Agent): boolean {
 type FetchAgentResult = Awaited<ReturnType<DaemonClient["fetchAgent"]>>;
 
 function storeFetchedAgentDetail(input: {
+  runtime: HostRuntimeStore;
+  sessionStore: SessionStoreApi;
   serverId: string;
   result: NonNullable<FetchAgentResult>;
 }): Agent {
@@ -299,10 +303,10 @@ function storeFetchedAgentDetail(input: {
       projectPlacement: input.result.project,
     },
   });
-  const store = useSessionStore.getState();
+  const store = input.sessionStore.getState();
 
   if (shouldStoreFetchedAgentInActiveDirectory(hydrated)) {
-    getHostRuntimeStore().acceptAgentSnapshot(input.serverId, hydrated);
+    input.runtime.acceptAgentSnapshot(input.serverId, hydrated);
   } else {
     store.setAgentDetails(input.serverId, (previous) => {
       const next = new Map(previous);
@@ -388,6 +392,7 @@ function AgentPanel() {
 }
 
 function DraftPanel() {
+  const runtime = useHostRuntimeStore();
   const {
     serverId,
     workspaceId,
@@ -404,10 +409,10 @@ function DraftPanel() {
     (agentSnapshot: Parameters<typeof normalizeAgentSnapshot>[0]) => {
       const normalized = normalizeAgentSnapshot(agentSnapshot, serverId);
       const agent = applyLegacyDaemonWorkspaceOwnership({ serverId, agent: normalized });
-      getHostRuntimeStore().acceptAgentSnapshot(serverId, agent);
+      runtime.acceptAgentSnapshot(serverId, agent);
       retargetCurrentTab({ kind: "agent", agentId: agentSnapshot.id });
     },
-    [retargetCurrentTab, serverId],
+    [retargetCurrentTab, runtime, serverId],
   );
 
   return (
@@ -593,10 +598,12 @@ function AgentPanelBody({
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
   const { t } = useTranslation();
+  const sessionStore = useSessionStoreApi();
+  const runtime = useHostRuntimeStore();
   const { isArchivingAgent: _isArchivingAgent } = useArchiveAgent();
   const hasSession = useSessionStore((state) => Boolean(state.sessions[serverId]));
   const projectPlacement = useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => {
       if (!agentId) {
         return null;
@@ -656,7 +663,7 @@ function AgentPanelBody({
           return;
         }
 
-        storeFetchedAgentDetail({ serverId, result });
+        storeFetchedAgentDetail({ serverId, result, sessionStore, runtime });
         setLookupState({ tag: "idle" });
         return;
       })
@@ -671,7 +678,17 @@ function AgentPanelBody({
         }
         setLookupState({ tag: "error", message });
       });
-  }, [agentId, agentState.id, client, hasSession, isConnected, lookupState.tag, serverId]);
+  }, [
+    agentId,
+    agentState.id,
+    client,
+    hasSession,
+    isConnected,
+    lookupState.tag,
+    runtime,
+    serverId,
+    sessionStore,
+  ]);
 
   if (lookupState.tag === "not_found") {
     return (
@@ -748,6 +765,8 @@ function ChatAgentContent({
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
   const { t } = useTranslation();
+  const sessionStore = useSessionStoreApi();
+  const runtime = useHostRuntimeStore();
   const isPaneVisible = useRetainedPanelActive();
   const { api: toastApi, toast: toastState, dismiss: dismissToast } = useToastHost();
   const { isArchivingAgent } = useArchiveAgent();
@@ -763,7 +782,7 @@ function ChatAgentContent({
     useShallow((state) => selectChatAgentState(state, serverId, agentId)),
   );
   const projectPlacement = useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => {
       if (!agentId) {
         return null;
@@ -863,8 +882,8 @@ function ChatAgentContent({
       return false;
     }
     const initKey = getInitKey(serverId, agentId);
-    return Boolean(getInitDeferred(initKey));
-  }, [agentId, isInitializing, serverId]);
+    return Boolean(sessionStore.initializations.getInitDeferred(initKey));
+  }, [agentId, isInitializing, serverId, sessionStore]);
   const needsAuthoritativeSync = useMemo(() => {
     if (!agentId) {
       return false;
@@ -1005,7 +1024,7 @@ function ChatAgentContent({
         if (attemptToken !== initAttemptTokenRef.current) {
           return;
         }
-        const currentSession = useSessionStore.getState().sessions[serverId];
+        const currentSession = sessionStore.getState().sessions[serverId];
         const currentAgent =
           currentSession?.agents.get(agentId) ?? currentSession?.agentDetails.get(agentId);
         if (!currentAgent) {
@@ -1020,7 +1039,7 @@ function ChatAgentContent({
             });
             return;
           }
-          storeFetchedAgentDetail({ serverId, result });
+          storeFetchedAgentDetail({ serverId, result, sessionStore, runtime });
         }
         if (attemptToken !== initAttemptTokenRef.current) {
           return;
@@ -1050,6 +1069,8 @@ function ChatAgentContent({
     isPaneVisible,
     missingAgentState.kind,
     serverId,
+    sessionStore,
+    runtime,
     viewedTimelineSync,
     visibilityCatchUpStatus,
   ]);
@@ -1440,7 +1461,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
   );
   const streamItems = streamItemsRaw ?? EMPTY_STREAM_ITEMS;
   const pendingPermissionList = useStoreWithEqualityFn(
-    useSessionStore,
+    useSessionStoreApi(),
     (state) => {
       if (!agentId) {
         return EMPTY_PENDING_PERMISSION_LIST;
@@ -1573,6 +1594,7 @@ function ActiveAgentComposer({
     { initialIsBelow: isCompactFormFactor },
   );
   const paneContext = usePaneContext();
+  const sessionStore = useSessionStoreApi();
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
   const { workspaceId, tabId, retargetCurrentTab } = paneContext;
   const { archiveAgent } = useArchiveAgent();
@@ -1604,7 +1626,7 @@ function ActiveAgentComposer({
 
   const handleClientSlashCommand = useCallback(
     async (command: ClientSlashCommand) => {
-      const agent = resolveChatAgentFromSession(useSessionStore.getState(), serverId, agentId);
+      const agent = resolveChatAgentFromSession(sessionStore.getState(), serverId, agentId);
       if (!agent) {
         throw new Error("Agent not found");
       }
@@ -1634,6 +1656,7 @@ function ActiveAgentComposer({
       hideWorkspaceAgent,
       retargetCurrentTab,
       serverId,
+      sessionStore,
       tabId,
       unpinWorkspaceAgent,
       workspaceId,

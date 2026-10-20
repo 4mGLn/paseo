@@ -1708,6 +1708,180 @@ test("parent capability owns local and fleet membership, idempotent creation and
   expect(recovered.address).toEqual(first.address);
 });
 
+test("startup upgrade adopts existing ordinary local children once without treating later labels as membership", async () => {
+  const { AgentStorage } = await import("../agent/agent-storage.js");
+  const { default: pino } = await import("pino");
+  const root = await mkdtemp(join(tmpdir(), "paseo-legacy-membership-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const storage = new AgentStorage(join(root, ".paseo", "agents"), pino({ level: "silent" }));
+  const parentId = crypto.randomUUID();
+  const childId = crypto.randomUUID();
+  const sameWorkspaceId = crypto.randomUUID();
+  const otherWorkspaceId = crypto.randomUUID();
+  const openTabId = crypto.randomUUID();
+  const foreignId = crypto.randomUUID();
+  const nullParentId = crypto.randomUUID();
+  const executedId = crypto.randomUUID();
+  const internalParentId = crypto.randomUUID();
+  const internalChildId = crypto.randomUUID();
+  const seed = async (
+    id: string,
+    overrides: Partial<import("../agent/agent-storage.js").StoredAgentRecord> = {},
+  ) => {
+    await storage.upsert({
+      id,
+      provider: "codex",
+      cwd: root,
+      workspaceId: "legacy-workspace",
+      config: { model: "test" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastStatus: "closed",
+      labels: {},
+      ...overrides,
+    });
+  };
+  const labels = { "paseo.parent-agent-id": parentId };
+  await seed(parentId);
+  await seed(childId, { labels });
+  await seed(sameWorkspaceId, { labels });
+  await seed(otherWorkspaceId, { labels, workspaceId: "other-workspace" });
+  await seed(openTabId, { labels: { ...labels, "paseo.open-agent-tab.retained": "true" } });
+  await seed(foreignId, { labels, parent: { serverId: "another-server", agentId: parentId } });
+  await seed(nullParentId, { labels, parent: null });
+  await seed(executedId, {
+    labels,
+    owner: { kind: "daemon", daemonId: "hub", executionId: "execution" },
+  });
+  await seed(internalParentId, { internal: true });
+  await seed(internalChildId, { labels: { "paseo.parent-agent-id": internalParentId } });
+  const first = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => first.close());
+  const origin = await api(first);
+  const parent = origin.paseo.agents.ref(parentId);
+  const rows = (await parent.subagents.list()).rows;
+  expect(rows.map((row) => row.child.agentId).sort()).toEqual(
+    [childId, sameWorkspaceId, otherWorkspaceId, openTabId].sort(),
+  );
+  expect(
+    rows.every((row) => row.child.serverId === parent.serverId && row.phase === "attached"),
+  ).toBe(true);
+  expect((await first.daemon.agentStorage.get(childId))?.parent).toEqual(parent.address);
+  await parent.subagents.forget({ serverId: parent.serverId, agentId: childId });
+  await parent.archive();
+  await expect
+    .poll(async () => (await first.daemon.agentStorage.get(sameWorkspaceId))?.archivedAt)
+    .toEqual(expect.any(String));
+  await expect
+    .poll(async () => (await first.daemon.agentStorage.get(otherWorkspaceId))?.parent)
+    .toBeNull();
+  await expect
+    .poll(async () => (await first.daemon.agentStorage.get(openTabId))?.parent)
+    .toBeNull();
+  // Forget leaves destination lifecycle alone; the old label cascade must not run too.
+  expect((await first.daemon.agentStorage.get(childId))?.archivedAt).toBeUndefined();
+  expect((await first.daemon.agentStorage.get(otherWorkspaceId))?.archivedAt).toBeUndefined();
+  expect((await first.daemon.agentStorage.get(openTabId))?.archivedAt).toBeUndefined();
+  const injectedId = crypto.randomUUID();
+  await first.daemon.agentStorage.upsert({
+    ...(await first.daemon.agentStorage.get(childId))!,
+    id: injectedId,
+    parent: undefined,
+  });
+  await first.close();
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const restored = await api(restarted);
+  const restoredRows = (await restored.paseo.agents.ref(parentId).subagents.list()).rows;
+  expect(restoredRows.map((row) => row.child.agentId).sort()).toEqual(
+    [sameWorkspaceId, otherWorkspaceId, openTabId].sort(),
+  );
+  expect(restoredRows.every((row) => ["archived", "detached"].includes(row.phase))).toBe(true);
+  expect((await restarted.daemon.agentStorage.get(injectedId))?.parent).toBeUndefined();
+});
+
+test("an interrupted legacy upgrade resumes its bounded candidates before admitting new writes", async () => {
+  const { AgentStorage } = await import("../agent/agent-storage.js");
+  const { Subagents } = await import("../subagents/index.js");
+  const { getOrCreateServerId } = await import("../server-id.js");
+  const { default: pino } = await import("pino");
+  const root = await mkdtemp(join(tmpdir(), "paseo-interrupted-legacy-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, ".paseo");
+  await mkdir(home);
+  const serverId = getOrCreateServerId(home);
+  const storage = new AgentStorage(join(home, "agents"), pino({ level: "silent" }));
+  const parentId = crypto.randomUUID();
+  const childIds = [crypto.randomUUID(), crypto.randomUUID()];
+  for (const id of [parentId, ...childIds])
+    await storage.upsert({
+      id,
+      provider: "codex",
+      cwd: root,
+      workspaceId: "legacy-workspace",
+      config: { model: "test" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastStatus: "closed",
+      labels: id === parentId ? {} : { "paseo.parent-agent-id": parentId },
+    });
+  let qualifications = 0;
+  const interrupted = new Subagents({
+    home,
+    serverId,
+    agents: {
+      list: () => storage.list(),
+      get: (id) => storage.get(id),
+      upsert: async (record) => {
+        if (++qualifications === 2) throw new Error("Injected qualification write failure");
+        await storage.upsert(record);
+      },
+    },
+    resolveAuthority: async () => ({
+      principalId: "owner",
+      permissions: ["daemon.read", "workspace.read", "workspace.write"],
+    }),
+    runtime: async () => {
+      throw new Error("Upgrade must never acquire a client or submit creation");
+    },
+  });
+  await expect(interrupted.initialize()).rejects.toThrow("Injected qualification write failure");
+  const pending = JSON.parse(await readFile(join(home, "subagents.json"), "utf8"));
+  expect(pending.legacyUpgrade).toMatchObject({ complete: false, candidates: expect.any(Array) });
+  expect(pending.legacyUpgrade.candidates).toHaveLength(2);
+  expect((await storage.list()).filter((record) => record.parent)).toHaveLength(1);
+  const injectedId = crypto.randomUUID();
+  await storage.upsert({
+    ...(await storage.get(childIds[0]!))!,
+    id: injectedId,
+    parent: undefined,
+  });
+  const restarted = await createTestPaseoDaemon({ paseoHomeRoot: root, cleanup: false });
+  cleanup.push(() => restarted.close());
+  const origin = await api(restarted);
+  const parent = origin.paseo.agents.ref(parentId);
+  expect((await parent.subagents.list()).rows.map((row) => row.child.agentId).sort()).toEqual(
+    childIds.toSorted(),
+  );
+  for (const id of childIds)
+    expect((await restarted.daemon.agentStorage.get(id))?.parent).toEqual(parent.address);
+  expect((await restarted.daemon.agentStorage.get(injectedId))?.parent).toBeUndefined();
+  const complete = JSON.parse(await readFile(join(home, "subagents.json"), "utf8"));
+  expect(complete.legacyUpgrade.complete).toBe(true);
+  expect(complete.legacyUpgrade.candidates).toEqual(pending.legacyUpgrade.candidates);
+  const archived: string[] = [];
+  const release = restarted.daemon.agentManager.onAgentArchived((id) => {
+    archived.push(id);
+  });
+  try {
+    await parent.archive();
+    await expect.poll(() => archived.toSorted()).toEqual([parentId, ...childIds].toSorted());
+    expect((await restarted.daemon.agentStorage.get(injectedId))?.archivedAt).toBeUndefined();
+  } finally {
+    release();
+  }
+});
+
 test("retained derived sessions cannot supply durable principal authority", async () => {
   const a = await daemon();
   const owner = await api(a);
@@ -3188,15 +3362,30 @@ test.each([false, true])(
     };
     for (const attempt of [1, 2]) {
       const requestId = "legacy-original";
-      socket.send(JSON.stringify({ type: "session", message: { ...request, requestId } }));
-      await expect
-        .poll(
-          () =>
+      const receipt = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          socket.off("message", received);
+          reject(
+            new Error(
+              `Timed out waiting for legacy creation receipt ${attempt}: ${JSON.stringify(messages)}`,
+            ),
+          );
+        }, 20_000);
+        function received() {
+          if (
             messages.filter(
               (message) => message.type === "status" && message.payload.requestId === requestId,
-            ).length,
-        )
-        .toBe(attempt);
+            ).length !== attempt
+          )
+            return;
+          clearTimeout(timeout);
+          socket.off("message", received);
+          resolve();
+        }
+        socket.on("message", received);
+      });
+      socket.send(JSON.stringify({ type: "session", message: { ...request, requestId } }));
+      await receipt;
       const response = messages.find(
         (message) => message.type === "status" && message.payload.requestId === requestId,
       );
@@ -3225,3 +3414,158 @@ test.each([false, true])(
     expect(prompts).toBe(1);
   },
 );
+
+test("internal connection leases share ordinary host resolution and preserve borrowed origin and sibling lifetime", async () => {
+  const { acquireHostConnection } = await import("@getpaseo/client/internal/host-connection");
+  const a = await daemon();
+  const b = await daemon();
+  const origin = await api(a);
+  const direct = await api(b);
+  await origin.paseo.hosts.add({ connection: `127.0.0.1:${b.port}` });
+  const directory = await online(origin.paseo);
+  const controller = new AbortController();
+  const [self, first, sibling] = await Promise.all([
+    acquireHostConnection(origin.client, directory.self.serverId, controller.signal),
+    acquireHostConnection(origin.client, b.daemon.getServerId(), controller.signal),
+    acquireHostConnection(origin.client, b.daemon.getServerId(), controller.signal),
+  ]);
+  cleanup.push(() => sibling.release());
+  cleanup.push(() => first.release());
+  expect(self.client.getServerId()).toBe(origin.client.getServerId());
+  await self.release();
+  expect(await origin.paseo.hosts.list()).toMatchObject({
+    self: { serverId: directory.self.serverId },
+  });
+  const firstApi = createPaseoApi(first.client);
+  const siblingApi = createPaseoApi(sibling.client);
+  cleanup.push(() => siblingApi.dispose());
+  cleanup.push(() => firstApi.dispose());
+  await first.release();
+  await expect(firstApi.workspaces.list()).rejects.toThrow();
+  expect((await siblingApi.workspaces.list()).entries).toEqual([]);
+  await origin.paseo.hosts.update(directory.hosts[0]!.registrationId, { enabled: false });
+  await expect(siblingApi.workspaces.list()).rejects.toThrow();
+  expect((await direct.paseo.workspaces.list()).entries).toEqual([]);
+  controller.abort();
+  await sibling.release();
+  const aborted = new AbortController();
+  aborted.abort();
+  await expect(
+    acquireHostConnection(origin.client, directory.self.serverId, aborted.signal),
+  ).rejects.toThrow("disposed");
+  expect((await origin.paseo.hosts.list()).self.serverId).toBe(directory.self.serverId);
+});
+
+test("released internal self connection capability rejects captured operations while the borrowed origin stays usable", async () => {
+  const { acquireHostConnection } = await import("@getpaseo/client/internal/host-connection");
+  const a = await daemon();
+  const origin = await api(a);
+  const control = new AbortController();
+  const self = await acquireHostConnection(origin.client, a.daemon.getServerId(), control.signal);
+  const scoped = createPaseoApi(self.client);
+  cleanup.push(() => scoped.dispose());
+  await self.release();
+  await expect(scoped.workspaces.list()).rejects.toMatchObject({ code: "DAEMON_CONNECTION_LOST" });
+  expect((await origin.paseo.workspaces.list()).entries).toEqual([]);
+});
+
+test("nested self scopes preserve the consumed hop while a direct self scope reaches its registered destination", async () => {
+  const a = await daemon();
+  const b = await daemon();
+  const c = await daemon();
+  const origin = await api(a);
+  const directB = await api(b);
+  const wire = await hostWire(b);
+  await origin.paseo.hosts.add({ connection: wire.connection });
+  await online(origin.paseo);
+  await directB.paseo.hosts.add({ connection: `127.0.0.1:${c.port}` });
+  await online(directB.paseo);
+  const selfA = await origin.paseo.hosts.client(a.daemon.getServerId());
+  cleanup.push(() => selfA.dispose());
+  const viaB = await selfA.hosts.client(b.daemon.getServerId());
+  cleanup.push(() => viaB.dispose());
+  const nestedB = await viaB.hosts.client(b.daemon.getServerId());
+  cleanup.push(() => nestedB.dispose());
+  const twiceB = await nestedB.hosts.client(b.daemon.getServerId());
+  cleanup.push(() => twiceB.dispose());
+  expect((await twiceB.workspaces.list()).entries).toEqual([]);
+  await expect(twiceB.hosts.client(c.daemon.getServerId())).rejects.toMatchObject({
+    code: "unsupported_capability",
+  });
+  const directSelfB = await directB.paseo.hosts.client(b.daemon.getServerId());
+  cleanup.push(() => directSelfB.dispose());
+  const allowedC = await directSelfB.hosts.client(c.daemon.getServerId());
+  cleanup.push(() => allowedC.dispose());
+  expect((await allowedC.workspaces.list()).entries).toEqual([]);
+  expect(wire.connections()).toBe(1);
+  await nestedB.dispose();
+  expect((await viaB.workspaces.list()).entries).toEqual([]);
+  expect((await origin.paseo.workspaces.list()).entries).toEqual([]);
+});
+
+test("owned self session close settles pending RPC and observation and leaves sibling and physical origin usable", async () => {
+  const { acquireHostConnection } = await import("@getpaseo/client/internal/host-connection");
+  const a = await daemon();
+  const wire = await hostWire(a);
+  const origin = createHostClient(wire.connection, {
+    clientId: crypto.randomUUID(),
+    reconnect: { enabled: false },
+  });
+  cleanup.push(() => origin.close());
+  await origin.connect();
+  const originApi = createPaseoApi(origin);
+  cleanup.push(() => originApi.dispose());
+  const control = new AbortController();
+  const self = await acquireHostConnection(origin, a.daemon.getServerId(), control.signal);
+  cleanup.push(() => self.release());
+  const sibling = await acquireHostConnection(
+    origin,
+    a.daemon.getServerId(),
+    new AbortController().signal,
+  );
+  cleanup.push(() => sibling.release());
+  const observed = self.client.observeHosts();
+  const siblingObserved = sibling.client.observeHosts();
+  let updates = 0;
+  let siblingUpdates = 0;
+  observed.subscribe({
+    snapshot() {},
+    update() {
+      updates++;
+    },
+  });
+  siblingObserved.subscribe({
+    snapshot() {},
+    update() {
+      siblingUpdates++;
+    },
+  });
+  await Promise.all([observed.ready, siblingObserved.ready]);
+  const states: string[] = [];
+  self.client.subscribeConnectionStatus((state) => states.push(state.status));
+  const identity = self.client.getServerId();
+  const capturedFetch = self.client.fetchWorkspaces.bind(self.client);
+  const held = wire.holdResponses((message) => message.type === "fetch_workspaces_response");
+  const pending = capturedFetch();
+  void pending.catch(() => {});
+  await held.ready;
+  try {
+    await self.release();
+    await expect(pending).rejects.toThrow();
+    expect(states.at(-1)).toBe("disposed");
+    expect(self.client.getServerId()).toBe(identity);
+    const rejected = capturedFetch();
+    expect(rejected).toBeInstanceOf(Promise);
+    await expect(rejected).rejects.toMatchObject({ code: "DAEMON_CONNECTION_LOST" });
+    held.release();
+    await originApi.hosts.add({ connection: "127.0.0.1:1", label: "After scope release" });
+    await expect.poll(() => siblingUpdates).toBeGreaterThan(0);
+    expect(updates).toBe(0);
+    expect((await sibling.client.fetchWorkspaces()).entries).toEqual([]);
+    expect((await originApi.workspaces.list()).entries).toEqual([]);
+    control.abort();
+    await self.release();
+  } finally {
+    held.release();
+  }
+});

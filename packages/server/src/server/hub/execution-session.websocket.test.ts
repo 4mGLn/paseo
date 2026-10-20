@@ -62,6 +62,24 @@ test("Hub execute can steer ordinary agents while unrelated administration stays
   expect(hub.serverInfoPermissions()).toEqual([["hub.execute"]]);
 });
 
+test("execution-scoped admission cannot acquire an ordinary self session", async () => {
+  const hub = await launchRelationship();
+  expect(
+    await hub.requestOrdinary({
+      type: "hosts.route.open.request",
+      requestId: "execution-self-scope",
+      serverId: hub.serverId(),
+      scopeId: "execution-self-scope",
+    }),
+  ).toMatchObject({
+    type: "rpc_error",
+    payload: { requestId: "execution-self-scope", code: "unsupported_capability" },
+  });
+  // Rejection leaves the originating execution capability usable.
+  const created = await hub.createOwnedConcurrently();
+  expect(created.duplicate.agentId).toBe(created.first.agentId);
+});
+
 test("Hub execute can title the workspace created with an agent", async () => {
   const hub = await launchRelationship();
   const created = await hub.requestOrdinary({
@@ -165,11 +183,23 @@ test("ordinary Hub create and message retries do not duplicate agents or prompts
   };
   expect(await hub.requestOrdinary({ ...message, requestId: "message-first" })).toEqual({
     type: "send_agent_message_response",
-    payload: { requestId: "message-first", agentId, accepted: true, error: null },
+    payload: {
+      requestId: "message-first",
+      agentId,
+      accepted: true,
+      error: null,
+      dispatch: { disposition: "turn_started", tracking: "turn" },
+    },
   });
   expect(await hub.requestOrdinary({ ...message, requestId: "message-duplicate" })).toEqual({
     type: "send_agent_message_response",
-    payload: { requestId: "message-duplicate", agentId, accepted: true, error: null },
+    payload: {
+      requestId: "message-duplicate",
+      agentId,
+      accepted: true,
+      error: null,
+      dispatch: { disposition: "turn_started", tracking: "turn" },
+    },
   });
   expect(
     hub

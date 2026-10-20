@@ -1,4 +1,5 @@
-import { create } from "zustand";
+import { create, useStore } from "zustand";
+import { createContext, useContext } from "react";
 import type { UserMessageImageAttachment } from "@/types/stream";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 
@@ -48,89 +49,105 @@ interface CreateFlowState {
   clearAll: () => void;
 }
 
-export const useCreateFlowStore = create<CreateFlowState>((set, get) => ({
-  pendingByDraftId: {},
-  setPending: (pending) =>
-    set((state) => ({
-      pendingByDraftId: {
-        ...state.pendingByDraftId,
-        [pending.draftId]: {
-          ...pending,
-          lifecycle: "active",
-        },
-      },
-    })),
-  trySetPending: (pending) => {
-    const existing = get().pendingByDraftId[pending.draftId];
-    if (existing?.serverId === pending.serverId && existing.lifecycle !== "abandoned") return false;
-    get().setPending(pending);
-    return true;
-  },
-  updateAgentId: ({ draftId, agentId }) =>
-    set((state) => {
-      const current = state.pendingByDraftId[draftId];
-      if (!current || current.agentId === agentId) {
-        return state;
-      }
-      return {
+export const createCreateFlowStore = () =>
+  create<CreateFlowState>((set, get) => ({
+    pendingByDraftId: {},
+    setPending: (pending) =>
+      set((state) => ({
         pendingByDraftId: {
           ...state.pendingByDraftId,
-          [draftId]: { ...current, agentId },
+          [pending.draftId]: {
+            ...pending,
+            lifecycle: "active",
+          },
         },
-      };
-    }),
-  markLifecycle: ({ draftId, lifecycle, errorMessage }) =>
-    set((state) => {
-      const current = state.pendingByDraftId[draftId];
-      if (!current || current.lifecycle === lifecycle) {
-        return state;
-      }
-      return {
-        pendingByDraftId: {
-          ...state.pendingByDraftId,
-          [draftId]: { ...current, lifecycle, errorMessage },
-        },
-      };
-    }),
-  rekeyDraft: ({ fromDraftId, toDraftId }) =>
-    set((state) => {
-      const current = state.pendingByDraftId[fromDraftId];
-      if (!current) {
-        return state;
-      }
-      if (fromDraftId === toDraftId) {
-        return state;
-      }
-      const { [fromDraftId]: _removed, ...rest } = state.pendingByDraftId;
-      return {
-        pendingByDraftId: {
-          ...rest,
-          [toDraftId]: { ...current, draftId: toDraftId },
-        },
-      };
-    }),
-  clear: ({ draftId }) =>
-    set((state) => {
-      if (!state.pendingByDraftId[draftId]) {
-        return state;
-      }
-      const { [draftId]: _removed, ...rest } = state.pendingByDraftId;
-      return { pendingByDraftId: rest };
-    }),
-  clearByAgent: ({ serverId, agentId }) =>
-    set((state) => {
-      const next = Object.fromEntries(
-        Object.entries(state.pendingByDraftId).filter(
-          ([, pending]) =>
-            pending.lifecycle !== "sent" ||
-            pending.serverId !== serverId ||
-            pending.agentId !== agentId,
-        ),
-      );
-      if (Object.keys(next).length === Object.keys(state.pendingByDraftId).length) {
-        return state;
-      }
-      return { pendingByDraftId: next };
-    }),
-  clearAll: () => set({ pendingByDraftId: {} }),
-}));
+      })),
+    trySetPending: (pending) => {
+      const existing = get().pendingByDraftId[pending.draftId];
+      if (existing?.serverId === pending.serverId && existing.lifecycle !== "abandoned")
+        return false;
+      get().setPending(pending);
+      return true;
+    },
+    updateAgentId: ({ draftId, agentId }) =>
+      set((state) => {
+        const current = state.pendingByDraftId[draftId];
+        if (!current || current.agentId === agentId) {
+          return state;
+        }
+        return {
+          pendingByDraftId: {
+            ...state.pendingByDraftId,
+            [draftId]: { ...current, agentId },
+          },
+        };
+      }),
+    markLifecycle: ({ draftId, lifecycle, errorMessage }) =>
+      set((state) => {
+        const current = state.pendingByDraftId[draftId];
+        if (!current || current.lifecycle === lifecycle) {
+          return state;
+        }
+        return {
+          pendingByDraftId: {
+            ...state.pendingByDraftId,
+            [draftId]: { ...current, lifecycle, errorMessage },
+          },
+        };
+      }),
+    rekeyDraft: ({ fromDraftId, toDraftId }) =>
+      set((state) => {
+        const current = state.pendingByDraftId[fromDraftId];
+        if (!current) {
+          return state;
+        }
+        if (fromDraftId === toDraftId) {
+          return state;
+        }
+        const { [fromDraftId]: _removed, ...rest } = state.pendingByDraftId;
+        return {
+          pendingByDraftId: {
+            ...rest,
+            [toDraftId]: { ...current, draftId: toDraftId },
+          },
+        };
+      }),
+    clear: ({ draftId }) =>
+      set((state) => {
+        if (!state.pendingByDraftId[draftId]) {
+          return state;
+        }
+        const { [draftId]: _removed, ...rest } = state.pendingByDraftId;
+        return { pendingByDraftId: rest };
+      }),
+    clearByAgent: ({ serverId, agentId }) =>
+      set((state) => {
+        const next = Object.fromEntries(
+          Object.entries(state.pendingByDraftId).filter(
+            ([, pending]) =>
+              pending.lifecycle !== "sent" ||
+              pending.serverId !== serverId ||
+              pending.agentId !== agentId,
+          ),
+        );
+        if (Object.keys(next).length === Object.keys(state.pendingByDraftId).length) {
+          return state;
+        }
+        return { pendingByDraftId: next };
+      }),
+    clearAll: () => set({ pendingByDraftId: {} }),
+  }));
+
+export type CreateFlowStoreApi = ReturnType<typeof createCreateFlowStore>;
+export const defaultCreateFlowStore = createCreateFlowStore();
+export const CreateFlowStoreContext = createContext<CreateFlowStoreApi | null>(null);
+export function useCreateFlowStoreApi(): CreateFlowStoreApi {
+  return useContext(CreateFlowStoreContext) ?? defaultCreateFlowStore;
+}
+export const useCreateFlowStore: CreateFlowStoreApi = Object.assign(function useCreateFlowStore<T>(
+  selector: (state: CreateFlowState) => T = ((state: CreateFlowState) => state) as (
+    state: CreateFlowState,
+  ) => T,
+): T {
+  return useStore(useCreateFlowStoreApi(), selector);
+}, defaultCreateFlowStore);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DaemonClient, FetchAgentsEntry } from "@getpaseo/client/internal/daemon-client";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import {
+  createSessionStore,
   selectAgentTimelineState,
   selectAgentTurnPresentation,
   useSessionStore,
@@ -390,4 +391,35 @@ describe("AgentDirectoryReplica", () => {
     expect(useSessionStore.getState().sessions[serverId]?.agents.has("agent")).toBe(true);
     store.clearSession(serverId);
   });
+});
+
+it("partitions equal destination identities by the owning authority store, including late snapshots", () => {
+  const direct = createSessionStore();
+  const routed = createSessionStore();
+  const serverId = "srv_B";
+  direct.getState().initializeSession(serverId, null);
+  routed.getState().initializeSession(serverId, null);
+  const directReplica = new AgentDirectoryReplica(
+    serverId,
+    () => {},
+    () => {},
+    direct,
+  );
+  const routedReplica = new AgentDirectoryReplica(
+    serverId,
+    () => {},
+    () => {},
+    routed,
+  );
+  directReplica.commitSnapshot([entry(payload("Broader direct data"))], []);
+  expect(routed.getState().sessions[serverId]?.agents.size).toBe(0);
+  routedReplica.commitSnapshot([entry(payload("Origin-authorized data"))], []);
+  directReplica.commitSnapshot([entry(payload("Late direct snapshot"))], []);
+  expect(routed.getState().sessions[serverId]?.agents.get("agent")?.title).toBe(
+    "Origin-authorized data",
+  );
+  expect(direct.getState().sessions[serverId]?.agents.get("agent")?.title).toBe(
+    "Late direct snapshot",
+  );
+  expect(routedReplica.snapshot().get("agent")?.title).toBe("Origin-authorized data");
 });

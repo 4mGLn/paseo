@@ -3767,6 +3767,7 @@ export const ServerInfoStatusPayloadSchema = z
         connectedHosts: z.boolean().optional(),
         fleetSubagents: z.boolean().optional(),
         hostMultiplexing: z.boolean().optional(),
+        hostSessionScopes: z.boolean().optional(),
         usageSources: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
         providersSnapshotCwd: z.boolean().optional(),

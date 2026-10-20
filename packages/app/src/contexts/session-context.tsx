@@ -27,23 +27,19 @@ import {
 
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
-import { getHostRuntimeStore, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import { useHostRuntimeStore, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useVoiceAudioEngineOptional, useVoiceRuntimeOptional } from "@/contexts/voice-context";
 import type { AudioPlaybackSource } from "@/audio";
 import {
   selectAgentTimelineState,
   toDaemonServerInfo,
   useSessionStore,
+  useSessionStoreApi,
   type SessionState,
 } from "@/stores/session-store";
 import { sendOsNotification } from "@/utils/os-notifications";
 import { getIsAppActivelyVisible, getIsAppVisible } from "@/utils/app-visibility";
-import {
-  getInitKey,
-  getInitDeferred,
-  createInitDeferred,
-  rejectInitDeferred,
-} from "@/utils/agent-initialization";
+import { getInitKey } from "@/utils/agent-initialization";
 import { derivePendingPermissionKey } from "@/utils/agent-snapshots";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -201,6 +197,8 @@ export function SessionProvider(props: SessionProviderProps) {
 }
 
 function SessionProviderInternal({ children, serverId, client }: SessionProviderClientProps) {
+  const sessionStore = useSessionStoreApi();
+  const runtime = useHostRuntimeStore();
   const { t } = useTranslation();
   const voiceRuntime = useVoiceRuntimeOptional();
   const voiceAudioEngine = useVoiceAudioEngineOptional();
@@ -265,7 +263,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       notification?: AgentAttentionNotificationPayload;
     }) => {
       const appState = appStateRef.current;
-      const session = useSessionStore.getState().sessions[serverId];
+      const session = sessionStore.getState().sessions[serverId];
       const attentionFocusedAgentId = session?.focusedAgentId ?? null;
       if (params.reason === "error") {
         return;
@@ -309,7 +307,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         data: notification.data,
       });
     },
-    [serverId],
+    [serverId, sessionStore],
   );
 
   useEffect(() => {
@@ -377,7 +375,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         { event: streamEvent, seq, epoch, timestamp: parsedTimestamp },
       ]);
       if (turnLiveness.length > 0) {
-        getHostRuntimeStore().applyAgentTurnLiveness(serverId, agentId, turnLiveness);
+        runtime.applyAgentTurnLiveness(serverId, agentId, turnLiveness);
       }
       sync.enqueueStreamEvent(agentId, {
         event: streamEvent,
@@ -395,14 +393,14 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       void requestTimelineReplacement(
         {
           fetchAgentTimeline: (agentId, request) =>
-            getHostRuntimeStore().fetchAgentTimeline(serverId, agentId, request),
+            runtime.fetchAgentTimeline(serverId, agentId, request),
         },
         message.payload.agentId,
       ).catch((error: unknown) => {
         console.warn("[Session] timeline replacement refresh failed", { serverId, error });
       });
     };
-    const sync = getHostRuntimeStore().createViewedTimelineOwner(serverId, {
+    const sync = runtime.createViewedTimelineOwner(serverId, {
       observe: (agentIds) => {
         const observation = client.observeTimeline(agentIds);
         observation.subscribe({
@@ -416,7 +414,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       },
       readCursor: (agentId) => {
         const timeline = selectAgentTimelineState(
-          useSessionStore.getState().sessions[serverId],
+          sessionStore.getState().sessions[serverId],
           agentId,
         );
         return timeline.status === "synced" && timeline.range
@@ -424,15 +422,19 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
           : undefined;
       },
       fetchPage: async (agentId, request) => {
-        const session = useSessionStore.getState().sessions[serverId];
+        const session = sessionStore.getState().sessions[serverId];
         const initKey = getInitKey(serverId, agentId);
         const shouldInitialize = selectAgentTimelineState(session, agentId).status !== "synced";
         if (shouldInitialize) {
-          if (!getInitDeferred(initKey)) {
-            const deferred = createInitDeferred(initKey, request.direction ?? "tail");
+          if (!sessionStore.initializations.getInitDeferred(initKey)) {
+            const deferred = sessionStore.initializations.createInitDeferred(
+              initKey,
+              request.direction ?? "tail",
+            );
             void deferred.promise.catch(() => undefined);
           }
           refreshAgentInitializationTimeout({
+            store: sessionStore,
             key: initKey,
             agentId,
             setAgentInitializing,
@@ -440,21 +442,29 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
           setAgentInitializing(agentId, true);
         }
         try {
-          const page = await getHostRuntimeStore().fetchAgentTimeline(serverId, agentId, request);
-          if (shouldInitialize && getInitDeferred(initKey)) {
-            refreshAgentInitializationTimeout({ key: initKey, agentId, setAgentInitializing });
+          const page = await runtime.fetchAgentTimeline(serverId, agentId, request);
+          if (shouldInitialize && sessionStore.initializations.getInitDeferred(initKey)) {
+            refreshAgentInitializationTimeout({
+              store: sessionStore,
+              key: initKey,
+              agentId,
+              setAgentInitializing,
+            });
           }
           return page;
         } catch (error) {
           if (shouldInitialize) {
             setAgentInitializing(agentId, false);
-            rejectInitDeferred(initKey, error instanceof Error ? error : new Error(String(error)));
+            sessionStore.initializations.rejectInitDeferred(
+              initKey,
+              error instanceof Error ? error : new Error(String(error)),
+            );
           }
           throw error;
         }
       },
       fetchLatestTail: (agentId) =>
-        getHostRuntimeStore().fetchAgentTimeline(serverId, agentId, planTimelineTailFetch()),
+        runtime.fetchAgentTimeline(serverId, agentId, planTimelineTailFetch()),
       reportError: (error) => {
         console.warn("[Session] viewed timeline synchronization failed", { serverId, error });
       },
@@ -478,7 +488,16 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       setViewedTimelineSync(serverId, null);
       sync.dispose();
     };
-  }, [client, serverId, setInitializingAgents, setViewedTimelineSync, voiceRuntime]);
+  }, [
+    client,
+    serverId,
+    sessionStore,
+    runtime,
+    sessionStore.initializations,
+    setInitializingAgents,
+    setViewedTimelineSync,
+    voiceRuntime,
+  ]);
 
   useEffect(() => {
     viewedTimelineSyncRef.current?.setConnected(isConnected);

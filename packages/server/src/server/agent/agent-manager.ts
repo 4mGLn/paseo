@@ -768,6 +768,7 @@ export class AgentManager {
   private appendSystemPrompt: string;
   private onAgentAttention?: AgentAttentionCallback;
   private readonly agentArchivedListeners = new Set<AgentArchivedCallback>();
+  private managedChildLifecycleOwner: AgentArchivedCallback | null = null;
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
@@ -874,10 +875,19 @@ export class AgentManager {
     return this.runJournal.get(agentId, submissionId);
   }
 
-  onAgentArchived(callback: AgentArchivedCallback): () => void {
+  onAgentArchived(
+    callback: AgentArchivedCallback,
+    options?: { ownsManagedChildren: boolean },
+  ): () => void {
+    if (options?.ownsManagedChildren) {
+      if (this.managedChildLifecycleOwner)
+        throw new Error("Managed child lifecycle already has an owner");
+      this.managedChildLifecycleOwner = callback;
+    }
     this.agentArchivedListeners.add(callback);
     return () => {
       this.agentArchivedListeners.delete(callback);
+      if (this.managedChildLifecycleOwner === callback) this.managedChildLifecycleOwner = null;
     };
   }
 
@@ -1904,6 +1914,7 @@ export class AgentManager {
     const parentAgentId = parent.id;
     const records = await registry.list();
     for (const record of records) {
+      if (this.managedChildLifecycleOwner && !record.internal && !record.owner) continue;
       if (record.archivedAt) {
         continue;
       }
@@ -3683,6 +3694,7 @@ export class AgentManager {
         }
       }
 
+      await this.runJournal.restore(resolvedAgentId);
       this.assertAcceptingAgentRegistrations();
       this.agents.set(resolvedAgentId, managed);
       registered = true;
@@ -4395,22 +4407,14 @@ export class AgentManager {
 
     const flags: StreamEventFlags = { shouldDispatchEvent: true, shouldNotifyWaiters: true };
 
-    const runResult = this.getRunResult(
-      agent.id,
-      eventTurnId,
+    const checkpoint = this.captureLiveRunCheckpoint(
+      agent,
       event,
-      options?.fromHistory === true,
+      eventTurnId,
+      options,
       terminalDisposition,
     );
-    if (!options?.fromHistory) {
-      if (terminalDisposition !== "stale")
-        await this.runJournal.capture(agent.id, eventTurnId, event, runResult).catch((error) => {
-          this.logger.error(
-            { err: error, agentId: agent.id, turnId: eventTurnId },
-            "Failed to persist provider checkpoint",
-          );
-        });
-    }
+    if (checkpoint) await checkpoint;
     const dispatchPromise = this.dispatchStreamEventByType({
       agent,
       event,
@@ -4440,6 +4444,23 @@ export class AgentManager {
     this.traceHandleStreamEventEnd(agent, event, eventTurnId, flags);
 
     return flags.shouldNotifyWaiters;
+  }
+
+  private captureLiveRunCheckpoint(
+    agent: ActiveManagedAgent,
+    event: AgentStreamEvent,
+    turnId: string | undefined,
+    options: HandleStreamEventOptions | undefined,
+    disposition: ActiveTurnTerminalDisposition,
+  ): Promise<void> | undefined {
+    if (options?.fromHistory || disposition === "stale") return undefined;
+    const result = this.getRunResult(agent.id, turnId, event, false, disposition);
+    return this.runJournal.capture(agent.id, turnId, event, result)?.catch((error) => {
+      this.logger.error(
+        { err: error, agentId: agent.id, turnId },
+        "Failed to persist provider checkpoint",
+      );
+    });
   }
 
   private getRunResult(

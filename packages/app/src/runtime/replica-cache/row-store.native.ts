@@ -38,12 +38,14 @@ function createConnection(database: SQLiteDatabase): ReplicaSqliteConnection {
   };
 }
 
-const expoSqliteDriver: ReplicaSqliteDriver = {
-  async open() {
-    return createConnection(await openDatabaseAsync(DATABASE_NAME));
-  },
-};
-
-export function createReplicaRowStore(): ReplicaRowStore {
-  return createSqliteReplicaRowStore(expoSqliteDriver, REPLICA_ROW_STORE_SCHEMA_VERSION);
+export function createReplicaRowStore(authorityNamespace?: string): ReplicaRowStore {
+  const databaseName = authorityNamespace
+    ? `paseo-replica-${encodeURIComponent(authorityNamespace)}.db`
+    : DATABASE_NAME;
+  const driver: ReplicaSqliteDriver = {
+    async open() {
+      return createConnection(await openDatabaseAsync(databaseName));
+    },
+  };
+  return createSqliteReplicaRowStore(driver, REPLICA_ROW_STORE_SCHEMA_VERSION);
 }

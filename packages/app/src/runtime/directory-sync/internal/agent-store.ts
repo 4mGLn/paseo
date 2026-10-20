@@ -1,6 +1,6 @@
 import equal from "fast-deep-equal";
 import type { FetchAgentsEntry } from "@getpaseo/client/internal/daemon-client";
-import { useSessionStore, type Agent } from "@/stores/session-store";
+import { useSessionStore, type SessionStoreApi, type Agent } from "@/stores/session-store";
 import { acceptAgentDirectoryUpdate } from "@/utils/agent-directory-update-policy";
 import { buildAgentDirectoryState, type AgentDirectoryDelta } from "@/utils/agent-directory-sync";
 import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agent-snapshots";
@@ -9,7 +9,7 @@ import { clearArchiveAgentPending } from "@/hooks/use-archive-agent";
 import { queryClient } from "@/data/query-client";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { useDraftStore } from "@/stores/draft-store";
-import { getInitDeferred, getInitKey, rejectInitDeferred } from "@/utils/agent-initialization";
+import { getInitKey } from "@/utils/agent-initialization";
 import { reduceTurnLiveness, type TurnLivenessTransition } from "@/timeline/turn-liveness";
 
 function withoutAgent(agentId: string) {
@@ -32,14 +32,17 @@ function mergeSnapshotTurn(previous: Agent | undefined, incoming: Agent): Agent 
 }
 
 export class AgentStoreProjection {
-  constructor(private readonly serverId: string) {}
+  constructor(
+    private readonly serverId: string,
+    private readonly store: SessionStoreApi = useSessionStore,
+  ) {}
 
   snapshot(): Map<string, Agent> {
-    return useSessionStore.getState().sessions[this.serverId]?.agents ?? new Map();
+    return this.store.getState().sessions[this.serverId]?.agents ?? new Map();
   }
 
   get(agentId: string): Agent | undefined {
-    const session = useSessionStore.getState().sessions[this.serverId];
+    const session = this.store.getState().sessions[this.serverId];
     return session?.agents.get(agentId) ?? session?.agentDetails.get(agentId);
   }
 
@@ -47,17 +50,17 @@ export class AgentStoreProjection {
     const merged = new Map(agents);
     for (const [agentId, agent] of this.snapshot()) merged.set(agentId, agent);
     for (const agent of merged.values()) this.publishActivity(agent);
-    useSessionStore.getState().setAgents(this.serverId, merged);
+    this.store.getState().setAgents(this.serverId, merged);
     return merged;
   }
 
   publishActivity(agent: Agent): void {
-    useSessionStore.getState().setAgentLastActivity(agent.id, agent.lastActivityAt);
+    this.store.getState().setAgentLastActivity(agent.id, agent.lastActivityAt);
   }
 
   accept(agent: Agent): Agent {
     let accepted = agent;
-    useSessionStore.getState().setAgents(this.serverId, (current) => {
+    this.store.getState().setAgents(this.serverId, (current) => {
       const previous = current.get(agent.id);
       accepted = acceptAgentDirectoryUpdate(previous, mergeSnapshotTurn(previous, agent));
       if (accepted === previous) return current;
@@ -78,7 +81,7 @@ export class AgentStoreProjection {
       return { agentId: delta.agentId, stoppedRunning: false };
     }
     const normalized = normalizeAgentSnapshot(delta.agent, this.serverId);
-    const session = useSessionStore.getState().sessions[this.serverId];
+    const session = this.store.getState().sessions[this.serverId];
     const previous = session?.agents.get(normalized.id) ?? session?.agentDetails.get(normalized.id);
     const legacyWorkspaceId =
       previous?.workspaceId ??
@@ -98,7 +101,7 @@ export class AgentStoreProjection {
       clearArchiveAgentPending({ queryClient, serverId: this.serverId, agentId: accepted.id });
     }
     this.replacePendingPermissions(accepted);
-    useSessionStore.getState().setAgentLastActivity(accepted.id, accepted.lastActivityAt);
+    this.store.getState().setAgentLastActivity(accepted.id, accepted.lastActivityAt);
     return {
       agentId: accepted.id,
       stoppedRunning: previous?.turn.phase === "open" && accepted.turn.phase === "idle",
@@ -111,7 +114,7 @@ export class AgentStoreProjection {
       serverId: this.serverId,
       entries,
     });
-    const store = useSessionStore.getState();
+    const store = this.store.getState();
     const current = store.sessions[this.serverId]?.agents ?? new Map<string, Agent>();
     const agents = new Map<string, Agent>();
     for (const [agentId, fetchedAgent] of fetched) {
@@ -141,17 +144,17 @@ export class AgentStoreProjection {
   }
 
   replacePendingPermissions(agent: Agent): void {
-    const pending = new Map(useSessionStore.getState().sessions[this.serverId]?.pendingPermissions);
+    const pending = new Map(this.store.getState().sessions[this.serverId]?.pendingPermissions);
     for (const [key, entry] of pending) if (entry.agentId === agent.id) pending.delete(key);
     for (const request of agent.pendingPermissions) {
       const key = derivePendingPermissionKey(agent.id, request);
       pending.set(key, { key, agentId: agent.id, request });
     }
-    useSessionStore.getState().setPendingPermissions(this.serverId, pending);
+    this.store.getState().setPendingPermissions(this.serverId, pending);
   }
 
   removeFromDirectory(agentId: string): void {
-    const store = useSessionStore.getState();
+    const store = this.store.getState();
     const removeKey = withoutAgent(agentId);
     clearArchiveAgentPending({ queryClient, serverId: this.serverId, agentId });
     store.setAgents(this.serverId, removeKey);
@@ -163,7 +166,7 @@ export class AgentStoreProjection {
       for (const [key, pending] of next) if (pending.agentId === agentId) next.delete(key);
       return next.size === current.size ? current : next;
     });
-    useSessionStore.setState((state) => {
+    this.store.setState((state) => {
       if (!state.agentLastActivity.has(agentId)) return state;
       const agentLastActivity = new Map(state.agentLastActivity);
       agentLastActivity.delete(agentId);
@@ -173,8 +176,11 @@ export class AgentStoreProjection {
       draftKey: buildDraftStoreKey({ serverId: this.serverId, agentId }),
     });
     const initKey = getInitKey(this.serverId, agentId);
-    if (getInitDeferred(initKey)) {
-      rejectInitDeferred(initKey, new Error("Agent was removed during initialization"));
+    if (this.store.initializations.getInitDeferred(initKey)) {
+      this.store.initializations.rejectInitDeferred(
+        initKey,
+        new Error("Agent was removed during initialization"),
+      );
     }
   }
 
@@ -182,7 +188,7 @@ export class AgentStoreProjection {
     this.removeFromDirectory(agentId);
     // Only entity deletion destroys the transcript. A filtered active-list
     // response can arrive after a fresh history response for an archived agent.
-    const store = useSessionStore.getState();
+    const store = this.store.getState();
     const removeKey = withoutAgent(agentId);
     store.setAgentTimelineCursor(this.serverId, removeKey);
     store.setAgentAuthoritativeHistoryApplied(this.serverId, agentId, false);
@@ -192,7 +198,7 @@ export class AgentStoreProjection {
 
   archive(agentId: string, archivedAt: string): Agent | null {
     let archived: Agent | null = null;
-    useSessionStore.getState().setAgents(this.serverId, (current) => {
+    this.store.getState().setAgents(this.serverId, (current) => {
       const agent = current.get(agentId);
       if (!agent) return current;
       archived = {
@@ -213,7 +219,7 @@ export class AgentStoreProjection {
   ): Agent | null {
     const transitions = Array.isArray(transition) ? transition : [transition];
     let accepted: Agent | null = null;
-    useSessionStore.getState().setAgents(this.serverId, (current) => {
+    this.store.getState().setAgents(this.serverId, (current) => {
       const agent = current.get(agentId);
       if (!agent) return current;
       const turn = transitions.reduce(reduceTurnLiveness, agent.turn);

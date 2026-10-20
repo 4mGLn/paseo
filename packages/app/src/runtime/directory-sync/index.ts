@@ -9,6 +9,7 @@ import {
   normalizeProjectDescriptor,
   normalizeWorkspaceDescriptor,
   useSessionStore,
+  type SessionStoreApi,
   type Agent,
   type ProjectDescriptor,
   type WorkspaceDescriptor,
@@ -172,11 +173,17 @@ export class DirectorySync {
       markAgentError: (error: string) => void;
     },
     private readonly checkpoints?: DirectoryCheckpointStorage,
+    private readonly store: SessionStoreApi = useSessionStore,
   ) {
     const persist = (mutations: readonly DirectoryReplicaMutation[]) =>
       this.checkpoints?.commitDirectoryMutations(this.serverId, mutations);
-    this.agents = new AgentDirectoryReplica(serverId, callbacks.onAgentStoppedRunning, persist);
-    this.workspaces = new WorkspaceDirectoryReplica(serverId);
+    this.agents = new AgentDirectoryReplica(
+      serverId,
+      callbacks.onAgentStoppedRunning,
+      persist,
+      store,
+    );
+    this.workspaces = new WorkspaceDirectoryReplica(serverId, store);
   }
 
   connectionChanged(connection: DirectoryConnection): boolean {
@@ -401,18 +408,18 @@ export class DirectorySync {
 
   async loadCachedAgent(agentId: string): Promise<void> {
     if (!this.checkpoints) return;
-    if (useSessionStore.getState().sessions[this.serverId]?.agents.has(agentId)) return;
+    if (this.store.getState().sessions[this.serverId]?.agents.has(agentId)) return;
     const token = this.agents.captureCache(agentId);
     const agent = await this.checkpoints.readAgent(this.serverId, agentId);
     if (!agent) return;
-    const session = useSessionStore.getState().sessions[this.serverId];
+    const session = this.store.getState().sessions[this.serverId];
     if (!session || session.agents.has(agentId)) return;
     this.agents.commitCachedAgent(token, agent);
   }
 
   async prepareAgentRoute(agentId: string): Promise<void> {
     await this.loadCachedAgent(agentId);
-    const agent = useSessionStore.getState().sessions[this.serverId]?.agents.get(agentId);
+    const agent = this.store.getState().sessions[this.serverId]?.agents.get(agentId);
     if (agent?.workspaceId) await this.loadCachedWorkspace(agent.workspaceId);
   }
 
@@ -422,12 +429,12 @@ export class DirectorySync {
 
   private async loadCachedWorkspace(workspaceId: string): Promise<void> {
     if (!this.checkpoints) return;
-    if (useSessionStore.getState().sessions[this.serverId]?.workspaces.has(workspaceId)) return;
+    if (this.store.getState().sessions[this.serverId]?.workspaces.has(workspaceId)) return;
     const revision = this.workspaceRevision;
     const cached = await this.checkpoints.readWorkspace(this.serverId, workspaceId);
     if (!cached) return;
     if (this.workspaceRevision !== revision) return;
-    const session = useSessionStore.getState().sessions[this.serverId];
+    const session = this.store.getState().sessions[this.serverId];
     if (!session) return;
     this.workspaces.commitCachedWorkspace(cached.workspace, cached.project);
   }
@@ -439,7 +446,7 @@ export class DirectorySync {
       const revision = this.revision;
       const cached = await checkpoints.readDirectory(this.serverId);
       if (this.cacheAccepted) return;
-      if (!useSessionStore.getState().sessions[this.serverId]) return;
+      if (!this.store.getState().sessions[this.serverId]) return;
       this.agents.commitCached(cached.agents);
       this.workspaces.commitCached(cached);
       if (this.revision === revision) this.cursors = cached.checkpoint ?? {};
@@ -495,7 +502,7 @@ export class DirectorySync {
     if (!onlineConnection) {
       this.callbacks.markAgentReady();
       return {
-        agents: new Map(useSessionStore.getState().sessions[this.serverId]?.agents),
+        agents: new Map(this.store.getState().sessions[this.serverId]?.agents),
         subscriptionId: null,
       };
     }
@@ -560,7 +567,7 @@ export class DirectorySync {
     });
     try {
       await this.waitForSessionMetadata(client, source);
-      const serverInfo = useSessionStore.getState().sessions[this.serverId]?.serverInfo;
+      const serverInfo = this.store.getState().sessions[this.serverId]?.serverInfo;
       const supportsProjectList = serverInfo?.features?.projectList === true;
       const supportsDirectorySync = serverInfo?.features?.directorySync === true;
       const projectsReady = supportsProjectList
@@ -690,7 +697,7 @@ export class DirectorySync {
   }
 
   markWorkspacesHydrated(hydrated: boolean): void {
-    useSessionStore.getState().setHasHydratedWorkspaces(this.serverId, hydrated);
+    this.store.getState().setHasHydratedWorkspaces(this.serverId, hydrated);
   }
 
   private async fetchAgents(
@@ -783,8 +790,7 @@ export class DirectorySync {
 
   private supportsDirectorySync(): boolean {
     return (
-      useSessionStore.getState().sessions[this.serverId]?.serverInfo?.features?.directorySync ===
-      true
+      this.store.getState().sessions[this.serverId]?.serverInfo?.features?.directorySync === true
     );
   }
 
@@ -964,7 +970,7 @@ export class DirectorySync {
     source: DirectorySourceToken,
   ): Promise<void> {
     await this.waitForSessionState(client, source, () => {
-      const session = useSessionStore.getState().sessions[this.serverId];
+      const session = this.store.getState().sessions[this.serverId];
       return this.hasMatchingSession(client, source) && session?.serverInfo !== null;
     });
   }
@@ -995,13 +1001,13 @@ export class DirectorySync {
         }
       };
       this.abortSessionWaits.add(abort);
-      unsubscribe = useSessionStore.subscribe(check);
+      unsubscribe = this.store.subscribe(check);
       check();
     });
   }
 
   private hasMatchingSession(client: DaemonClient, source: DirectorySourceToken): boolean {
-    const session = useSessionStore.getState().sessions[this.serverId];
+    const session = this.store.getState().sessions[this.serverId];
     return session?.client === client && session.clientGeneration === source.clientGeneration;
   }
 

@@ -5,7 +5,7 @@ import {
 } from "fake-indexeddb";
 import { expect, it, vi } from "vitest";
 import { runReplicaRowStoreContract } from "./row-store.contract";
-import { createIndexedDbReplicaRowStore } from "./row-store.web";
+import { createReplicaRowStore, createIndexedDbReplicaRowStore } from "./row-store.web";
 
 globalThis.indexedDB = fakeIndexedDb;
 globalThis.IDBKeyRange = FakeIDBKeyRange;
@@ -48,4 +48,28 @@ it("uses exact IndexedDB keys for targeted rows instead of scanning the host", a
 
   get.mockRestore();
   getAll.mockRestore();
+});
+
+it("restores only rows in the selected authority namespace while retaining the destination server ID", async () => {
+  const serverId = `B-${crypto.randomUUID()}`;
+  const origin = `A-${crypto.randomUUID()}`;
+  const direct = createReplicaRowStore();
+  const selected = createReplicaRowStore(origin);
+  await Promise.all([direct.open(), selected.open()]);
+  const row = {
+    serverId,
+    kind: "agent" as const,
+    id: "colliding-agent",
+    payload: "broader-direct",
+  };
+  await direct.apply({ upserts: [row], deletes: [] });
+  expect(await selected.read(serverId, ["agent"])).toEqual([]);
+  await selected.apply({ upserts: [{ ...row, payload: "selected-authority" }], deletes: [] });
+  const restored = createReplicaRowStore(origin);
+  await restored.open();
+  expect(await restored.read(serverId, ["agent"])).toEqual([
+    { ...row, payload: "selected-authority" },
+  ]);
+  expect(await direct.read(serverId, ["agent"])).toEqual([row]);
+  await Promise.all([selected.clear(), direct.deleteHost(serverId)]);
 });

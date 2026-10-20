@@ -2,7 +2,7 @@ import type { FetchAgentsEntry } from "@getpaseo/client/internal/daemon-client";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import { clearArchiveAgentPending } from "@/hooks/use-archive-agent";
 import { queryClient } from "@/data/query-client";
-import type { Agent } from "@/stores/session-store";
+import { useSessionStore, type SessionStoreApi, type Agent } from "@/stores/session-store";
 import { normalizeAgentSnapshot, projectAgentSnapshot } from "@/utils/agent-snapshots";
 import { type AgentDirectoryDelta } from "@/utils/agent-directory-sync";
 import { reconcileAgentDirectory } from "@/utils/agent-directory-reconciliation";
@@ -38,8 +38,9 @@ export class AgentDirectoryReplica {
     private readonly serverId: string,
     private readonly onStoppedRunning: (agentId: string) => void,
     private readonly persist: (mutations: readonly DirectoryReplicaMutation[]) => void,
+    store: SessionStoreApi = useSessionStore,
   ) {
-    this.storeProjection = new AgentStoreProjection(serverId);
+    this.storeProjection = new AgentStoreProjection(serverId, store);
   }
 
   captureTimeline(agentId: string): AgentLifecycleToken {

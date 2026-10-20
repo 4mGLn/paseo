@@ -1212,6 +1212,10 @@ export class HubRelationshipHarness {
     );
   }
 
+  serverId(): string {
+    return this.daemon!.getServerId();
+  }
+
   probeTrustedHello(): number | null {
     const socket = this.latestSocket().socket;
     socket.receiveEnvelope({

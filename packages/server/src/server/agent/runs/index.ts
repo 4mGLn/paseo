@@ -60,6 +60,10 @@ export class AgentRuns {
   private identity(agentId: string, submissionId: string): string {
     return JSON.stringify([agentId, submissionId]);
   }
+  /** Restore turn ownership before subscribing to live provider evidence. */
+  restore(agentId: string): Promise<void> {
+    return this.mutate(() => this.load(agentId));
+  }
   private async load(agentId: string): Promise<void> {
     if (this.loadedAgents.has(agentId)) return;
     let records: StoredRun[] = [];
@@ -240,10 +244,15 @@ export class AgentRuns {
     turnId: string | undefined,
     event: AgentStreamEvent,
     result: string,
-  ): Promise<void> {
-    if (!turnId) return Promise.resolve();
+  ): Promise<void> | undefined {
+    if (!turnId) return undefined;
+    if (
+      this.loadedAgents.has(agentId) &&
+      !this.submissionsByTurn.has(this.identity(agentId, turnId))
+    )
+      return undefined;
     const checkpoint = checkpointFor(event, result);
-    if (!checkpoint) return Promise.resolve();
+    if (!checkpoint) return undefined;
     return this.mutate(async () => {
       await this.load(agentId);
       const submissions = this.submissionsByTurn.get(this.identity(agentId, turnId));

@@ -1,3 +1,4 @@
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { seedSessionHosts } from "@/test/seed-session";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { QueryClient } from "@tanstack/react-query";
@@ -161,6 +162,7 @@ describe("useArchiveAgent", () => {
     });
 
     applyArchivedAgentCloseResults({
+      runtime: getHostRuntimeStore(),
       queryClient,
       serverId: "server-a",
       results: [{ agentId: "agent-1", archivedAt: "2026-04-01T04:00:00.000Z" }],
@@ -233,6 +235,7 @@ describe("useArchiveAgent", () => {
     });
 
     applyArchivedAgentCloseResults({
+      runtime: getHostRuntimeStore(),
       queryClient,
       serverId: "server-a",
       results: [{ agentId: "agent-1", archivedAt: "2026-04-01T04:00:00.000Z" }],

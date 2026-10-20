@@ -1386,3 +1386,129 @@ test("MCP provider discovery uses the selected host profiles and models", async 
     await b.close();
   }
 });
+
+test("real MCP discovery preserves custom catalog modes, disabled-provider isolation, and draft settings", async () => {
+  const clients = createTestAgentClients();
+  const base = clients.codex!;
+  let disabledAvailabilityChecks = 0;
+  let disabledCatalogFetches = 0;
+  const drafts: AgentSessionConfig[] = [];
+  const dynamicModes = [{ id: "dynamic", label: "Dynamic", description: "Runtime mode" }];
+  const custom: AgentClient = {
+    ...base,
+    provider: "zai",
+    capabilities: base.capabilities,
+    createSession: (...args) => base.createSession(...args),
+    resumeSession: (...args) => base.resumeSession(...args),
+    isAvailable: async () => true,
+    fetchCatalog: async () => ({
+      models: [{ provider: "zai", id: "custom-model", label: "Custom model", isDefault: true }],
+      modes: dynamicModes,
+    }),
+    listFeatures: async (config) => {
+      drafts.push(config);
+      return [
+        {
+          type: "toggle",
+          id: "fast_mode",
+          label: "Fast mode",
+          value: config.featureValues?.fast_mode === true,
+        },
+      ];
+    },
+  };
+  const disabled: AgentClient = {
+    ...base,
+    provider: "codex",
+    capabilities: base.capabilities,
+    createSession: (...args) => base.createSession(...args),
+    resumeSession: (...args) => base.resumeSession(...args),
+    isAvailable: async () => {
+      disabledAvailabilityChecks++;
+      return true;
+    },
+    fetchCatalog: async (options) => {
+      disabledCatalogFetches++;
+      return base.fetchCatalog(options);
+    },
+  };
+  const destination = await createTestPaseoDaemon({
+    agentClients: { ...clients, codex: disabled, zai: custom },
+    providerOverrides: {
+      codex: { enabled: false },
+      zai: { extends: "codex", label: "ZAI", enabled: true },
+    },
+    agentProfiles: [],
+  });
+  const mcp = await createMcpClient(`http://127.0.0.1:${destination.port}/mcp/agents`);
+  try {
+    const response = await mcp.callTool({ name: "list_providers", args: {} });
+    expect(response.isError, JSON.stringify(response)).not.toBe(true);
+    const providers = recordArr(getStructuredContent(response)?.providers);
+    expect(providers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "zai",
+          label: "ZAI",
+          enabled: true,
+          status: "available",
+          modes: dynamicModes,
+        }),
+        expect.objectContaining({ id: "codex", enabled: false, status: "unavailable", modes: [] }),
+      ]),
+    );
+    const modelText =
+      response.content?.map((item) => Reflect.get(item, "text") ?? "").join("\n") ?? "";
+    expect(modelText).toContain(`providers_count=${providers.length}`);
+    expect(modelText).toContain(
+      `providers_ids=${providers.map((provider) => provider.id).join(",")}`,
+    );
+    expect(modelText).toContain('"providers"');
+    expect(await callToolStructured(mcp, "list_profiles")).toMatchObject({ profiles: [] });
+    await expectToolError(mcp, "list_models", { provider: "codex" }, /disabled/i);
+    await expectToolError(
+      mcp,
+      "inspect_provider",
+      { provider: "codex", cwd: destination.staticDir },
+      /disabled/i,
+    );
+    expect(disabledAvailabilityChecks).toBe(0);
+    expect(disabledCatalogFetches).toBe(0);
+    const inspected = await callToolStructured(mcp, "inspect_provider", {
+      provider: "zai/custom-model",
+      cwd: destination.staticDir,
+      settings: { modeId: "dynamic", thinkingOptionId: "high", features: { fast_mode: true } },
+    });
+    expect(inspected).toMatchObject({
+      provider: "zai",
+      label: "ZAI",
+      selectedModel: "custom-model",
+      modes: dynamicModes,
+      features: [{ type: "toggle", id: "fast_mode", label: "Fast mode", value: true }],
+    });
+    expect(drafts).toContainEqual(
+      expect.objectContaining({
+        provider: "zai",
+        cwd: destination.staticDir,
+        model: "custom-model",
+        modeId: "dynamic",
+        thinkingOptionId: "high",
+        featureValues: { fast_mode: true },
+      }),
+    );
+  } finally {
+    await mcp.close();
+    await destination.close();
+  }
+});
+
+test("real MCP without configured profiles returns an empty list", async () => {
+  const destination = await createTestPaseoDaemon();
+  const mcp = await createMcpClient(`http://127.0.0.1:${destination.port}/mcp/agents`);
+  try {
+    expect(await callToolStructured(mcp, "list_profiles")).toMatchObject({ profiles: [] });
+  } finally {
+    await mcp.close();
+    await destination.close();
+  }
+});

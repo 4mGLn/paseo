@@ -8,7 +8,12 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import type { CachedTimeline } from "@/runtime/replica-cache";
-import { selectAgentTimelineState, useSessionStore } from "@/stores/session-store";
+import {
+  createSessionStore,
+  type SessionStoreApi,
+  selectAgentTimelineState,
+  useSessionStore,
+} from "@/stores/session-store";
 import { useCreateFlowStore, type PendingCreateAttempt } from "@/stores/create-flow-store";
 import type { StreamItem } from "@/types/stream";
 import {
@@ -40,13 +45,18 @@ function cachedTimeline(): CachedTimeline {
   };
 }
 
-function createOwner(storage: TimelineReplicaStorage): ViewedTimelineOwner {
+function createOwner(
+  storage: TimelineReplicaStorage,
+  store: SessionStoreApi = useSessionStore,
+): ViewedTimelineOwner {
   const replica = createTimelineReplica({
+    store,
     serverId: SERVER_ID,
     storage,
     prepareAgent: async () => undefined,
   });
   return createViewedTimelineOwner({
+    store,
     serverId: SERVER_ID,
     replica,
     replaceDemandedAgentIds: () => undefined,
@@ -533,8 +543,8 @@ describe("create handoff lifetime", () => {
 
   afterEach(() => useCreateFlowStore.getState().clearAll());
 
-  function sentCreateHandoff(): void {
-    useCreateFlowStore.getState().setPending({
+  function sentCreateHandoff(flow = useCreateFlowStore): void {
+    flow.getState().setPending({
       draftId: DRAFT_ID,
       serverId: SERVER_ID,
       agentId: AGENT_ID,
@@ -542,7 +552,7 @@ describe("create handoff lifetime", () => {
       text: "Create this chat.",
       timestamp: 0,
     });
-    useCreateFlowStore.getState().markLifecycle({ draftId: DRAFT_ID, lifecycle: "sent" });
+    flow.getState().markLifecycle({ draftId: DRAFT_ID, lifecycle: "sent" });
   }
 
   function createHandoff(): PendingCreateAttempt | undefined {
@@ -575,18 +585,22 @@ describe("create handoff lifetime", () => {
     release: () => void;
   }
 
-  async function ownerWithHeldCatchUp(): Promise<HeldCatchUpOwner> {
+  async function ownerWithHeldCatchUp(
+    store: SessionStoreApi = useSessionStore,
+  ): Promise<HeldCatchUpOwner> {
     let releaseTailFetch!: () => void;
     let tailFetchStarted = false;
     const tailFetched = new Promise<void>((resolve) => {
       releaseTailFetch = resolve;
     });
     const replica = createTimelineReplica({
+      store,
       serverId: SERVER_ID,
       storage: { readTimeline: async () => undefined, commitTimeline: () => undefined },
       prepareAgent: async () => undefined,
     });
     const owner = createViewedTimelineOwner({
+      store,
       serverId: SERVER_ID,
       replica,
       replaceDemandedAgentIds: () => undefined,
@@ -610,6 +624,30 @@ describe("create handoff lifetime", () => {
     await expect.poll(() => tailFetchStarted).toBe(true);
     return { owner, release: releaseTailFetch };
   }
+
+  it("clears only the completed authority's creation handoff for equal destination identities", async () => {
+    const direct = createSessionStore();
+    const routed = createSessionStore();
+    for (const store of [direct, routed]) {
+      store.getState().initializeSession(SERVER_ID, null);
+      sentCreateHandoff(store.createFlows);
+    }
+    const { owner, release } = await ownerWithHeldCatchUp(direct);
+    try {
+      owner.applyTimelineResponse(syncedTailPage());
+      release();
+      await expect
+        .poll(() => direct.createFlows.getState().pendingByDraftId[DRAFT_ID])
+        .toBeUndefined();
+      expect(routed.createFlows.getState().pendingByDraftId[DRAFT_ID]).toMatchObject({
+        agentId: AGENT_ID,
+        lifecycle: "sent",
+      });
+    } finally {
+      release();
+      owner.dispose();
+    }
+  });
 
   it("keeps the handoff through the first synchronized page and releases it when the chat is current", async () => {
     useSessionStore.getState().initializeSession(SERVER_ID, null);
@@ -749,3 +787,66 @@ describe("SQLite baseline restoration", () => {
     }
   });
 });
+
+it.each([null, "Direct history failed"])(
+  "keeps initialization readiness scoped when another authority returns %s for the same address",
+  async (failureMessage) => {
+    const direct = createSessionStore();
+    const routed = createSessionStore();
+    const key = direct.initializations.getInitKey(SERVER_ID, AGENT_ID);
+    const directReady = direct.initializations.createInitDeferred(key, "tail").promise;
+    const routedReady = routed.initializations.createInitDeferred(key, "tail").promise;
+    void directReady.catch(() => {});
+    let routedSettled = false;
+    void routedReady.then(
+      () => {
+        routedSettled = true;
+        return undefined;
+      },
+      () => {
+        routedSettled = true;
+        return undefined;
+      },
+    );
+    for (const store of [direct, routed]) {
+      store.getState().initializeSession(SERVER_ID, null);
+      store.getState().setInitializingAgents(SERVER_ID, new Map([[AGENT_ID, true]]));
+    }
+    const storage: TimelineReplicaStorage = {
+      readTimeline: async () => undefined,
+      commitTimeline: () => {},
+    };
+    const owners = [createOwner(storage, direct), createOwner(storage, routed)];
+    const response: Parameters<ViewedTimelineOwner["applyTimelineResponse"]>[0] = {
+      requestId: "direct-tail",
+      agentId: AGENT_ID,
+      agent: null,
+      direction: "tail",
+      projection: "projected",
+      reset: false,
+      epoch: "epoch-1",
+      window: { minSeq: 1, maxSeq: 0, nextSeq: 1 },
+      startCursor: null,
+      endCursor: null,
+      entries: [],
+      error: failureMessage,
+      hasNewer: false,
+      hasOlder: false,
+      staleCursor: false,
+      gap: false,
+    };
+    try {
+      owners[0]!.applyTimelineResponse(response);
+      const directResult = await Promise.allSettled([directReady]);
+      expect(directResult[0]?.status).toBe(failureMessage ? "rejected" : "fulfilled");
+      expect(routedSettled).toBe(false);
+      expect(routed.initializations.getInitDeferred(key)?.promise).toBe(routedReady);
+      owners[1]!.applyTimelineResponse({ ...response, requestId: "routed-tail", error: null });
+      await routedReady;
+      expect(routedSettled).toBe(true);
+    } finally {
+      for (const store of [direct, routed]) store.initializations.resolveInitDeferred(key);
+      for (const owner of owners) owner.dispose();
+    }
+  },
+);

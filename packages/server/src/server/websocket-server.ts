@@ -755,6 +755,7 @@ export class VoiceAssistantWebSocketServer {
     this.subagents = new Subagents({
       home: paseoHome,
       serverId,
+      agents: this.agentStorage,
       runtime: (authority) => this.createHostRuntime(authority),
       resolveAuthority: (principalId) => this.resolveRelationshipAdmission(principalId),
     });
@@ -766,13 +767,16 @@ export class VoiceAssistantWebSocketServer {
           this.logger.warn({ err: error }, "Failed to reconcile subagent host availability"),
         );
     });
-    this.stopAgentArchived = this.agentManager.onAgentArchived(async (agentId) => {
-      const record = await this.agentStorage.get(agentId);
-      await this.subagents.parentArchived(
-        { serverId, agentId },
-        record?.workspaceId ? { serverId, workspaceId: record.workspaceId } : undefined,
-      );
-    });
+    this.stopAgentArchived = this.agentManager.onAgentArchived(
+      async (agentId) => {
+        const record = await this.agentStorage.get(agentId);
+        await this.subagents.parentArchived(
+          { serverId, agentId },
+          record?.workspaceId ? { serverId, workspaceId: record.workspaceId } : undefined,
+        );
+      },
+      { ownsManagedChildren: true },
+    );
     this.passwordHash = auth?.password;
     this.worktreesRoot = daemonRuntimeConfig?.worktreesRoot;
     this.daemonConfigStore = daemonConfigStore;
@@ -1156,6 +1160,10 @@ export class VoiceAssistantWebSocketServer {
 
   public prepareForShutdown(): void {
     this.connectionLifecycle = "stopping";
+  }
+
+  public initializeRelationships(): Promise<void> {
+    return this.subagents.initialize();
   }
 
   public beginAcceptingConnections(): void {
@@ -2029,6 +2037,7 @@ export class VoiceAssistantWebSocketServer {
         connectedHosts: true,
         fleetSubagents: true,
         hostMultiplexing: true,
+        hostSessionScopes: true,
         usageSources: true,
         ownedSubscriptions: true,
         agentRequestReceipts: true,
@@ -2632,15 +2641,30 @@ export class VoiceAssistantWebSocketServer {
     if (!link) {
       link = new DaemonLinkEndpoint({
         identity: JSON.stringify([connection.principalId, connection.clientId]),
+        serverId: this.serverId,
+        assertScopeAdmission: () => {
+          if (connection.hubExecutionAgents)
+            throw Object.assign(new Error("Execution-scoped host acquisition is not supported"), {
+              code: "unsupported_capability",
+            });
+        },
         permissions: () => connection.session.getPermissions(),
         routed: () => connection.session.isRouted(),
         bufferedAmount: () => ws.bufferedAmount ?? null,
         delivery: connection.session.delivery,
-        admit: (socket, permissions) =>
-          this.attachSocket(socket, undefined, undefined, false, {
+        admit: (socket, permissions, context) => {
+          if (connection.hubExecutionAgents)
+            throw new Error("Execution-scoped host acquisition is not supported");
+          this.ownedSockets.add(socket);
+          if (context.kind === "scope")
+            this.ownedSocketSources.set(socket, connection.session.getHostSourceId());
+          return this.attachSocket(socket, undefined, undefined, false, {
             principalId: connection.principalId,
-            permissions,
-          }),
+            permissions: permissions.filter((permission) =>
+              connection.session.getPermissions().includes(permission),
+            ),
+          });
+        },
       });
       this.hostLinks.set(ws, link);
     }

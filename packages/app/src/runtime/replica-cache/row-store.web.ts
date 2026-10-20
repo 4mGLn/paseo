@@ -210,9 +210,11 @@ export function createIndexedDbReplicaRowStore(
   return { open, read, readAll, apply, deleteHost, renameHost, clear };
 }
 
-export function createReplicaRowStore(): ReplicaRowStore {
+export function createReplicaRowStore(authorityNamespace?: string): ReplicaRowStore {
   return createIndexedDbReplicaRowStore({
-    databaseName: DATABASE_NAME,
+    databaseName: authorityNamespace
+      ? `${DATABASE_NAME}:${encodeURIComponent(authorityNamespace)}`
+      : DATABASE_NAME,
     schemaVersion: REPLICA_ROW_STORE_SCHEMA_VERSION,
   });
 }

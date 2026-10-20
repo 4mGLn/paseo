@@ -1,5 +1,11 @@
+import { createCreateFlowStore, defaultCreateFlowStore } from "@/stores/create-flow-store";
+import {
+  createAgentInitializations,
+  defaultAgentInitializations,
+} from "@/utils/agent-initialization";
 import equal from "fast-deep-equal";
-import { create } from "zustand";
+import { create, useStore } from "zustand";
+import { createContext, useContext } from "react";
 import { subscribeWithSelector } from "zustand/middleware";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ViewedTimelineOwner } from "@/timeline/viewed-timeline-sync";
@@ -459,7 +465,11 @@ interface SessionStoreActions {
   ) => void;
   clearSession: (serverId: string) => void;
   getSession: (serverId: string) => SessionState | undefined;
-  updateSessionClient: (serverId: string, client: DaemonClient, clientGeneration?: number) => void;
+  updateSessionClient: (
+    serverId: string,
+    client: DaemonClient | null,
+    clientGeneration?: number,
+  ) => void;
   setViewedTimelineSync: (serverId: string, sync: ViewedTimelineOwner | null) => void;
   updateSessionServerInfo: (serverId: string, info: DaemonServerInfo) => void;
 
@@ -717,1186 +727,1209 @@ function isSessionServerInfoUnchanged(input: {
   );
 }
 
-export const useSessionStore = create<SessionStore>()(
-  subscribeWithSelector((set, get) => {
-    const commitActivityUpdates: AgentLastActivityCommitter = (updates) => {
-      set((prev) => {
-        let nextActivity: Map<string, Date> | null = null;
-        for (const [agentId, timestamp] of updates.entries()) {
-          const current = prev.agentLastActivity.get(agentId);
-          if (current && current.getTime() >= timestamp.getTime()) {
-            continue;
+const createState = () =>
+  create<SessionStore>()(
+    subscribeWithSelector((set, get) => {
+      const commitActivityUpdates: AgentLastActivityCommitter = (updates) => {
+        set((prev) => {
+          let nextActivity: Map<string, Date> | null = null;
+          for (const [agentId, timestamp] of updates.entries()) {
+            const current = prev.agentLastActivity.get(agentId);
+            if (current && current.getTime() >= timestamp.getTime()) {
+              continue;
+            }
+            if (!nextActivity) {
+              nextActivity = new Map(prev.agentLastActivity);
+            }
+            nextActivity.set(agentId, timestamp);
           }
           if (!nextActivity) {
-            nextActivity = new Map(prev.agentLastActivity);
-          }
-          nextActivity.set(agentId, timestamp);
-        }
-        if (!nextActivity) {
-          return prev;
-        }
-        return {
-          ...prev,
-          agentLastActivity: nextActivity,
-        };
-      });
-    };
-    agentLastActivityCoalescer.setCommitter(commitActivityUpdates);
-
-    return {
-      sessions: {},
-      agentLastActivity: new Map(),
-
-      // Session management
-      initializeSession: (serverId, client, clientGeneration) => {
-        set((prev) => {
-          if (prev.sessions[serverId]) {
             return prev;
           }
           return {
             ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: createInitialSessionState(serverId, client, clientGeneration),
-            },
-          };
-        });
-      },
-
-      clearSession: (serverId) => {
-        agentLastActivityCoalescer.flushNow();
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextSessions = { ...prev.sessions };
-          delete nextSessions[serverId];
-          let nextActivity = prev.agentLastActivity;
-          if (session.agents.size > 0 || session.agentDetails.size > 0) {
-            const candidate = new Map(prev.agentLastActivity);
-            let changed = false;
-            for (const agentId of new Set([
-              ...session.agents.keys(),
-              ...session.agentDetails.keys(),
-            ])) {
-              if (candidate.delete(agentId)) {
-                changed = true;
-              }
-              agentLastActivityCoalescer.deletePending(agentId);
-            }
-            if (changed) {
-              nextActivity = candidate;
-            }
-          }
-          return {
-            ...prev,
-            sessions: nextSessions,
             agentLastActivity: nextActivity,
           };
         });
-      },
+      };
+      agentLastActivityCoalescer.setCommitter(commitActivityUpdates);
 
-      updateSessionClient: (serverId, client, clientGeneration = 0) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
+      return {
+        sessions: {},
+        agentLastActivity: new Map(),
 
-          if (!session) {
-            return prev;
-          }
-
-          if (session.client === client && session.clientGeneration === clientGeneration) {
-            return prev;
-          }
-
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                client,
-                clientGeneration,
-              },
-            },
-          };
-        });
-      },
-
-      setViewedTimelineSync: (serverId, viewedTimelineSync) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.viewedTimelineSync === viewedTimelineSync) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, viewedTimelineSync },
-            },
-          };
-        });
-      },
-
-      updateSessionServerInfo: (serverId, info) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-
-          const nextHostname = info.hostname?.trim() || null;
-          const nextVersion = info.version?.trim() || null;
-          const nextDesktopManaged = info.desktopManaged;
-          const nextCapabilities = info.capabilities;
-          const nextFeatures = info.features;
-
-          if (
-            isSessionServerInfoUnchanged({
-              currentServerInfo: session.serverInfo,
-              nextHostname,
-              nextVersion,
-              nextDesktopManaged,
-              nextCapabilities,
-              nextFeatures,
-              nextServerId: info.serverId,
-            })
-          ) {
-            return prev;
-          }
-
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                serverInfo: {
-                  serverId: info.serverId,
-                  hostname: nextHostname,
-                  version: nextVersion,
-                  ...(nextDesktopManaged !== undefined
-                    ? { desktopManaged: nextDesktopManaged }
-                    : {}),
-                  ...(nextCapabilities ? { capabilities: nextCapabilities } : {}),
-                  ...(nextFeatures ? { features: nextFeatures } : {}),
-                },
-              },
-            },
-          };
-        });
-      },
-
-      getSession: (serverId) => {
-        return get().sessions[serverId];
-      },
-
-      // Audio state
-      setIsPlayingAudio: (serverId, playing) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.isPlayingAudio === playing) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, isPlayingAudio: playing },
-            },
-          };
-        });
-      },
-
-      // Focus
-      setFocusedAgentId: (serverId, agentId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.focusedAgentId === agentId) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                focusedAgentId: agentId,
-              },
-            },
-          };
-        });
-      },
-
-      setFocusedTerminalId: (serverId, terminalId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.focusedTerminalId === terminalId) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                focusedTerminalId: terminalId,
-              },
-            },
-          };
-        });
-      },
-
-      // Stream state (head/tail model)
-      setAgentStreamTail: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextState = typeof state === "function" ? state(session.agentStreamTail) : state;
-          if (session.agentStreamTail === nextState) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentStreamTail: nextState },
-            },
-          };
-        });
-      },
-
-      setAgentStreamHead: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextState = typeof state === "function" ? state(session.agentStreamHead) : state;
-          if (session.agentStreamHead === nextState) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentStreamHead: nextState },
-            },
-          };
-        });
-      },
-
-      setAgentStreamState: (serverId, agentId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-
-          let nextTail = session.agentStreamTail;
-          let nextHead = session.agentStreamHead;
-          let changedTail = false;
-          let changedHead = false;
-
-          if (state.tail !== undefined) {
-            const existingTail = session.agentStreamTail.get(agentId);
-            if (existingTail !== state.tail) {
-              nextTail = new Map(session.agentStreamTail);
-              nextTail.set(agentId, state.tail);
-              changedTail = true;
-            }
-          }
-
-          if (state.head !== undefined) {
-            const existingHead = session.agentStreamHead.get(agentId);
-            const shouldDeleteHead = state.head.length === 0;
-            if (shouldDeleteHead) {
-              if (session.agentStreamHead.has(agentId)) {
-                nextHead = new Map(session.agentStreamHead);
-                nextHead.delete(agentId);
-                changedHead = true;
-              }
-            } else if (existingHead !== state.head) {
-              nextHead = new Map(session.agentStreamHead);
-              nextHead.set(agentId, state.head);
-              changedHead = true;
-            }
-          }
-
-          const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
-          const observedSubmissions = observeMessageSubmissionCanonical(
-            currentSubmissions,
-            state.acknowledgedClientMessageIds ?? [],
-          );
-          const changedSubmissions = observedSubmissions !== currentSubmissions;
-          const agentTasks = updateAgentTasks(session.agentTasks, agentId, state.taskSnapshot);
-          const changedTasks = agentTasks !== session.agentTasks;
-
-          if (!changedTail && !changedHead && !changedSubmissions && !changedTasks) {
-            return prev;
-          }
-
-          let messageSubmissions = session.messageSubmissions;
-          if (changedSubmissions) {
-            messageSubmissions = new Map(session.messageSubmissions);
-            if (observedSubmissions.length > 0) {
-              messageSubmissions.set(agentId, observedSubmissions);
-            } else {
-              messageSubmissions.delete(agentId);
-            }
-          }
-
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agentStreamTail: nextTail,
-                agentStreamHead: nextHead,
-                agentTasks,
-                messageSubmissions,
-              },
-            },
-          };
-        });
-      },
-
-      beginAgentMessageSubmission: (serverId, agentId, message) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) return prev;
-          if (!message.clientMessageId) {
-            throw new Error("Beginning a message submission requires client identity");
-          }
-          const currentTail = session.agentStreamTail.get(agentId) ?? [];
-          const currentHead = session.agentStreamHead.get(agentId) ?? [];
-          const stream = appendSubmittedUserMessage({
-            tail: currentTail,
-            head: currentHead,
-            message,
-          });
-          const submissions = beginMessageSubmission(
-            session.messageSubmissions.get(agentId) ?? [],
-            { clientMessageId: message.clientMessageId },
-          );
-          const messageSubmissions = new Map(session.messageSubmissions);
-          messageSubmissions.set(agentId, submissions);
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agentStreamTail:
-                  stream.tail === currentTail
-                    ? session.agentStreamTail
-                    : new Map(session.agentStreamTail).set(agentId, stream.tail),
-                agentStreamHead:
-                  stream.head === currentHead
-                    ? session.agentStreamHead
-                    : new Map(session.agentStreamHead).set(agentId, stream.head),
-                messageSubmissions,
-              },
-            },
-          };
-        });
-      },
-
-      acceptAgentMessageSubmission: (serverId, agentId, clientMessageId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) return prev;
-          const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
-          const submissions = acceptMessageSubmission(currentSubmissions, clientMessageId);
-          if (submissions === currentSubmissions) return prev;
-          const messageSubmissions = new Map(session.messageSubmissions);
-          if (submissions.length > 0) {
-            messageSubmissions.set(agentId, submissions);
-          } else {
-            messageSubmissions.delete(agentId);
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, messageSubmissions },
-            },
-          };
-        });
-      },
-
-      rejectAgentMessageSubmission: (serverId, agentId, clientMessageId) => {
-        let outcome: MessageSubmissionRejectionOutcome = "unknown";
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) return prev;
-          const currentTail = session.agentStreamTail.get(agentId) ?? [];
-          const currentHead = session.agentStreamHead.get(agentId) ?? [];
-          const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
-          const result = rejectMessageSubmission(currentSubmissions, clientMessageId);
-          outcome = result.outcome;
-          if (outcome === "unknown") return prev;
-          const stream =
-            outcome === "rejected"
-              ? removeSubmittedUserMessage({
-                  tail: currentTail,
-                  head: currentHead,
-                  clientMessageId,
-                })
-              : { tail: currentTail, head: currentHead };
-          const messageSubmissions = new Map(session.messageSubmissions);
-          if (result.submissions.length > 0) {
-            messageSubmissions.set(agentId, result.submissions);
-          } else {
-            messageSubmissions.delete(agentId);
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agentStreamTail:
-                  stream.tail === currentTail
-                    ? session.agentStreamTail
-                    : new Map(session.agentStreamTail).set(agentId, stream.tail),
-                agentStreamHead:
-                  stream.head === currentHead
-                    ? session.agentStreamHead
-                    : new Map(session.agentStreamHead).set(agentId, stream.head),
-                messageSubmissions,
-              },
-            },
-          };
-        });
-        return outcome;
-      },
-
-      handoffCreatedAgentUserMessage: (serverId, agentId, message) => {
-        let didHandoff = false;
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-
-          const currentTail = session.agentStreamTail.get(agentId) ?? [];
-          const currentHead = session.agentStreamHead.get(agentId) ?? [];
-          const result = handoffCreatedAgentUserMessageToStream({
-            tail: currentTail,
-            head: currentHead,
-            message,
-          });
-          if (!result.changedTail && !result.changedHead) {
-            return prev;
-          }
-
-          const nextTail = result.changedTail
-            ? new Map(session.agentStreamTail).set(agentId, result.tail)
-            : session.agentStreamTail;
-          const nextHead = result.changedHead
-            ? new Map(session.agentStreamHead).set(agentId, result.head)
-            : session.agentStreamHead;
-          didHandoff = true;
-
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agentStreamTail: nextTail,
-                agentStreamHead: nextHead,
-              },
-            },
-          };
-        });
-        return didHandoff;
-      },
-
-      clearAgentStreamHead: (serverId, agentId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          if (!session.agentStreamHead.has(agentId)) {
-            return prev;
-          }
-          const nextHead = new Map(session.agentStreamHead);
-          nextHead.delete(agentId);
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentStreamHead: nextHead },
-            },
-          };
-        });
-      },
-
-      setAgentTimelineCursor: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextState =
-            typeof state === "function" ? state(session.agentTimelineCursor) : state;
-          if (session.agentTimelineCursor === nextState) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentTimelineCursor: nextState },
-            },
-          };
-        });
-      },
-
-      setAgentTimelineHasOlder: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextState =
-            typeof state === "function" ? state(session.agentTimelineHasOlder) : state;
-          if (session.agentTimelineHasOlder === nextState) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentTimelineHasOlder: nextState },
-            },
-          };
-        });
-      },
-
-      setAgentTimelineHasNewer: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) return prev;
-          const nextState =
-            typeof state === "function" ? state(session.agentTimelineHasNewer) : state;
-          if (session.agentTimelineHasNewer === nextState) return prev;
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentTimelineHasNewer: nextState },
-            },
-          };
-        });
-      },
-
-      setAgentTimelineOlderFetchInFlight: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextState =
-            typeof state === "function" ? state(session.agentTimelineOlderFetchInFlight) : state;
-          if (session.agentTimelineOlderFetchInFlight === nextState) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentTimelineOlderFetchInFlight: nextState },
-            },
-          };
-        });
-      },
-
-      bumpHistorySyncGeneration: (serverId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextGeneration = session.historySyncGeneration + 1;
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                historySyncGeneration: nextGeneration,
-              },
-            },
-          };
-        });
-      },
-
-      markAgentHistorySynchronized: (serverId, agentId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const currentGeneration = session.historySyncGeneration;
-          const previousGeneration = session.agentHistorySyncGeneration.get(agentId);
-          if (previousGeneration === currentGeneration) {
-            return prev;
-          }
-          const nextMap = new Map(session.agentHistorySyncGeneration);
-          nextMap.set(agentId, currentGeneration);
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agentHistorySyncGeneration: nextMap,
-              },
-            },
-          };
-        });
-      },
-
-      setAgentAuthoritativeHistoryApplied: (serverId, agentId, applied) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-
-          const previousApplied = session.agentAuthoritativeHistoryApplied.get(agentId) ?? false;
-          if (previousApplied === applied) {
-            return prev;
-          }
-
-          const nextApplied = new Map(session.agentAuthoritativeHistoryApplied);
-          if (applied) {
-            nextApplied.set(agentId, true);
-          } else {
-            nextApplied.delete(agentId);
-          }
-
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agentAuthoritativeHistoryApplied: nextApplied,
-              },
-            },
-          };
-        });
-      },
-
-      applyAgentTimelineResponseState: (serverId, agentId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) return prev;
-
-          const nextTail = new Map(session.agentStreamTail);
-          nextTail.set(agentId, state.items);
-          const nextHead = new Map(session.agentStreamHead);
-          if (state.head.length > 0) nextHead.set(agentId, state.head);
-          else nextHead.delete(agentId);
-          const nextCursor = new Map(session.agentTimelineCursor);
-          if (state.range) nextCursor.set(agentId, state.range);
-          else nextCursor.delete(agentId);
-          const nextHasOlder = new Map(session.agentTimelineHasOlder);
-          if (state.older !== "unchanged") {
-            nextHasOlder.set(agentId, state.older === "available");
-          }
-          const nextHasNewer = new Map(session.agentTimelineHasNewer);
-          nextHasNewer.set(agentId, state.newer);
-          const nextAuthoritative = new Map(session.agentAuthoritativeHistoryApplied);
-          const nextSyncGeneration = new Map(session.agentHistorySyncGeneration);
-          const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
-          const observedSubmissions = observeMessageSubmissionCanonical(
-            currentSubmissions,
-            state.acknowledgedClientMessageIds,
-          );
-          let messageSubmissions = session.messageSubmissions;
-          if (observedSubmissions !== currentSubmissions) {
-            messageSubmissions = new Map(session.messageSubmissions);
-            if (observedSubmissions.length > 0) {
-              messageSubmissions.set(agentId, observedSubmissions);
-            } else {
-              messageSubmissions.delete(agentId);
-            }
-          }
-          if (state.synchronized) {
-            nextAuthoritative.set(agentId, true);
-            nextSyncGeneration.set(agentId, session.historySyncGeneration);
-          }
-          const tasks = latestTasksFromStream([...state.items, ...state.head]);
-          const agentTasks = new Map(session.agentTasks);
-          if (tasks.length > 0) agentTasks.set(agentId, tasks);
-          else agentTasks.delete(agentId);
-
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agentStreamTail: nextTail,
-                agentStreamHead: nextHead,
-                agentTasks,
-                agentTimelineCursor: nextCursor,
-                agentTimelineHasOlder: nextHasOlder,
-                agentTimelineHasNewer: nextHasNewer,
-                agentAuthoritativeHistoryApplied: nextAuthoritative,
-                agentHistorySyncGeneration: nextSyncGeneration,
-                messageSubmissions,
-              },
-            },
-          };
-        });
-      },
-
-      // Initializing agents
-      setInitializingAgents: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextState = typeof state === "function" ? state(session.initializingAgents) : state;
-          if (session.initializingAgents === nextState) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, initializingAgents: nextState },
-            },
-          };
-        });
-      },
-
-      // Agents
-      setAgents: (serverId, agents) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextAgents = typeof agents === "function" ? agents(session.agents) : agents;
-          if (session.agents === nextAgents) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                agents: nextAgents,
-                workspaceAgentActivity: buildWorkspaceAgentActivityIndex(
-                  nextAgents,
-                  session.workspaceAgentActivity,
-                ),
-              },
-            },
-          };
-        });
-      },
-
-      setAgentDetails: (serverId, agents) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextAgents = typeof agents === "function" ? agents(session.agentDetails) : agents;
-          if (session.agentDetails === nextAgents) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, agentDetails: nextAgents },
-            },
-          };
-        });
-      },
-
-      setWorkspaces: (serverId, workspaces) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextWorkspaces =
-            typeof workspaces === "function" ? workspaces(session.workspaces) : workspaces;
-          const preservedWorkspaces = preserveMapIdentity(session.workspaces, nextWorkspaces);
-          if (session.workspaces === preservedWorkspaces) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, workspaces: preservedWorkspaces },
-            },
-          };
-        });
-      },
-
-      setProjects: (serverId, projects) => {
-        const next = new Map<string, ProjectDescriptor>();
-        for (const project of projects) next.set(project.projectId, project);
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) return prev;
-          const preservedProjects = preserveMapIdentity(session.projects, next);
-          if (session.projects === preservedProjects) return prev;
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, projects: preservedProjects },
-            },
-          };
-        });
-      },
-
-      upsertProject: (serverId, project) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || equal(session.projects.get(project.projectId), project)) return prev;
-          const projects = new Map(session.projects);
-          projects.set(project.projectId, project);
-          return {
-            ...prev,
-            sessions: { ...prev.sessions, [serverId]: { ...session, projects } },
-          };
-        });
-      },
-
-      removeProject: (serverId, projectId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session?.projects.has(projectId)) return prev;
-          const projects = new Map(session.projects);
-          projects.delete(projectId);
-          return {
-            ...prev,
-            sessions: { ...prev.sessions, [serverId]: { ...session, projects } },
-          };
-        });
-      },
-
-      setWorkspaceRestoreStatus: (serverId, workspaceId, status) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          if (session.restoringWorkspaces.get(workspaceId) === status) {
-            return prev;
-          }
-          // A late dir-gone timeout must not override a successful restore:
-          // only mark failed while still restoring and the descriptor is absent.
-          if (
-            status === "failed" &&
-            (session.restoringWorkspaces.get(workspaceId) !== "restoring" ||
-              session.workspaces.has(workspaceId))
-          ) {
-            return prev;
-          }
-          const next = new Map(session.restoringWorkspaces);
-          next.set(workspaceId, status);
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, restoringWorkspaces: next },
-            },
-          };
-        });
-      },
-
-      clearWorkspaceRestoreStatus: (serverId, workspaceId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || !session.restoringWorkspaces.has(workspaceId)) {
-            return prev;
-          }
-          const next = new Map(session.restoringWorkspaces);
-          next.delete(workspaceId);
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, restoringWorkspaces: next },
-            },
-          };
-        });
-      },
-
-      mergeWorkspaces: (serverId, workspaces) => {
-        const nextEntries = Array.from(workspaces);
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || nextEntries.length === 0) {
-            return prev;
-          }
-          const next = new Map(session.workspaces);
-          let changed = false;
-          // A descriptor arriving is the success signal for a pending restore:
-          // clear it at the source so every entry point converges to "ready".
-          let nextRestoring: Map<string, WorkspaceRestoreStatus> | null = null;
-          for (const workspace of nextEntries) {
-            if (session.restoringWorkspaces.has(workspace.id)) {
-              nextRestoring ??= new Map(session.restoringWorkspaces);
-              nextRestoring.delete(workspace.id);
-              changed = true;
-            }
-            const existing = next.get(workspace.id);
-            const nextWorkspace = preserveWorkspaceDescriptorIdentity(workspace, existing);
-            if (existing === nextWorkspace) {
-              continue;
-            }
-            next.set(workspace.id, nextWorkspace);
-            changed = true;
-          }
-          if (!changed) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: {
-                ...session,
-                workspaces: next,
-                restoringWorkspaces: nextRestoring ?? session.restoringWorkspaces,
-              },
-            },
-          };
-        });
-      },
-
-      removeWorkspace: (serverId, workspaceId) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          const workspaceKey = resolveWorkspaceMapKeyByIdentity({
-            workspaces: session?.workspaces,
-            workspaceId,
-          });
-          if (!session || !workspaceKey) {
-            return prev;
-          }
-          const next = new Map(session.workspaces);
-          next.delete(workspaceKey);
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, workspaces: next },
-            },
-          };
-        });
-      },
-
-      // Agent activity timestamps (top-level, does NOT mutate session object)
-      setAgentLastActivity: (agentId, timestamp) => {
-        agentLastActivityCoalescer.enqueue(agentId, timestamp);
-      },
-
-      setAgentLastActivityBatch: (updates) => {
-        set((prev) => {
-          const nextActivity =
-            typeof updates === "function" ? updates(prev.agentLastActivity) : updates;
-          if (nextActivity === prev.agentLastActivity) {
-            return prev;
-          }
-          if (nextActivity.size === 0) {
-            if (prev.agentLastActivity.size === 0) {
+        // Session management
+        initializeSession: (serverId, client, clientGeneration) => {
+          set((prev) => {
+            if (prev.sessions[serverId]) {
               return prev;
             }
             return {
               ...prev,
-              agentLastActivity: new Map(),
+              sessions: {
+                ...prev.sessions,
+                [serverId]: createInitialSessionState(serverId, client, clientGeneration),
+              },
             };
-          }
-          let changed = false;
-          for (const [agentId, timestamp] of nextActivity.entries()) {
-            const currentTimestamp = prev.agentLastActivity.get(agentId);
-            if (!currentTimestamp || currentTimestamp.getTime() !== timestamp.getTime()) {
-              changed = true;
-              break;
-            }
-          }
-          if (!changed && nextActivity.size === prev.agentLastActivity.size) {
-            return prev;
-          }
-          return {
-            ...prev,
-            agentLastActivity: new Map(nextActivity),
-          };
-        });
-      },
-
-      flushAgentLastActivity: () => {
-        agentLastActivityCoalescer.flushNow();
-      },
-
-      // Permissions
-      setPendingPermissions: (serverId, perms) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextPerms = typeof perms === "function" ? perms(session.pendingPermissions) : perms;
-          if (session.pendingPermissions === nextPerms) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, pendingPermissions: nextPerms },
-            },
-          };
-        });
-      },
-
-      // File explorer
-      setFileExplorer: (serverId, state) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextState = typeof state === "function" ? state(session.fileExplorer) : state;
-          if (session.fileExplorer === nextState) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, fileExplorer: nextState },
-            },
-          };
-        });
-      },
-
-      // Queued messages
-      setQueuedMessages: (serverId, value) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session) {
-            return prev;
-          }
-          const nextValue = typeof value === "function" ? value(session.queuedMessages) : value;
-          if (session.queuedMessages === nextValue) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, queuedMessages: nextValue },
-            },
-          };
-        });
-      },
-
-      // Hydration
-      setHasHydratedAgents: (serverId, hydrated) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.hasHydratedAgents === hydrated) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, hasHydratedAgents: hydrated },
-            },
-          };
-        });
-      },
-
-      setHasHydratedWorkspaces: (serverId, hydrated) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.hasHydratedWorkspaces === hydrated) {
-            return prev;
-          }
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, hasHydratedWorkspaces: hydrated },
-            },
-          };
-        });
-      },
-
-      setHasWorkspaceDirectorySnapshot: (serverId, available) => {
-        set((prev) => {
-          const session = prev.sessions[serverId];
-          if (!session || session.hasWorkspaceDirectorySnapshot === available) return prev;
-          return {
-            ...prev,
-            sessions: {
-              ...prev.sessions,
-              [serverId]: { ...session, hasWorkspaceDirectorySnapshot: available },
-            },
-          };
-        });
-      },
-
-      // Agent directory - derived from agents (computed on-demand)
-      getAgentDirectory: (serverId) => {
-        const state = get();
-        const session = state.sessions[serverId];
-        if (!session) {
-          return undefined;
-        }
-
-        const entries: AgentDirectoryEntry[] = [];
-        for (const agent of session.agents.values()) {
-          // Get lastActivityAt from top-level slice, fallback to agent.lastActivityAt
-          const lastActivityAt = state.agentLastActivity.get(agent.id) ?? agent.lastActivityAt;
-          entries.push({
-            id: agent.id,
-            serverId,
-            title: agent.title ?? null,
-            status: agent.status,
-            turn: agent.turn,
-            lastActivityAt,
-            cwd: agent.cwd,
-            provider: agent.provider,
-            pendingPermissionCount: agent.pendingPermissions.length,
-            requiresAttention: agent.requiresAttention ?? false,
-            attentionReason: agent.attentionReason ?? null,
-            attentionTimestamp: agent.attentionTimestamp ?? null,
-            createdAt: agent.createdAt,
-            labels: agent.labels,
           });
-        }
-        return entries;
-      },
-    };
-  }),
-);
+        },
+
+        clearSession: (serverId) => {
+          agentLastActivityCoalescer.flushNow();
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextSessions = { ...prev.sessions };
+            delete nextSessions[serverId];
+            let nextActivity = prev.agentLastActivity;
+            if (session.agents.size > 0 || session.agentDetails.size > 0) {
+              const candidate = new Map(prev.agentLastActivity);
+              let changed = false;
+              for (const agentId of new Set([
+                ...session.agents.keys(),
+                ...session.agentDetails.keys(),
+              ])) {
+                if (candidate.delete(agentId)) {
+                  changed = true;
+                }
+                agentLastActivityCoalescer.deletePending(agentId);
+              }
+              if (changed) {
+                nextActivity = candidate;
+              }
+            }
+            return {
+              ...prev,
+              sessions: nextSessions,
+              agentLastActivity: nextActivity,
+            };
+          });
+        },
+
+        updateSessionClient: (serverId, client, clientGeneration = 0) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+
+            if (!session) {
+              return prev;
+            }
+
+            if (session.client === client && session.clientGeneration === clientGeneration) {
+              return prev;
+            }
+
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  client,
+                  clientGeneration,
+                },
+              },
+            };
+          });
+        },
+
+        setViewedTimelineSync: (serverId, viewedTimelineSync) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || session.viewedTimelineSync === viewedTimelineSync) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, viewedTimelineSync },
+              },
+            };
+          });
+        },
+
+        updateSessionServerInfo: (serverId, info) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+
+            const nextHostname = info.hostname?.trim() || null;
+            const nextVersion = info.version?.trim() || null;
+            const nextDesktopManaged = info.desktopManaged;
+            const nextCapabilities = info.capabilities;
+            const nextFeatures = info.features;
+
+            if (
+              isSessionServerInfoUnchanged({
+                currentServerInfo: session.serverInfo,
+                nextHostname,
+                nextVersion,
+                nextDesktopManaged,
+                nextCapabilities,
+                nextFeatures,
+                nextServerId: info.serverId,
+              })
+            ) {
+              return prev;
+            }
+
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  serverInfo: {
+                    serverId: info.serverId,
+                    hostname: nextHostname,
+                    version: nextVersion,
+                    ...(nextDesktopManaged !== undefined
+                      ? { desktopManaged: nextDesktopManaged }
+                      : {}),
+                    ...(nextCapabilities ? { capabilities: nextCapabilities } : {}),
+                    ...(nextFeatures ? { features: nextFeatures } : {}),
+                  },
+                },
+              },
+            };
+          });
+        },
+
+        getSession: (serverId) => {
+          return get().sessions[serverId];
+        },
+
+        // Audio state
+        setIsPlayingAudio: (serverId, playing) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || session.isPlayingAudio === playing) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, isPlayingAudio: playing },
+              },
+            };
+          });
+        },
+
+        // Focus
+        setFocusedAgentId: (serverId, agentId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || session.focusedAgentId === agentId) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  focusedAgentId: agentId,
+                },
+              },
+            };
+          });
+        },
+
+        setFocusedTerminalId: (serverId, terminalId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || session.focusedTerminalId === terminalId) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  focusedTerminalId: terminalId,
+                },
+              },
+            };
+          });
+        },
+
+        // Stream state (head/tail model)
+        setAgentStreamTail: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextState = typeof state === "function" ? state(session.agentStreamTail) : state;
+            if (session.agentStreamTail === nextState) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentStreamTail: nextState },
+              },
+            };
+          });
+        },
+
+        setAgentStreamHead: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextState = typeof state === "function" ? state(session.agentStreamHead) : state;
+            if (session.agentStreamHead === nextState) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentStreamHead: nextState },
+              },
+            };
+          });
+        },
+
+        setAgentStreamState: (serverId, agentId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+
+            let nextTail = session.agentStreamTail;
+            let nextHead = session.agentStreamHead;
+            let changedTail = false;
+            let changedHead = false;
+
+            if (state.tail !== undefined) {
+              const existingTail = session.agentStreamTail.get(agentId);
+              if (existingTail !== state.tail) {
+                nextTail = new Map(session.agentStreamTail);
+                nextTail.set(agentId, state.tail);
+                changedTail = true;
+              }
+            }
+
+            if (state.head !== undefined) {
+              const existingHead = session.agentStreamHead.get(agentId);
+              const shouldDeleteHead = state.head.length === 0;
+              if (shouldDeleteHead) {
+                if (session.agentStreamHead.has(agentId)) {
+                  nextHead = new Map(session.agentStreamHead);
+                  nextHead.delete(agentId);
+                  changedHead = true;
+                }
+              } else if (existingHead !== state.head) {
+                nextHead = new Map(session.agentStreamHead);
+                nextHead.set(agentId, state.head);
+                changedHead = true;
+              }
+            }
+
+            const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
+            const observedSubmissions = observeMessageSubmissionCanonical(
+              currentSubmissions,
+              state.acknowledgedClientMessageIds ?? [],
+            );
+            const changedSubmissions = observedSubmissions !== currentSubmissions;
+            const agentTasks = updateAgentTasks(session.agentTasks, agentId, state.taskSnapshot);
+            const changedTasks = agentTasks !== session.agentTasks;
+
+            if (!changedTail && !changedHead && !changedSubmissions && !changedTasks) {
+              return prev;
+            }
+
+            let messageSubmissions = session.messageSubmissions;
+            if (changedSubmissions) {
+              messageSubmissions = new Map(session.messageSubmissions);
+              if (observedSubmissions.length > 0) {
+                messageSubmissions.set(agentId, observedSubmissions);
+              } else {
+                messageSubmissions.delete(agentId);
+              }
+            }
+
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agentStreamTail: nextTail,
+                  agentStreamHead: nextHead,
+                  agentTasks,
+                  messageSubmissions,
+                },
+              },
+            };
+          });
+        },
+
+        beginAgentMessageSubmission: (serverId, agentId, message) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) return prev;
+            if (!message.clientMessageId) {
+              throw new Error("Beginning a message submission requires client identity");
+            }
+            const currentTail = session.agentStreamTail.get(agentId) ?? [];
+            const currentHead = session.agentStreamHead.get(agentId) ?? [];
+            const stream = appendSubmittedUserMessage({
+              tail: currentTail,
+              head: currentHead,
+              message,
+            });
+            const submissions = beginMessageSubmission(
+              session.messageSubmissions.get(agentId) ?? [],
+              { clientMessageId: message.clientMessageId },
+            );
+            const messageSubmissions = new Map(session.messageSubmissions);
+            messageSubmissions.set(agentId, submissions);
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agentStreamTail:
+                    stream.tail === currentTail
+                      ? session.agentStreamTail
+                      : new Map(session.agentStreamTail).set(agentId, stream.tail),
+                  agentStreamHead:
+                    stream.head === currentHead
+                      ? session.agentStreamHead
+                      : new Map(session.agentStreamHead).set(agentId, stream.head),
+                  messageSubmissions,
+                },
+              },
+            };
+          });
+        },
+
+        acceptAgentMessageSubmission: (serverId, agentId, clientMessageId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) return prev;
+            const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
+            const submissions = acceptMessageSubmission(currentSubmissions, clientMessageId);
+            if (submissions === currentSubmissions) return prev;
+            const messageSubmissions = new Map(session.messageSubmissions);
+            if (submissions.length > 0) {
+              messageSubmissions.set(agentId, submissions);
+            } else {
+              messageSubmissions.delete(agentId);
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, messageSubmissions },
+              },
+            };
+          });
+        },
+
+        rejectAgentMessageSubmission: (serverId, agentId, clientMessageId) => {
+          let outcome: MessageSubmissionRejectionOutcome = "unknown";
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) return prev;
+            const currentTail = session.agentStreamTail.get(agentId) ?? [];
+            const currentHead = session.agentStreamHead.get(agentId) ?? [];
+            const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
+            const result = rejectMessageSubmission(currentSubmissions, clientMessageId);
+            outcome = result.outcome;
+            if (outcome === "unknown") return prev;
+            const stream =
+              outcome === "rejected"
+                ? removeSubmittedUserMessage({
+                    tail: currentTail,
+                    head: currentHead,
+                    clientMessageId,
+                  })
+                : { tail: currentTail, head: currentHead };
+            const messageSubmissions = new Map(session.messageSubmissions);
+            if (result.submissions.length > 0) {
+              messageSubmissions.set(agentId, result.submissions);
+            } else {
+              messageSubmissions.delete(agentId);
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agentStreamTail:
+                    stream.tail === currentTail
+                      ? session.agentStreamTail
+                      : new Map(session.agentStreamTail).set(agentId, stream.tail),
+                  agentStreamHead:
+                    stream.head === currentHead
+                      ? session.agentStreamHead
+                      : new Map(session.agentStreamHead).set(agentId, stream.head),
+                  messageSubmissions,
+                },
+              },
+            };
+          });
+          return outcome;
+        },
+
+        handoffCreatedAgentUserMessage: (serverId, agentId, message) => {
+          let didHandoff = false;
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+
+            const currentTail = session.agentStreamTail.get(agentId) ?? [];
+            const currentHead = session.agentStreamHead.get(agentId) ?? [];
+            const result = handoffCreatedAgentUserMessageToStream({
+              tail: currentTail,
+              head: currentHead,
+              message,
+            });
+            if (!result.changedTail && !result.changedHead) {
+              return prev;
+            }
+
+            const nextTail = result.changedTail
+              ? new Map(session.agentStreamTail).set(agentId, result.tail)
+              : session.agentStreamTail;
+            const nextHead = result.changedHead
+              ? new Map(session.agentStreamHead).set(agentId, result.head)
+              : session.agentStreamHead;
+            didHandoff = true;
+
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agentStreamTail: nextTail,
+                  agentStreamHead: nextHead,
+                },
+              },
+            };
+          });
+          return didHandoff;
+        },
+
+        clearAgentStreamHead: (serverId, agentId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            if (!session.agentStreamHead.has(agentId)) {
+              return prev;
+            }
+            const nextHead = new Map(session.agentStreamHead);
+            nextHead.delete(agentId);
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentStreamHead: nextHead },
+              },
+            };
+          });
+        },
+
+        setAgentTimelineCursor: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextState =
+              typeof state === "function" ? state(session.agentTimelineCursor) : state;
+            if (session.agentTimelineCursor === nextState) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentTimelineCursor: nextState },
+              },
+            };
+          });
+        },
+
+        setAgentTimelineHasOlder: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextState =
+              typeof state === "function" ? state(session.agentTimelineHasOlder) : state;
+            if (session.agentTimelineHasOlder === nextState) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentTimelineHasOlder: nextState },
+              },
+            };
+          });
+        },
+
+        setAgentTimelineHasNewer: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) return prev;
+            const nextState =
+              typeof state === "function" ? state(session.agentTimelineHasNewer) : state;
+            if (session.agentTimelineHasNewer === nextState) return prev;
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentTimelineHasNewer: nextState },
+              },
+            };
+          });
+        },
+
+        setAgentTimelineOlderFetchInFlight: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextState =
+              typeof state === "function" ? state(session.agentTimelineOlderFetchInFlight) : state;
+            if (session.agentTimelineOlderFetchInFlight === nextState) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentTimelineOlderFetchInFlight: nextState },
+              },
+            };
+          });
+        },
+
+        bumpHistorySyncGeneration: (serverId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextGeneration = session.historySyncGeneration + 1;
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  historySyncGeneration: nextGeneration,
+                },
+              },
+            };
+          });
+        },
+
+        markAgentHistorySynchronized: (serverId, agentId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const currentGeneration = session.historySyncGeneration;
+            const previousGeneration = session.agentHistorySyncGeneration.get(agentId);
+            if (previousGeneration === currentGeneration) {
+              return prev;
+            }
+            const nextMap = new Map(session.agentHistorySyncGeneration);
+            nextMap.set(agentId, currentGeneration);
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agentHistorySyncGeneration: nextMap,
+                },
+              },
+            };
+          });
+        },
+
+        setAgentAuthoritativeHistoryApplied: (serverId, agentId, applied) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+
+            const previousApplied = session.agentAuthoritativeHistoryApplied.get(agentId) ?? false;
+            if (previousApplied === applied) {
+              return prev;
+            }
+
+            const nextApplied = new Map(session.agentAuthoritativeHistoryApplied);
+            if (applied) {
+              nextApplied.set(agentId, true);
+            } else {
+              nextApplied.delete(agentId);
+            }
+
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agentAuthoritativeHistoryApplied: nextApplied,
+                },
+              },
+            };
+          });
+        },
+
+        applyAgentTimelineResponseState: (serverId, agentId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) return prev;
+
+            const nextTail = new Map(session.agentStreamTail);
+            nextTail.set(agentId, state.items);
+            const nextHead = new Map(session.agentStreamHead);
+            if (state.head.length > 0) nextHead.set(agentId, state.head);
+            else nextHead.delete(agentId);
+            const nextCursor = new Map(session.agentTimelineCursor);
+            if (state.range) nextCursor.set(agentId, state.range);
+            else nextCursor.delete(agentId);
+            const nextHasOlder = new Map(session.agentTimelineHasOlder);
+            if (state.older !== "unchanged") {
+              nextHasOlder.set(agentId, state.older === "available");
+            }
+            const nextHasNewer = new Map(session.agentTimelineHasNewer);
+            nextHasNewer.set(agentId, state.newer);
+            const nextAuthoritative = new Map(session.agentAuthoritativeHistoryApplied);
+            const nextSyncGeneration = new Map(session.agentHistorySyncGeneration);
+            const currentSubmissions = session.messageSubmissions.get(agentId) ?? [];
+            const observedSubmissions = observeMessageSubmissionCanonical(
+              currentSubmissions,
+              state.acknowledgedClientMessageIds,
+            );
+            let messageSubmissions = session.messageSubmissions;
+            if (observedSubmissions !== currentSubmissions) {
+              messageSubmissions = new Map(session.messageSubmissions);
+              if (observedSubmissions.length > 0) {
+                messageSubmissions.set(agentId, observedSubmissions);
+              } else {
+                messageSubmissions.delete(agentId);
+              }
+            }
+            if (state.synchronized) {
+              nextAuthoritative.set(agentId, true);
+              nextSyncGeneration.set(agentId, session.historySyncGeneration);
+            }
+            const tasks = latestTasksFromStream([...state.items, ...state.head]);
+            const agentTasks = new Map(session.agentTasks);
+            if (tasks.length > 0) agentTasks.set(agentId, tasks);
+            else agentTasks.delete(agentId);
+
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agentStreamTail: nextTail,
+                  agentStreamHead: nextHead,
+                  agentTasks,
+                  agentTimelineCursor: nextCursor,
+                  agentTimelineHasOlder: nextHasOlder,
+                  agentTimelineHasNewer: nextHasNewer,
+                  agentAuthoritativeHistoryApplied: nextAuthoritative,
+                  agentHistorySyncGeneration: nextSyncGeneration,
+                  messageSubmissions,
+                },
+              },
+            };
+          });
+        },
+
+        // Initializing agents
+        setInitializingAgents: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextState =
+              typeof state === "function" ? state(session.initializingAgents) : state;
+            if (session.initializingAgents === nextState) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, initializingAgents: nextState },
+              },
+            };
+          });
+        },
+
+        // Agents
+        setAgents: (serverId, agents) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextAgents = typeof agents === "function" ? agents(session.agents) : agents;
+            if (session.agents === nextAgents) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  agents: nextAgents,
+                  workspaceAgentActivity: buildWorkspaceAgentActivityIndex(
+                    nextAgents,
+                    session.workspaceAgentActivity,
+                  ),
+                },
+              },
+            };
+          });
+        },
+
+        setAgentDetails: (serverId, agents) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextAgents = typeof agents === "function" ? agents(session.agentDetails) : agents;
+            if (session.agentDetails === nextAgents) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, agentDetails: nextAgents },
+              },
+            };
+          });
+        },
+
+        setWorkspaces: (serverId, workspaces) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextWorkspaces =
+              typeof workspaces === "function" ? workspaces(session.workspaces) : workspaces;
+            const preservedWorkspaces = preserveMapIdentity(session.workspaces, nextWorkspaces);
+            if (session.workspaces === preservedWorkspaces) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, workspaces: preservedWorkspaces },
+              },
+            };
+          });
+        },
+
+        setProjects: (serverId, projects) => {
+          const next = new Map<string, ProjectDescriptor>();
+          for (const project of projects) next.set(project.projectId, project);
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) return prev;
+            const preservedProjects = preserveMapIdentity(session.projects, next);
+            if (session.projects === preservedProjects) return prev;
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, projects: preservedProjects },
+              },
+            };
+          });
+        },
+
+        upsertProject: (serverId, project) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || equal(session.projects.get(project.projectId), project)) return prev;
+            const projects = new Map(session.projects);
+            projects.set(project.projectId, project);
+            return {
+              ...prev,
+              sessions: { ...prev.sessions, [serverId]: { ...session, projects } },
+            };
+          });
+        },
+
+        removeProject: (serverId, projectId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session?.projects.has(projectId)) return prev;
+            const projects = new Map(session.projects);
+            projects.delete(projectId);
+            return {
+              ...prev,
+              sessions: { ...prev.sessions, [serverId]: { ...session, projects } },
+            };
+          });
+        },
+
+        setWorkspaceRestoreStatus: (serverId, workspaceId, status) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            if (session.restoringWorkspaces.get(workspaceId) === status) {
+              return prev;
+            }
+            // A late dir-gone timeout must not override a successful restore:
+            // only mark failed while still restoring and the descriptor is absent.
+            if (
+              status === "failed" &&
+              (session.restoringWorkspaces.get(workspaceId) !== "restoring" ||
+                session.workspaces.has(workspaceId))
+            ) {
+              return prev;
+            }
+            const next = new Map(session.restoringWorkspaces);
+            next.set(workspaceId, status);
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, restoringWorkspaces: next },
+              },
+            };
+          });
+        },
+
+        clearWorkspaceRestoreStatus: (serverId, workspaceId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || !session.restoringWorkspaces.has(workspaceId)) {
+              return prev;
+            }
+            const next = new Map(session.restoringWorkspaces);
+            next.delete(workspaceId);
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, restoringWorkspaces: next },
+              },
+            };
+          });
+        },
+
+        mergeWorkspaces: (serverId, workspaces) => {
+          const nextEntries = Array.from(workspaces);
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || nextEntries.length === 0) {
+              return prev;
+            }
+            const next = new Map(session.workspaces);
+            let changed = false;
+            // A descriptor arriving is the success signal for a pending restore:
+            // clear it at the source so every entry point converges to "ready".
+            let nextRestoring: Map<string, WorkspaceRestoreStatus> | null = null;
+            for (const workspace of nextEntries) {
+              if (session.restoringWorkspaces.has(workspace.id)) {
+                nextRestoring ??= new Map(session.restoringWorkspaces);
+                nextRestoring.delete(workspace.id);
+                changed = true;
+              }
+              const existing = next.get(workspace.id);
+              const nextWorkspace = preserveWorkspaceDescriptorIdentity(workspace, existing);
+              if (existing === nextWorkspace) {
+                continue;
+              }
+              next.set(workspace.id, nextWorkspace);
+              changed = true;
+            }
+            if (!changed) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: {
+                  ...session,
+                  workspaces: next,
+                  restoringWorkspaces: nextRestoring ?? session.restoringWorkspaces,
+                },
+              },
+            };
+          });
+        },
+
+        removeWorkspace: (serverId, workspaceId) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            const workspaceKey = resolveWorkspaceMapKeyByIdentity({
+              workspaces: session?.workspaces,
+              workspaceId,
+            });
+            if (!session || !workspaceKey) {
+              return prev;
+            }
+            const next = new Map(session.workspaces);
+            next.delete(workspaceKey);
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, workspaces: next },
+              },
+            };
+          });
+        },
+
+        // Agent activity timestamps (top-level, does NOT mutate session object)
+        setAgentLastActivity: (agentId, timestamp) => {
+          agentLastActivityCoalescer.enqueue(agentId, timestamp);
+        },
+
+        setAgentLastActivityBatch: (updates) => {
+          set((prev) => {
+            const nextActivity =
+              typeof updates === "function" ? updates(prev.agentLastActivity) : updates;
+            if (nextActivity === prev.agentLastActivity) {
+              return prev;
+            }
+            if (nextActivity.size === 0) {
+              if (prev.agentLastActivity.size === 0) {
+                return prev;
+              }
+              return {
+                ...prev,
+                agentLastActivity: new Map(),
+              };
+            }
+            let changed = false;
+            for (const [agentId, timestamp] of nextActivity.entries()) {
+              const currentTimestamp = prev.agentLastActivity.get(agentId);
+              if (!currentTimestamp || currentTimestamp.getTime() !== timestamp.getTime()) {
+                changed = true;
+                break;
+              }
+            }
+            if (!changed && nextActivity.size === prev.agentLastActivity.size) {
+              return prev;
+            }
+            return {
+              ...prev,
+              agentLastActivity: new Map(nextActivity),
+            };
+          });
+        },
+
+        flushAgentLastActivity: () => {
+          agentLastActivityCoalescer.flushNow();
+        },
+
+        // Permissions
+        setPendingPermissions: (serverId, perms) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextPerms =
+              typeof perms === "function" ? perms(session.pendingPermissions) : perms;
+            if (session.pendingPermissions === nextPerms) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, pendingPermissions: nextPerms },
+              },
+            };
+          });
+        },
+
+        // File explorer
+        setFileExplorer: (serverId, state) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextState = typeof state === "function" ? state(session.fileExplorer) : state;
+            if (session.fileExplorer === nextState) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, fileExplorer: nextState },
+              },
+            };
+          });
+        },
+
+        // Queued messages
+        setQueuedMessages: (serverId, value) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session) {
+              return prev;
+            }
+            const nextValue = typeof value === "function" ? value(session.queuedMessages) : value;
+            if (session.queuedMessages === nextValue) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, queuedMessages: nextValue },
+              },
+            };
+          });
+        },
+
+        // Hydration
+        setHasHydratedAgents: (serverId, hydrated) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || session.hasHydratedAgents === hydrated) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, hasHydratedAgents: hydrated },
+              },
+            };
+          });
+        },
+
+        setHasHydratedWorkspaces: (serverId, hydrated) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || session.hasHydratedWorkspaces === hydrated) {
+              return prev;
+            }
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, hasHydratedWorkspaces: hydrated },
+              },
+            };
+          });
+        },
+
+        setHasWorkspaceDirectorySnapshot: (serverId, available) => {
+          set((prev) => {
+            const session = prev.sessions[serverId];
+            if (!session || session.hasWorkspaceDirectorySnapshot === available) return prev;
+            return {
+              ...prev,
+              sessions: {
+                ...prev.sessions,
+                [serverId]: { ...session, hasWorkspaceDirectorySnapshot: available },
+              },
+            };
+          });
+        },
+
+        // Agent directory - derived from agents (computed on-demand)
+        getAgentDirectory: (serverId) => {
+          const state = get();
+          const session = state.sessions[serverId];
+          if (!session) {
+            return undefined;
+          }
+
+          const entries: AgentDirectoryEntry[] = [];
+          for (const agent of session.agents.values()) {
+            // Get lastActivityAt from top-level slice, fallback to agent.lastActivityAt
+            const lastActivityAt = state.agentLastActivity.get(agent.id) ?? agent.lastActivityAt;
+            entries.push({
+              id: agent.id,
+              serverId,
+              title: agent.title ?? null,
+              status: agent.status,
+              turn: agent.turn,
+              lastActivityAt,
+              cwd: agent.cwd,
+              provider: agent.provider,
+              pendingPermissionCount: agent.pendingPermissions.length,
+              requiresAttention: agent.requiresAttention ?? false,
+              attentionReason: agent.attentionReason ?? null,
+              attentionTimestamp: agent.attentionTimestamp ?? null,
+              createdAt: agent.createdAt,
+              labels: agent.labels,
+            });
+          }
+          return entries;
+        },
+      };
+    }),
+  );
+
+export const createSessionStore = (
+  initializations = createAgentInitializations(),
+  createFlows = createCreateFlowStore(),
+) => Object.assign(createState(), { initializations, createFlows });
+
+export type SessionStoreApi = ReturnType<typeof createSessionStore>;
+
+const defaultSessionStore = createSessionStore(defaultAgentInitializations, defaultCreateFlowStore);
+export const SessionStoreContext = createContext<SessionStoreApi | null>(null);
+export function useSessionStoreApi(): SessionStoreApi {
+  return useContext(SessionStoreContext) ?? defaultSessionStore;
+}
+export const useSessionStore: SessionStoreApi = Object.assign(function useSessionStore<T>(
+  selector: (state: SessionStore) => T = ((state: SessionStore) => state) as (
+    state: SessionStore,
+  ) => T,
+): T {
+  return useStore(useSessionStoreApi(), selector);
+}, defaultSessionStore);
 
 export function useWorkspaceRestoreStatus(
   serverId: string | null,

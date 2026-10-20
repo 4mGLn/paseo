@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useSessionStore } from "@/stores/session-store";
+import { createSessionStore, useSessionStore } from "@/stores/session-store";
 import { TIMELINE_FETCH_PAGE_SIZE } from "@/timeline/timeline-fetch-policy";
 import type { HostRuntimeStore } from "@/runtime/host-runtime";
 import { getInitDeferred, getInitKey, resolveInitDeferred } from "@/utils/agent-initialization";
@@ -288,3 +288,45 @@ describe("refreshAgent", () => {
     ]);
   });
 });
+
+it.each(["complete", "fail"] as const)(
+  "keeps routed initialization pending when direct initialization for the same address %s",
+  async (outcome) => {
+    const direct = createSessionStore();
+    const routed = createSessionStore();
+    for (const store of [direct, routed]) store.getState().initializeSession(serverId, null);
+    const directRuntime = new FakeTimelineRuntime();
+    const routedRuntime = new FakeTimelineRuntime();
+    const client = new FakeDaemonClient();
+    const start = (store: typeof direct, runtime: FakeTimelineRuntime) =>
+      ensureAgentIsInitialized({
+        store,
+        serverId,
+        agentId,
+        client: client as never,
+        runtime,
+        setAgentInitializing: createSetAgentInitializing(
+          serverId,
+          store.getState().setInitializingAgents,
+        ),
+      });
+    const directReady = start(direct, directRuntime);
+    const routedReady = start(routed, routedRuntime);
+    void directReady.catch(() => {});
+    void routedReady.catch(() => {});
+    try {
+      expect(directReady).not.toBe(routedReady);
+      const key = getInitKey(serverId, agentId);
+      if (outcome === "complete") direct.initializations.resolveInitDeferred(key);
+      else direct.initializations.rejectInitDeferred(key, new Error("Direct history failed"));
+      await Promise.allSettled([directReady]);
+      expect(routed.initializations.getInitDeferred(key)?.promise).toBe(routedReady);
+      routed.initializations.resolveInitDeferred(key);
+      await routedReady;
+    } finally {
+      direct.initializations.resolveInitDeferred(getInitKey(serverId, agentId));
+      routed.initializations.resolveInitDeferred(getInitKey(serverId, agentId));
+      resolveInitDeferred(getInitKey(serverId, agentId));
+    }
+  },
+);

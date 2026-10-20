@@ -1,6 +1,10 @@
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
-import { selectAgentTimelineState, useSessionStore } from "@/stores/session-store";
+import {
+  selectAgentTimelineState,
+  useSessionStore,
+  type SessionStoreApi,
+} from "@/stores/session-store";
 import type { AssistantMessageItem, StreamItem, TodoEntry } from "@/types/stream";
 import type { TurnLivenessTransition } from "@/timeline/turn-liveness";
 import {
@@ -1829,6 +1833,7 @@ export function deriveAgentStreamTurnLiveness(
 }
 
 export interface CreateSessionAgentStreamReducerQueueInput {
+  store?: SessionStoreApi;
   serverId: string;
   setAgentStreamState: (serverId: string, agentId: string, state: StreamStatePatch) => void;
   setAgentTimelineCursor: (
@@ -1895,7 +1900,7 @@ export function createSessionAgentStreamReducerQueue(
 
   return createAgentStreamReducerQueue({
     getSnapshot: (agentId) => {
-      const session = useSessionStore.getState().sessions[serverId];
+      const session = (input.store ?? useSessionStore).getState().sessions[serverId];
       const timeline = selectAgentTimelineState(session, agentId);
       return {
         currentTail: timeline.status === "cold" ? [] : timeline.items,

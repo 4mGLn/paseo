@@ -1779,6 +1779,7 @@ export async function createPaseoDaemon(
               orchestrationSkills,
               workspaceLabelService,
             );
+            await wsServer.initializeRelationships();
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
             providerSnapshotManager.settlePluginProviders();

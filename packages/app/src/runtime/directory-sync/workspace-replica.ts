@@ -7,6 +7,7 @@ import {
   normalizeProjectDescriptor,
   normalizeWorkspaceDescriptor,
   useSessionStore,
+  type SessionStoreApi,
   type ProjectDescriptor,
   type WorkspaceDescriptor,
 } from "@/stores/session-store";
@@ -38,7 +39,10 @@ export class WorkspaceDirectoryReplica {
   private projects = new Map<string, ProjectDescriptor>();
   private workspaceIdsByProject = new Map<string, Set<string>>();
 
-  constructor(private readonly serverId: string) {}
+  constructor(
+    private readonly serverId: string,
+    private readonly store: SessionStoreApi = useSessionStore,
+  ) {}
 
   applyDelta(delta: WorkspaceDirectoryDelta): DirectoryReplicaMutation[] {
     if (delta.kind === "script_status") return this.applyScriptStatus(delta.update);
@@ -55,7 +59,7 @@ export class WorkspaceDirectoryReplica {
       workspaces: new Map([...input.workspaces, ...this.workspaces]),
       projects: new Map([...input.projects, ...this.projects]),
     });
-    useSessionStore.getState().setHasWorkspaceDirectorySnapshot(this.serverId, true);
+    this.store.getState().setHasWorkspaceDirectorySnapshot(this.serverId, true);
   }
 
   commitCachedWorkspace(
@@ -73,7 +77,7 @@ export class WorkspaceDirectoryReplica {
   ): DirectoryReplicaMutation[] {
     this.replace(snapshot);
     const mutations = deltas.flatMap((delta) => this.applyDelta(delta));
-    useSessionStore.getState().setHasHydratedWorkspaces(this.serverId, true);
+    this.store.getState().setHasHydratedWorkspaces(this.serverId, true);
     return mutations;
   }
 
@@ -106,7 +110,7 @@ export class WorkspaceDirectoryReplica {
     this.workspaces = workspaces;
     this.projects = new Map(snapshot.projects);
     this.rebuildProjectIndex();
-    const store = useSessionStore.getState();
+    const store = this.store.getState();
     store.setWorkspaces(this.serverId, this.workspaces);
     store.setProjects(this.serverId, this.projects.values());
   }
@@ -133,7 +137,7 @@ export class WorkspaceDirectoryReplica {
         { kind: "project", type: "delete", id: delta.projectId },
       ];
       this.projects.delete(delta.projectId);
-      useSessionStore.getState().removeProject(this.serverId, delta.projectId);
+      this.store.getState().removeProject(this.serverId, delta.projectId);
       for (const workspaceId of this.workspaceIdsByProject.get(delta.projectId) ?? []) {
         this.deleteWorkspace(workspaceId);
         mutations.push({ kind: "workspace", type: "delete", id: workspaceId });
@@ -179,7 +183,7 @@ export class WorkspaceDirectoryReplica {
     }
     if (delta.removedProjectId) {
       this.projects.delete(delta.removedProjectId);
-      useSessionStore.getState().removeProject(this.serverId, delta.removedProjectId);
+      this.store.getState().removeProject(this.serverId, delta.removedProjectId);
       mutations.push({ kind: "project", type: "delete", id: delta.removedProjectId });
     }
     clearWorkspaceArchivePending({ serverId: this.serverId, workspaceId: delta.id });
@@ -217,19 +221,19 @@ export class WorkspaceDirectoryReplica {
     const projectWorkspaces = this.workspaceIdsByProject.get(workspace.projectId) ?? new Set();
     projectWorkspaces.add(workspace.id);
     this.workspaceIdsByProject.set(workspace.projectId, projectWorkspaces);
-    useSessionStore.getState().mergeWorkspaces(this.serverId, [workspace]);
+    this.store.getState().mergeWorkspaces(this.serverId, [workspace]);
   }
 
   private deleteWorkspace(workspaceId: string): void {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) this.workspaceIdsByProject.get(workspace.projectId)?.delete(workspaceId);
     this.workspaces.delete(workspaceId);
-    useSessionStore.getState().removeWorkspace(this.serverId, workspaceId);
+    this.store.getState().removeWorkspace(this.serverId, workspaceId);
   }
 
   private setProject(project: ProjectDescriptor): void {
     this.projects.set(project.projectId, project);
-    useSessionStore.getState().upsertProject(this.serverId, project);
+    this.store.getState().upsertProject(this.serverId, project);
   }
 
   private rebuildProjectIndex(): void {
