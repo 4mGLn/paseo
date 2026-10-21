@@ -179,6 +179,8 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { GoalSession } from "./session/goal/goal-session.js";
+import type { GoalService } from "./goal/goal-service.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
 import {
@@ -472,6 +474,7 @@ export interface SessionOptions {
   workspaceRegistry: WorkspaceRegistry;
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
+  goalService?: GoalService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   checkoutDiffManager: CheckoutDiffManager;
@@ -816,6 +819,7 @@ export class Session {
   private readonly voiceSessions: VoiceSessions;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly goalSession: GoalSession | null;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly usageSession: UsageSession;
   private readonly speechModelsSession: SpeechModelsSession;
@@ -855,6 +859,7 @@ export class Session {
       workspaceRegistry,
       directorySync,
       workspaceLabelService,
+      goalService,
       filesystem,
       scheduleService,
       checkoutDiffManager,
@@ -1005,6 +1010,11 @@ export class Session {
     this.scheduleSession = new ScheduleSession({
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
+      logger: this.sessionLogger,
+    });
+    this.goalSession = GoalSession.forService({
+      host: { emit: (msg) => this.emit(msg) },
+      goalService,
       logger: this.sessionLogger,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -3234,7 +3244,7 @@ export class Session {
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
       default:
-        return undefined;
+        return this.goalSession?.dispatch(msg);
     }
   }
 
