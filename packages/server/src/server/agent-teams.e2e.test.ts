@@ -5,7 +5,7 @@ import { experimental_createMCPClient } from "ai";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeEach, expect, test } from "vitest";
 
-import { AGENT_TEAM_LABEL } from "./agent/agent-teams.js";
+import { AGENT_TEAM_LABEL, AGENT_TEAM_RUN_LABEL } from "./agent/agent-teams.js";
 import type { AgentSessionConfig } from "./agent/agent-sdk-types.js";
 import { getFullAccessConfig } from "./daemon-e2e/agent-configs.js";
 import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
@@ -15,6 +15,7 @@ import { createTestPaseoDaemon, type TestPaseoDaemon } from "./test-utils/paseo-
 const teams = {
   "full-stack": {
     description: "Ship features end to end.",
+    peerMessaging: true,
     roles: {
       implementer: {
         description: "Writes the code.",
@@ -150,5 +151,68 @@ test("helpers the team chat creates do not inherit the team", async () => {
     expect(helper?.config.systemPrompt ?? "").not.toContain("You lead the");
   } finally {
     await mcp.close();
+  }
+});
+
+test("team run members message each other through the daemon", async () => {
+  const chat = await client.createAgent({
+    ...getFullAccessConfig("claude"),
+    cwd,
+    title: "Team chat",
+    team: "full-stack",
+  });
+  expect(sessionConfigs.at(-1)?.systemPrompt ?? "").toContain("send_team_message");
+  const connect = async (callerAgentId: string) => {
+    const mcp = await experimental_createMCPClient({
+      transport: new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${daemon.port}/mcp/agents?callerAgentId=${callerAgentId}`),
+      ),
+    });
+    const callTool = Reflect.get(mcp, "callTool").bind(mcp) as (input: {
+      name: string;
+      args: Record<string, unknown>;
+    }) => Promise<{ structuredContent?: Record<string, unknown>; isError?: boolean }>;
+    return { mcp, callTool };
+  };
+  const chatMcp = await connect(chat.id);
+  try {
+    const created = await chatMcp.callTool({
+      name: "create_agent",
+      args: {
+        title: "Reviewer",
+        provider: "claude/research-model",
+        initialPrompt: "say done",
+        notifyOnFinish: false,
+        labels: { "paseo.team-role": "reviewer" },
+      },
+    });
+    expect(created.isError).toBe(false);
+    const helperId = String(created.structuredContent?.agentId);
+    expect(daemon.daemon.agentManager.getAgent(helperId)?.labels[AGENT_TEAM_RUN_LABEL]).toBe(
+      chat.id,
+    );
+
+    const helperMcp = await connect(helperId);
+    try {
+      const listed = await helperMcp.callTool({ name: "list_team_members", args: {} });
+      expect(listed.isError).toBe(false);
+      expect(listed.structuredContent?.members).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ agentId: chat.id, isParent: true, isSelf: false }),
+          expect.objectContaining({ agentId: helperId, role: "reviewer", isSelf: true }),
+        ]),
+      );
+
+      const sent = await helperMcp.callTool({
+        name: "send_team_message",
+        args: { agentId: chat.id, message: "Review finished, no defects" },
+      });
+      expect(sent.isError).toBe(false);
+      expect(sent.structuredContent).toMatchObject({ outcome: "delivered", agentId: chat.id });
+    } finally {
+      await helperMcp.mcp.close();
+    }
+  } finally {
+    await chatMcp.mcp.close();
   }
 });
