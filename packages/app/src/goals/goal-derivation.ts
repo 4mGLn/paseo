@@ -1,0 +1,75 @@
+import type { Goal, GoalEvent, GoalStatus, TaskStatus } from "@getpaseo/protocol/goal/types";
+import type { StatusBadgeVariant } from "@/components/ui/status-badge";
+
+const TERMINAL_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+export const GOAL_STATUS_BADGE: Record<GoalStatus, StatusBadgeVariant> = {
+  planning: "muted",
+  awaiting_plan_approval: "warning",
+  executing: "muted",
+  completed: "success",
+  failed: "error",
+  cancelled: "muted",
+};
+
+export const TASK_STATUS_BADGE: Record<TaskStatus, StatusBadgeVariant> = {
+  pending: "muted",
+  running: "warning",
+  succeeded: "success",
+  failed: "error",
+  cancelled: "muted",
+};
+
+export interface GoalProgress {
+  tasksDone: number;
+  tasksTotal: number;
+  criteriaVerified: number;
+  criteriaTotal: number;
+}
+
+export function isGoalTerminal(status: GoalStatus): boolean {
+  return TERMINAL_GOAL_STATUSES.has(status);
+}
+
+export function canApproveGoalPlan(status: GoalStatus): boolean {
+  return status === "awaiting_plan_approval";
+}
+
+export function summarizeGoalProgress(goal: Pick<Goal, "tasks" | "criteria">): GoalProgress {
+  const tasksDone = goal.tasks.filter((task) => task.status === "succeeded").length;
+  const criteriaVerified = goal.criteria.filter(
+    (criterion) => criterion.verifiedAt !== null,
+  ).length;
+  return {
+    tasksDone,
+    tasksTotal: goal.tasks.length,
+    criteriaVerified,
+    criteriaTotal: goal.criteria.length,
+  };
+}
+
+/** The id or reason an event is about, shown next to its raw type in the history list. */
+export function goalEventSubject(event: GoalEvent): string | null {
+  switch (event.type) {
+    case "task.started":
+    case "task.succeeded":
+    case "task.retried":
+    case "task.cancelled":
+      return event.taskId;
+    case "task.failed":
+      return `${event.taskId}: ${event.error}`;
+    case "criterion.verified":
+      return event.criterionId;
+    case "plan.rejected":
+    case "goal.failed":
+      return event.reason;
+    case "plan.proposed":
+      return event.tasks.map((task) => task.id).join(", ");
+    default:
+      return null;
+  }
+}
