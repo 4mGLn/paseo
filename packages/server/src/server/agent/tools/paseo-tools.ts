@@ -412,6 +412,22 @@ function withDaemonOwnedTeamLabels(
   return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
+/**
+ * Agent-scoped callers cannot set daemon-owned `paseo.*` labels: parentage,
+ * team membership, schedule and goal markers all drive ownership checks.
+ * The team role is the one exception; the roster tells the chat to set it.
+ */
+function assertAgentSettableLabels(labels: Record<string, string> | undefined): void {
+  const reserved = Object.keys(labels ?? {}).filter(
+    (key) => key.startsWith("paseo.") && key !== AGENT_TEAM_ROLE_LABEL,
+  );
+  if (reserved.length > 0) {
+    throw new PaseoToolInputError(
+      `Labels ${reserved.join(", ")} are set by the daemon and cannot be changed; agents may only set ${AGENT_TEAM_ROLE_LABEL} among paseo.* labels`,
+    );
+  }
+}
+
 interface TeamAgentView {
   id: string;
   title: string | null;
@@ -1959,6 +1975,7 @@ function createToolCatalog(
         // COMPAT(nestedCreateAgentPlacement): accept the old relationship/workspace shape without
         // advertising it to models. Added in v0.2.0; remove after 2027-01-17.
         const parsed = parseToolArguments(legacyAgentToAgentCreateAgentArgsSchema, args);
+        assertAgentSettableLabels(parsed.labels);
         const { cwd, workspaceId } = await resolveCreateAgentWorkspace(parsed.workspace, {
           prompt: parsed.initialPrompt,
         });
@@ -1971,6 +1988,7 @@ function createToolCatalog(
         };
       }
       const parsed = parseToolArguments(agentToAgentCreateAgentArgsSchema, args);
+      assertAgentSettableLabels(parsed.labels);
       const { cwd, workspaceId } = await resolveCanonicalCreateAgentWorkspace(parsed.workspaceId, {
         prompt: parsed.initialPrompt,
       });
@@ -2178,12 +2196,44 @@ function createToolCatalog(
   const PROMPTED_AGENT_NOTIFICATION_GUIDANCE =
     "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.";
 
+  async function loadAgentLabels(agentId: string): Promise<Record<string, string> | null> {
+    const snapshot = agentManager.getAgent(agentId);
+    if (snapshot) return snapshot.labels;
+    const record = await agentStorage.get(agentId);
+    return record && !record.internal ? (record.labels ?? {}) : null;
+  }
+
+  /** Agent-scoped callers may prompt their own subagents and the agent that created them. */
+  async function assertCallerMayPrompt(agentId: string): Promise<void> {
+    if (!callerAgentId) return;
+    if (agentId === callerAgentId) {
+      throw new PaseoToolInputError("send_agent_prompt cannot send a prompt to yourself");
+    }
+    const targetLabels = await loadAgentLabels(agentId);
+    if (!targetLabels) {
+      throw new PaseoToolInputError(`Agent ${agentId} not found`);
+    }
+    if (getParentAgentIdFromLabels(targetLabels) === callerAgentId) return;
+    if (getParentAgentIdFromLabels(await loadAgentLabels(callerAgentId)) === agentId) return;
+    const peerMessaging = await requireTeamPeerContext("send_team_message").then(
+      () => true,
+      (error: unknown) => {
+        if (error instanceof PaseoToolInputError) return false;
+        throw error;
+      },
+    );
+    throw new PaseoToolInputError(
+      `Agent ${agentId} is neither a subagent of ${callerAgentId} nor its parent; send_agent_prompt only reaches agents you created and the agent that created you` +
+        (peerMessaging ? ". To reach a member of your team run, use send_team_message" : ""),
+    );
+  }
+
   registerTool(
     "send_agent_prompt",
     {
       title: "Send agent prompt",
       description:
-        "Send a task. Agent callers receive an immediate queued receipt; delivery follows after two quiet seconds per recipient. Completion reports include the target’s last response by default. Paseo supplies caller identity.",
+        "Send a task. Agent callers receive an immediate queued receipt; delivery follows after two quiet seconds per recipient. Completion reports include the target’s last response by default. Agents can only prompt their own subagents and the agent that created them. Paseo supplies caller identity.",
       inputSchema: sendAgentPromptInputSchema,
       outputSchema: {
         success: z.boolean(),
@@ -2204,6 +2254,7 @@ function createToolCatalog(
       if (callerAgentId && !agentManager.getAgent(agentId) && !(await agentStorage.get(agentId))) {
         throw new PaseoToolInputError(`Agent ${agentId} not found`);
       }
+      await assertCallerMayPrompt(agentId);
       const notifying = Boolean(callerAgentId && notifyOnFinish);
       const notification =
         notifying && callerAgentId
@@ -2517,6 +2568,7 @@ function createToolCatalog(
       },
     },
     async ({ agentId, name, labels, settings }) => {
+      if (callerAgentId) assertAgentSettableLabels(labels);
       const daemonOwned = Object.keys(labels ?? {}).filter((key) =>
         DAEMON_OWNED_TEAM_LABELS.includes(key),
       );

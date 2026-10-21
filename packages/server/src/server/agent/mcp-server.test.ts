@@ -2992,10 +2992,7 @@ describe("create_agent MCP tool", () => {
       title: "Detached",
       provider: "codex/gpt-5.4",
       initialPrompt: "Take over",
-      labels: {
-        [PARENT_AGENT_ID_LABEL]: "spoofed-parent",
-        source: "handoff",
-      },
+      labels: { source: "handoff" },
     });
 
     expect(spies.agentManager.createAgent).toHaveBeenCalledWith(
@@ -3676,7 +3673,7 @@ describe("send_agent_prompt MCP tool", () => {
         const child = await manager.createAgent(
           { provider: "codex", cwd: existingCwd },
           undefined,
-          { workspaceId: "wks_parent" },
+          { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
         );
         const server = await createAgentMcpServer({
           agentManager: manager,
@@ -3738,7 +3735,7 @@ describe("send_agent_prompt MCP tool", () => {
         const child = await manager.createAgent(
           { provider: "codex", cwd: existingCwd },
           undefined,
-          { workspaceId: "wks_parent" },
+          { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
         );
         const server = await createAgentMcpServer({
           agentManager: manager,
@@ -3814,6 +3811,7 @@ describe("send_agent_prompt MCP tool", () => {
           undefined,
           {
             workspaceId: "wks_parent",
+            labels: { [PARENT_AGENT_ID_LABEL]: parent.id },
           },
         );
         const server = await createAgentMcpServer({
@@ -3883,6 +3881,7 @@ describe("send_agent_prompt MCP tool", () => {
           undefined,
           {
             workspaceId: "wks_parent",
+            labels: { [PARENT_AGENT_ID_LABEL]: parent.id },
           },
         );
         const server = await createAgentMcpServer({
@@ -3951,6 +3950,7 @@ describe("send_agent_prompt MCP tool", () => {
     } as ManagedAgent;
     const childAgent = {
       id: "child-agent",
+      labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" },
       cwd: existingCwd,
       lifecycle: "running",
       currentModeId: null,
@@ -4044,6 +4044,7 @@ describe("send_agent_prompt MCP tool", () => {
     } as ManagedAgent;
     const childAgent = {
       id: "child-agent",
+      labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" },
       cwd: existingCwd,
       lifecycle: "idle",
       currentModeId: null,
@@ -4100,7 +4101,7 @@ describe("send_agent_prompt MCP tool", () => {
         const child = await agentManager.createAgent(
           { provider: "codex", cwd: existingCwd, title: "Retry child" },
           undefined,
-          { workspaceId: "wks_parent" },
+          { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
         );
         const server = await createAgentMcpServer({
           agentManager,
@@ -4179,7 +4180,7 @@ describe("send_agent_prompt MCP tool", () => {
         const child = await agentManager.createAgent(
           { provider: "codex", cwd: existingCwd },
           undefined,
-          { workspaceId: "wks_parent" },
+          { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
         );
         const server = await createAgentMcpServer({
           agentManager,
@@ -4256,7 +4257,7 @@ describe("send_agent_prompt MCP tool", () => {
       const child = await agentManager.createAgent(
         { provider: "codex", cwd: existingCwd },
         undefined,
-        { workspaceId: "wks_parent" },
+        { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
       );
       const server = await createAgentMcpServer({
         agentManager,
@@ -4377,7 +4378,7 @@ describe("send_agent_prompt MCP tool", () => {
       const child = await agentManager.createAgent(
         { provider: "codex", cwd: existingCwd },
         undefined,
-        { workspaceId: "wks_parent" },
+        { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
       );
       const server = await createAgentMcpServer({
         agentManager,
@@ -4438,7 +4439,7 @@ describe("send_agent_prompt MCP tool", () => {
       const child = await agentManager.createAgent(
         { provider: "codex", cwd: existingCwd },
         undefined,
-        { workspaceId: "wks_parent" },
+        { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
       );
       const server = await createAgentMcpServer({
         agentManager,
@@ -4518,7 +4519,7 @@ describe("send_agent_prompt MCP tool to an OMP child", () => {
     const child = await agentManager.createAgent(
       { provider: "omp", cwd: existingCwd, title: "OMP child" },
       undefined,
-      { workspaceId: "wks_parent" },
+      { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
     );
     const server = await createAgentMcpServer({
       agentManager,
@@ -6826,7 +6827,7 @@ describe("local durable finish subscription MCP wiring", () => {
         const child = await manager.createAgent(
           { provider: "codex", cwd: existingCwd },
           undefined,
-          { workspaceId: "wks_parent" },
+          { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: parent.id } },
         );
         const server = await createAgentMcpServer({
           agentManager: manager,
@@ -6895,6 +6896,7 @@ describe("local durable finish subscription MCP wiring", () => {
       });
       const child = await manager.createAgent({ provider: "codex", cwd: existingCwd }, undefined, {
         workspaceId: "wks_parent",
+        labels: { [PARENT_AGENT_ID_LABEL]: parent.id },
       });
       expect(await subscriptions.list()).toEqual([]);
       await mkdir(join(workdir, "finish-subscriptions.json"));
@@ -7639,21 +7641,22 @@ describe("team peer messaging tools", () => {
     }
   });
 
-  it("stamps the run on helpers and helpers of helpers, ignoring forged team labels", async () => {
+  it("stamps the run on helpers and helpers of helpers, refusing forged team labels", async () => {
     const scenario = await createTeamScenario();
     try {
       const { chatId } = scenario;
-      const created = await scenario.callTool(chatId, "create_agent", {
-        title: "Implementer",
+      const createArgs = (title: string, labels?: Record<string, string>) => ({
+        title,
         provider: "claude/test-model",
         initialPrompt: "say done",
         notifyOnFinish: false,
-        labels: {
-          [AGENT_TEAM_ROLE_LABEL]: "implementer",
-          [AGENT_TEAM_RUN_LABEL]: "forged-run",
-          [AGENT_TEAM_LABEL]: "pair",
-        },
+        ...(labels ? { labels } : {}),
       });
+      const created = await scenario.callTool(
+        chatId,
+        "create_agent",
+        createArgs("Implementer", { [AGENT_TEAM_ROLE_LABEL]: "implementer" }),
+      );
       expect(created.isError).toBe(false);
       const helperId = String(created.structured.agentId);
       const helper = scenario.agentManager.getAgent(helperId);
@@ -7661,28 +7664,32 @@ describe("team peer messaging tools", () => {
       expect(helper?.labels[AGENT_TEAM_ROLE_LABEL]).toBe("implementer");
       expect(helper?.labels[AGENT_TEAM_LABEL]).toBeUndefined();
 
-      const nested = await scenario.callTool(helperId, "create_agent", {
-        title: "Sub helper",
-        provider: "claude/test-model",
-        initialPrompt: "say done",
-        notifyOnFinish: false,
-        labels: { [AGENT_TEAM_RUN_LABEL]: "forged-run" },
-      });
+      const nested = await scenario.callTool(helperId, "create_agent", createArgs("Sub helper"));
       expect(nested.isError).toBe(false);
       const nestedHelper = scenario.agentManager.getAgent(String(nested.structured.agentId));
       expect(nestedHelper?.labels[AGENT_TEAM_RUN_LABEL]).toBe(chatId);
       expect(nestedHelper?.labels[PARENT_AGENT_ID_LABEL]).toBe(helperId);
 
       const outsider = await scenario.createMember({ title: "Outsider" });
-      const outsiderChild = await scenario.callTool(outsider, "create_agent", {
-        title: "Joiner",
-        provider: "claude/test-model",
-        initialPrompt: "say done",
-        notifyOnFinish: false,
-        labels: { [AGENT_TEAM_RUN_LABEL]: chatId },
-      });
-      const joiner = scenario.agentManager.getAgent(String(outsiderChild.structured.agentId));
-      expect(joiner?.labels[AGENT_TEAM_RUN_LABEL]).toBeUndefined();
+      const outsiderChild = await scenario.callTool(outsider, "create_agent", createArgs("Child"));
+      const child = scenario.agentManager.getAgent(String(outsiderChild.structured.agentId));
+      expect(child?.labels[AGENT_TEAM_RUN_LABEL]).toBeUndefined();
+
+      const agentCount = scenario.agentManager.listAgents().length;
+      for (const [caller, labels] of [
+        [chatId, { [AGENT_TEAM_RUN_LABEL]: "forged-run" }],
+        [chatId, { [AGENT_TEAM_LABEL]: "pair" }],
+        [outsider, { [AGENT_TEAM_RUN_LABEL]: chatId }],
+      ] as const) {
+        const forged = await scenario.callTool(
+          caller,
+          "create_agent",
+          createArgs("Joiner", labels),
+        );
+        expect(forged.isError).toBe(true);
+        expect(forged.text).toContain("set by the daemon and cannot be changed");
+      }
+      expect(scenario.agentManager.listAgents()).toHaveLength(agentCount);
 
       for (const label of [AGENT_TEAM_RUN_LABEL, AGENT_TEAM_LABEL]) {
         const forged = await scenario.callTool(outsider, "update_agent", {
@@ -7727,6 +7734,304 @@ describe("team peer messaging tools", () => {
       const capped = await send(reviewer, implementer);
       expect(capped.structured).toMatchObject({ outcome: "failed" });
       expect(String(capped.structured.detail)).toContain("limit of 3 team messages");
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+});
+
+describe("agent-scoped label and prompt ownership", () => {
+  const logger = createTestLogger();
+  const teams: AgentTeamsConfig = {
+    pair: {
+      peerMessaging: true,
+      roles: { implementer: { description: "Writes code.", provider: "claude" } },
+    },
+  };
+
+  interface ToolCallResult {
+    structured: LooseStructuredContent;
+    isError: boolean;
+    text: string;
+  }
+
+  interface OwnershipScenario {
+    agentManager: AgentManager;
+    parentId: string;
+    childId: string;
+    siblingId: string;
+    outsiderId: string;
+    createMember(labels?: Record<string, string>): Promise<string>;
+    callTool(
+      callerAgentId: string | null,
+      name: string,
+      args: Record<string, unknown>,
+    ): Promise<ToolCallResult>;
+    agentMessages(agentId: string): string[];
+    cleanup(): Promise<void>;
+  }
+
+  async function createOwnershipScenario(): Promise<OwnershipScenario> {
+    const workdir = await mkdtemp(join(tmpdir(), "mcp-ownership-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const agentManager = new AgentManager({
+      clients: createTestAgentClients(),
+      registry: storage,
+      logger,
+    });
+    const createMember = async (labels?: Record<string, string>) =>
+      (
+        await agentManager.createAgent(
+          { provider: "claude", cwd: workdir, modeId: "bypassPermissions" },
+          undefined,
+          { workspaceId: "wks_owner", ...(labels ? { labels } : {}) },
+        )
+      ).id;
+    const parentId = await createMember();
+    const childId = await createMember({ [PARENT_AGENT_ID_LABEL]: parentId });
+    const siblingId = await createMember({ [PARENT_AGENT_ID_LABEL]: parentId });
+    const outsiderId = await createMember();
+    const closers: Array<() => Promise<void>> = [];
+
+    return {
+      agentManager,
+      parentId,
+      childId,
+      siblingId,
+      outsiderId,
+      createMember,
+      async callTool(callerAgentId, name, args) {
+        const server = await createAgentMcpServer({
+          agentManager,
+          agentStorage: storage,
+          ...(callerAgentId ? { callerAgentId } : {}),
+          agentTeams: teams,
+          teamMessageLimiter: new TeamMessageLimiter(),
+          providerSnapshotManager: createOpenCodeManager().manager,
+          logger,
+        });
+        const client = await connectInMemoryMcpClient(server);
+        closers.push(async () => {
+          await client.close();
+          await server.close();
+        });
+        const result = await client.callTool({ name, arguments: args });
+        const content = (result.content ?? []) as LooseContentBlock[];
+        return {
+          structured: (result.structuredContent ?? {}) as LooseStructuredContent,
+          isError: result.isError === true,
+          text: content.map((block) => block.text ?? "").join("\n"),
+        };
+      },
+      agentMessages(agentId) {
+        return agentManager
+          .getTimeline(agentId)
+          .filter((item) => item.type === "tool_call" && item.name === "agent_message")
+          .map((item) => JSON.stringify(item));
+      },
+      async cleanup() {
+        for (const close of closers) await close();
+        await removeAgentStateDir(agentManager, storage, workdir);
+      },
+    };
+  }
+
+  const forgedLabels: Array<Record<string, string>> = [
+    { [PARENT_AGENT_ID_LABEL]: "forged-parent" },
+    { [AGENT_TEAM_RUN_LABEL]: "forged-run" },
+    { [AGENT_TEAM_LABEL]: "pair" },
+    { "paseo.x": "1" },
+  ];
+
+  function createArgs(labels: Record<string, string>): Record<string, unknown> {
+    return {
+      title: "Helper",
+      provider: "claude/test-model",
+      initialPrompt: "say done",
+      notifyOnFinish: false,
+      labels,
+    };
+  }
+
+  it("refuses daemon-owned paseo labels from agents in create_agent and update_agent", async () => {
+    const scenario = await createOwnershipScenario();
+    try {
+      const { parentId, outsiderId } = scenario;
+      const agentCount = scenario.agentManager.listAgents().length;
+      for (const labels of forgedLabels) {
+        const [key] = Object.keys(labels);
+        const created = await scenario.callTool(parentId, "create_agent", createArgs(labels));
+        expect(created.isError).toBe(true);
+        expect(created.text).toContain(`Labels ${key} are set by the daemon`);
+
+        for (const agentId of [parentId, outsiderId]) {
+          const updated = await scenario.callTool(parentId, "update_agent", { agentId, labels });
+          expect(updated.isError).toBe(true);
+          expect(updated.text).toContain(`Labels ${key} are set by the daemon`);
+          expect(scenario.agentManager.getAgent(agentId)?.labels[key ?? ""]).toBeUndefined();
+        }
+      }
+      expect(scenario.agentManager.listAgents()).toHaveLength(agentCount);
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("lets agents set paseo.team-role and labels outside the paseo namespace", async () => {
+    const scenario = await createOwnershipScenario();
+    try {
+      const { parentId, childId } = scenario;
+      const labels = { [AGENT_TEAM_ROLE_LABEL]: "reviewer", owner: "parser" };
+      const created = await scenario.callTool(parentId, "create_agent", createArgs(labels));
+      expect(created.isError).toBe(false);
+      const helper = scenario.agentManager.getAgent(String(created.structured.agentId));
+      expect(helper?.labels).toMatchObject({ ...labels, [PARENT_AGENT_ID_LABEL]: parentId });
+
+      const updated = await scenario.callTool(parentId, "update_agent", {
+        agentId: childId,
+        labels: { [AGENT_TEAM_ROLE_LABEL]: "implementer", stage: "two" },
+      });
+      expect(updated.isError).toBe(false);
+      expect(scenario.agentManager.getAgent(childId)?.labels).toMatchObject({
+        [AGENT_TEAM_ROLE_LABEL]: "implementer",
+        stage: "two",
+        [PARENT_AGENT_ID_LABEL]: parentId,
+      });
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("keeps an agent from forging its way past wait_for_agent ownership", async () => {
+    const scenario = await createOwnershipScenario();
+    try {
+      const { parentId, outsiderId } = scenario;
+      const forged = await scenario.callTool(parentId, "update_agent", {
+        agentId: outsiderId,
+        labels: { [PARENT_AGENT_ID_LABEL]: parentId },
+      });
+      expect(forged.isError).toBe(true);
+
+      const wait = await scenario.callTool(parentId, "wait_for_agent", {
+        agentId: outsiderId,
+        timeoutSeconds: 1,
+      });
+      expect(wait.isError).toBe(true);
+      expect(wait.text).toContain(`Agent ${outsiderId} is not a subagent of ${parentId}`);
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("leaves top-level clients free to set paseo labels and prompt any agent", async () => {
+    const scenario = await createOwnershipScenario();
+    try {
+      const { parentId, outsiderId } = scenario;
+      const updated = await scenario.callTool(null, "update_agent", {
+        agentId: outsiderId,
+        labels: { [PARENT_AGENT_ID_LABEL]: parentId, "paseo.x": "1" },
+      });
+      expect(updated.isError).toBe(false);
+      expect(scenario.agentManager.getAgent(outsiderId)?.labels).toMatchObject({
+        [PARENT_AGENT_ID_LABEL]: parentId,
+        "paseo.x": "1",
+      });
+
+      const sent = await scenario.callTool(null, "send_agent_prompt", {
+        agentId: parentId,
+        prompt: "top-level follow-up",
+      });
+      expect(sent.isError).toBe(false);
+      expect(sent.structured).toMatchObject({ success: true });
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("lets an agent prompt its own subagent and its own parent", async () => {
+    const scenario = await createOwnershipScenario();
+    try {
+      const { parentId, childId } = scenario;
+      const down = await scenario.callTool(parentId, "send_agent_prompt", {
+        agentId: childId,
+        prompt: "child follow-up",
+        notifyOnFinish: false,
+      });
+      expect(down.isError).toBe(false);
+      expect(down.structured).toMatchObject({ success: true });
+
+      const up = await scenario.callTool(childId, "send_agent_prompt", {
+        agentId: parentId,
+        prompt: "report to parent",
+        notifyOnFinish: false,
+      });
+      expect(up.isError).toBe(false);
+      expect(up.structured).toMatchObject({ success: true });
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("refuses prompts to siblings, unrelated agents, the caller itself and unknown ids", async () => {
+    const scenario = await createOwnershipScenario();
+    try {
+      const { parentId, childId, siblingId, outsiderId } = scenario;
+      const cases: Array<[string, string, string]> = [
+        [
+          childId,
+          siblingId,
+          `Agent ${siblingId} is neither a subagent of ${childId} nor its parent`,
+        ],
+        [parentId, outsiderId, `Agent ${outsiderId} is neither a subagent of ${parentId}`],
+        [outsiderId, childId, `Agent ${childId} is neither a subagent of ${outsiderId}`],
+        [parentId, parentId, "cannot send a prompt to yourself"],
+        [parentId, randomUUID(), "not found"],
+      ];
+      for (const [caller, agentId, expected] of cases) {
+        const result = await scenario.callTool(caller, "send_agent_prompt", {
+          agentId,
+          prompt: "hello",
+          notifyOnFinish: false,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.text).toContain(expected);
+        expect(result.text).not.toContain("send_team_message");
+      }
+      for (const agentId of [siblingId, outsiderId, childId]) {
+        expect(scenario.agentManager.getTimeline(agentId)).toEqual([]);
+      }
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("points team members with peer messaging to send_team_message", async () => {
+    const scenario = await createOwnershipScenario();
+    try {
+      const chatId = await scenario.createMember({ [AGENT_TEAM_LABEL]: "pair" });
+      const teamHelper = (role: string) =>
+        scenario.createMember({
+          [AGENT_TEAM_RUN_LABEL]: chatId,
+          [PARENT_AGENT_ID_LABEL]: chatId,
+          [AGENT_TEAM_ROLE_LABEL]: role,
+        });
+      const implementer = await teamHelper("implementer");
+      const reviewer = await teamHelper("reviewer");
+
+      const refused = await scenario.callTool(implementer, "send_agent_prompt", {
+        agentId: reviewer,
+        prompt: "please review",
+        notifyOnFinish: false,
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain(`Agent ${reviewer} is neither a subagent of ${implementer}`);
+      expect(refused.text).toContain("use send_team_message");
+
+      const viaTeam = await scenario.callTool(implementer, "send_team_message", {
+        agentId: reviewer,
+        message: "please review",
+      });
+      expect(viaTeam.structured).toMatchObject({ outcome: "delivered" });
     } finally {
       await scenario.cleanup();
     }
