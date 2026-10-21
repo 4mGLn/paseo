@@ -76,7 +76,7 @@ The roster gives each role's `create_agent` call a `labels: {"paseo.team-role": 
 
 A team run is the team chat plus every helper created under it. The daemon stamps membership, not the agents: when an agent in a run calls the agent-scoped `create_agent`, the helper gets `paseo.team-run=<team chat's agent id>`, so helpers of helpers join the same run. The team chat is a member through its own `paseo.team` label. The stamping lives in `packages/server/src/server/agent/tools/paseo-tools.ts` (`withDaemonOwnedTeamLabels`).
 
-Agents cannot forge membership. `create_agent` drops `paseo.team` and `paseo.team-run` from caller-supplied `labels`, and `update_agent` refuses to set them. Changing labels through the app or the WebSocket API is not restricted; those callers are people.
+Agents cannot forge membership. Agent-scoped `create_agent` and `update_agent` refuse every `paseo.*` label except `paseo.team-role` ([agent-lifecycle.md](agent-lifecycle.md#relationships)). Top-level `create_agent` drops `paseo.team` and `paseo.team-run` from `labels`, and top-level `update_agent` refuses them. Changing labels through the app or the WebSocket API is not restricted; those callers are people.
 
 ## Peer messaging
 
@@ -84,6 +84,8 @@ With `peerMessaging: true`, members of one team run get two tools. The roster te
 
 - `list_team_members {}` returns the run's members: `agentId`, `title`, `role`, `provider`, `status`, `isParent` (the caller's own parent), `isSelf`. Archived members are left out.
 - `send_team_message { agentId, message }` delivers `message` to another member of the same run, the team chat included. The receiver gets a sender-marked agent message (`Message from <title> (<role>) [agent <id>]:`) through the same path as `send_agent_prompt`: an idle receiver starts a turn, and a mid-turn receiver is steered (or interrupted on providers that cannot steer).
+
+Helpers cannot reach each other with `send_agent_prompt`; it only reaches the caller's own subagents and the agent that created it, and its refusal points team members to `send_team_message`.
 
 `send_team_message` returns `{ outcome, detail }`. `delivered` means the receiver started a turn on the message; `queued` means it joined the receiver's running turn; `failed` carries the reason (a limit, or a delivery error). Neither means the receiver acted on it, and the sender gets no finish notification. A reply arrives as another team message.
 
