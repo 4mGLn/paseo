@@ -195,13 +195,17 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
         agentStorage: deps.agentStorage,
         logger: deps.logger,
       });
-      await startAgentRun(
+      // Resolves once the prompt is steered into the running turn or has started a new one.
+      const { disposition } = await startAgentRun(
         deps.agentManager,
         agent.id,
         formatSystemNotificationPrompt(text),
         deps.logger,
         { activeTurnBehavior: "steer" },
       );
+      if (disposition === "out_of_band") {
+        throw new Error(`Agent ${agentId} handled the notification as a command, not a prompt`);
+      }
     },
   };
 }

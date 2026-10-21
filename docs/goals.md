@@ -27,6 +27,7 @@ paseo goal create "Add rate limiting" \
 paseo goal ls
 paseo goal inspect <id>           # tasks and their status
 paseo goal changes <id>           # change sets and where each stands
+paseo goal notifications <id>     # messages to the Lead and the chat, and their outcome
 paseo goal inspect <id> --json    # full goal and event history
 paseo goal cancel <id>
 ```
@@ -53,6 +54,7 @@ The result is the branch `paseo-goal/<goalId>` and its worktree. Nothing is merg
 - **No early completion.** The reducer refuses `goal.completed` while a change set is neither integrated nor superseded, an implement task's work was never captured, or a criterion is unverified. A managed goal needs at least one criterion.
 - **Your checkout is never touched.** Every agent, including the Lead, works in its own worktree. The integration branch is separate from your branches. Every worktree waits for its `paseo.json` setup to finish (up to 5 minutes) before an agent or a merge uses it. Worktrees start from the commit that was checked out in `cwd` when the goal was created, recorded as `baseCommit`, so a goal started on a feature branch builds on it.
 - **Restarts lose nothing.** State is an append-only event log. After a restart, interrupted runs are closed out as interrupted and run again, and an interrupted run does not use up an attempt. A daemon that keeps crashing is bounded by `maxRuns`. A test restarts the daemon after each event of a full scenario and requires the goal to finish.
+- **Every notification has a recorded outcome.** A message to the Lead (a task failed for good, the goal completed) or to the originating chat (how the goal ended) is recorded before it is sent, with its text, and each attempt is recorded as delivered or failed. A failed attempt is retried after 5 and then 30 seconds, three attempts in all; after the third failure the notification stays `failed` with its last error. Delivered means the agent layer accepted the prompt, not that anyone read it. Notifications are the only events accepted after a goal has ended.
 - **Duplicates do nothing.** An event id is recorded once. Resending a request with the same `eventId` returns the existing result. The CLI does not send an `eventId`.
 
 ## Configuration
@@ -103,7 +105,7 @@ Not protected: network access, files outside the worktrees that the provider's u
 - **Unreadable logs.** A log that fails to replay, or comes from a newer version, makes that goal unavailable and is logged at start. Other goals and the daemon are unaffected. The file is left as it is.
 - **Compatibility.** There is no migration step. Event changes are additive, and tests replay logs written by each earlier phase. An implement task that succeeded before work capture existed cannot be recovered; its goal fails rather than completing unreviewed.
 - **Worktrees.** The worktree of a failed run is archived when it fails, not after its retry backoff. Worktrees of abandoned runs, and of read and review tasks, are archived too. Worktrees of successful implement tasks, the integration worktree and the Lead's worktree are kept so you can inspect them. The Lead's worktree is archived if the goal is cancelled or fails. Archive the rest from Paseo when you are done.
-- **Restarts.** A graceful shutdown stops the Manager before agents close, so runs are not recorded as failures. The next start marks them interrupted and runs them again with a new run id.
+- **Restarts.** A graceful shutdown stops the Manager before agents close, so runs are not recorded as failures. The next start marks them interrupted and runs them again with a new run id. It also sends every notification still pending at once, for ended goals too, within the three attempts; a delivered one is never sent again. Goals from before notifications were recorded have none and are not messaged again.
 - **Cancel.** `paseo goal cancel` stops the Lead, workers, reviewers and verifier, the test command and any retry backoff, and archives the worktrees of every run still in flight. Uncommitted work in those worktrees is lost.
 - **Concurrency.** At most 4 worker runs across all goals, and `maxParallel` per goal. The Lead, reviews, merges and verification are not counted. A task waiting out a retry backoff holds no slot.
 - **Logs.** The Manager logs under the `goal-manager` and `change-set-pipeline` modules in `daemon.log`.
@@ -130,13 +132,14 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 - A crash after a merge commit but before it is recorded leaves that commit on the integration branch; recovery resets the branch and merges again.
 - If `cwd` is a subdirectory of the repository, git commands run in that subdirectory of each worktree.
 - Quoting agent text in prompts does not stop prompt injection.
+- A notification is sent at least once, not exactly once. If the daemon stops after the agent layer accepted it but before that was recorded, the next start sends it again. A crash after a goal ends but before its notifications are recorded loses them.
 
 ## Where the tests are
 
 | File                               | What it proves                                                                                                                                          |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `goal/goal-reducer.test.ts`        | State machine, change set transition table, completion guards                                                                                           |
-| `goal/goal-manager.test.ts`        | Planning, scheduling, retries, cancellation, recovery of runs                                                                                           |
+| `goal/goal-manager.test.ts`        | Planning, scheduling, retries, cancellation, recovery of runs, notification delivery and its retries across restarts                                    |
 | `goal/change-set-pipeline.test.ts` | Capture, review, rework, integration, verification, crash windows                                                                                       |
 | `goal/limits-and-policy.test.ts`   | Time and run limits, backoff, permission policy, provider boundaries, read-only roles                                                                   |
 | `goal/recovery-matrix.test.ts`     | A restart after every event of a full run finishes the goal                                                                                             |

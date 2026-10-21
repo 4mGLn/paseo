@@ -488,3 +488,89 @@ describe("change set rules", () => {
     }
   });
 });
+
+describe("notifications", () => {
+  const queued = { type: "notification.queued", target: "origin", key: "goal-ended", text: "hi" };
+  const attempted = (attempt: number, outcome: "delivered" | "failed", error?: string) => ({
+    type: "notification.attempted",
+    target: "origin",
+    key: "goal-ended",
+    attempt,
+    outcome,
+    ...(error ? { error } : {}),
+  });
+
+  test("a new goal has none", () => {
+    expect(run([created]).notifications).toEqual([]);
+  });
+
+  test("are recorded after the goal has ended, and nothing else is", () => {
+    for (const ending of [{ type: "goal.cancelled" }, { type: "goal.failed", reason: "x" }]) {
+      const goal = run([created, ending, queued, attempted(1, "delivered")]);
+      expect(goal.notifications).toEqual([
+        {
+          key: "goal-ended",
+          target: "origin",
+          text: "hi",
+          status: "delivered",
+          attempts: 1,
+          lastError: null,
+          updatedAt: AT,
+        },
+      ]);
+      for (const other of [
+        { type: "plan.proposed", tasks: [task("a")] },
+        { type: "lead.notified", key: "k" },
+        { type: "criterion.verified", criterionId: "c1" },
+        { type: "goal.cancelled" },
+      ]) {
+        expect(() => run([created, ending, other]), other.type).toThrow(/goal is/);
+      }
+    }
+  });
+
+  test("a failure stays pending until the last attempt, which leaves it failed", () => {
+    const afterTwo = run([created, queued, attempted(1, "failed", "down"), attempted(2, "failed")]);
+    expect(afterTwo.notifications?.[0]).toMatchObject({
+      status: "pending",
+      attempts: 2,
+      lastError: "unknown error",
+    });
+    const afterThree = run([
+      created,
+      queued,
+      attempted(1, "failed", "a"),
+      attempted(2, "failed", "b"),
+      attempted(3, "failed", "c"),
+    ]);
+    expect(afterThree.notifications?.[0]).toMatchObject({
+      status: "failed",
+      attempts: 3,
+      lastError: "c",
+    });
+  });
+
+  test("rejects a duplicate queue, an unknown notice, a skipped or extra attempt", () => {
+    expect(() => run([created, queued, queued])).toThrow(/already queued/);
+    expect(() => run([created, attempted(1, "delivered")])).toThrow(/unknown notification/);
+    expect(() => run([created, queued, attempted(2, "failed")])).toThrow(/expected attempt 1/);
+    expect(() =>
+      run([created, queued, attempted(1, "delivered"), attempted(2, "delivered")]),
+    ).toThrow(/is delivered/);
+    expect(() =>
+      run([
+        created,
+        queued,
+        attempted(1, "failed"),
+        attempted(2, "failed"),
+        attempted(3, "failed"),
+        attempted(4, "failed"),
+      ]),
+    ).toThrow(/is failed/);
+  });
+
+  test("the same key may be queued once per target", () => {
+    const goal = run([created, queued, { ...queued, target: "lead" }]);
+    expect(goal.notifications?.map((n) => n.target)).toEqual(["origin", "lead"]);
+  });
+});

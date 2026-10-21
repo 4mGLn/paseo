@@ -76,6 +76,28 @@ const phase2Log = (goalId: string) =>
     { type: "lead.notified", key: "all-tasks-finished" },
   ]);
 
+// A managed goal that failed before notifications were recorded: the Lead was told
+// with lead.notified, the originating chat with no event at all.
+const preNotificationLog = (goalId: string) =>
+  jsonl(goalId, [
+    {
+      type: "goal.created",
+      title: "Told",
+      objective: "o",
+      criteria: [{ id: "c1", text: "w" }],
+      config: { ...config, notifyLead: true, originAgentId: "chat-1" },
+    },
+    { type: "lead.attached", agentId: "lead-1", workspaceId: "lead-ws" },
+    { type: "plan.proposed", tasks: [spec("a", "read")] },
+    { type: "plan.approved" },
+    { type: "task.started", taskId: "a" },
+    { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+    { type: "run.finished", runId: "a-a1", outcome: "failed", error: "x" },
+    { type: "task.failed", taskId: "a", error: "x" },
+    { type: "lead.notified", key: "task-a-failed" },
+    { type: "goal.failed", reason: "No task can make progress. Failed or blocked: a" },
+  ]);
+
 describe("goal logs written by earlier phases", () => {
   let dir: string;
   beforeEach(async () => {
@@ -107,6 +129,31 @@ describe("goal logs written by earlier phases", () => {
     expect(GoalSchema.safeParse(goal).success).toBe(true);
     expect(goal).toMatchObject({ leadAgentId: "lead-1", leadWorkspaceId: null });
     expect(goal?.runs[0]).toMatchObject({ id: "a-a1", cwd: null, status: "succeeded" });
+  });
+
+  test("a log from before notifications were recorded replays with none and sends nothing", async () => {
+    await writeFile(join(dir, "n1.jsonl"), preNotificationLog("n1"));
+    const store = await load();
+    const goal = store.get("n1");
+    expect(goal?.status).toBe("failed");
+    expect(GoalSchema.safeParse(goal).success).toBe(true);
+    expect(goal?.notifications).toEqual([]);
+
+    const harness = new Harness();
+    const manager = new GoalManager({
+      store,
+      agents: harness.agentPort,
+      workspaces: harness.workspacePort,
+      git: harness.git,
+      clock: new FakeClock(),
+      logger: pino({ level: "silent" }),
+    });
+    await manager.start();
+    await manager.idle();
+    manager.stop();
+    // Neither the Lead nor the chat hears about a goal that ended before the upgrade.
+    expect(harness.notifyAttempts).toBe(0);
+    expect(store.get("n1")?.lastSeq).toBe(10);
   });
 
   test("an event carrying fields this version does not know is still accepted", async () => {
