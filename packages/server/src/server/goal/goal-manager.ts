@@ -10,6 +10,7 @@ import { systemClock, resolveLimits, type Clock } from "./goal-limits.js";
 import {
   GoalTransitionError,
   MAX_NOTIFICATION_ATTEMPTS,
+  NOTIFICATION_BACKOFF_MS,
   isTerminalGoalStatus,
 } from "./goal-reducer.js";
 import type { GoalStore } from "./goal-store.js";
@@ -98,9 +99,6 @@ export interface GoalManagerOptions {
 }
 
 const MAX_PLAN_ATTEMPTS = 3;
-
-/** Wait before the next delivery attempt of a notification, by attempts made so far. */
-const NOTIFICATION_BACKOFF_MS = [5_000, 30_000, 120_000];
 
 /** The longest delay a Node timer accepts. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
