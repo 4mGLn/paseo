@@ -1,0 +1,190 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1793455183004,
+  "projectRoot": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/desktop",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "vitest",
+        "version": "4.1.6",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "npm test",
+    "lintCommand": null,
+    "devCommand": "npm run dev",
+    "scripts": {
+      "build": "npm --prefix ../.. run build:server:clean && npm run build:main && electron-builder --config electron-builder.yml",
+      "build:main": "tsc -p tsconfig.json",
+      "capture-harness": "npm run build:main && ./capture-harness/run.sh",
+      "dev": "./scripts/dev.sh",
+      "dev:win": "powershell ./scripts/dev.ps1",
+      "test:e2e:renderer": "cross-env E2E_DESKTOP_RUNTIME=1 playwright test --config=playwright.config.ts --project=desktop",
+      "test:e2e:browser-tabs": "npm run build:main && node ./e2e/browser-tabs.e2e.mjs",
+      "verify:electron-cdp": "node ./scripts/verify-electron-cdp.mjs",
+      "test": "install-electron && vitest run --exclude \"e2e/**\"",
+      "typecheck": "tsgo --noEmit -p tsconfig.json",
+      "test:e2e:lifecycle": "npm run build:main && node ./e2e/daemon-lifecycle.e2e.mjs",
+      "test:e2e:window-startup": "npm run build:main && node ./e2e/window-startup.e2e.mjs"
+    }
+  },
+  "conventions": {
+    "namingStyle": "camelCase/PascalCase",
+    "importStyle": "ES modules",
+    "testPattern": null,
+    "fileOrganization": "feature-based"
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "assets",
+      "bin",
+      "scripts",
+      "src"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "assets": {
+      "path": "assets",
+      "purpose": "Static assets",
+      "fileCount": 8,
+      "lastAccessed": 1793455182993,
+      "keyFiles": [
+        "128x128.png",
+        "128x128@2x.png",
+        "32x32.png",
+        "64x64.png",
+        "icon-dev.png"
+      ]
+    },
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 2,
+      "lastAccessed": 1793455182994,
+      "keyFiles": [
+        "paseo",
+        "paseo.cmd"
+      ]
+    },
+    "build": {
+      "path": "build",
+      "purpose": "Build output",
+      "fileCount": 2,
+      "lastAccessed": 1793455183002,
+      "keyFiles": [
+        "entitlements.mac.inherit.plist",
+        "entitlements.mac.plist"
+      ]
+    },
+    "capture-harness": {
+      "path": "capture-harness",
+      "purpose": null,
+      "fileCount": 8,
+      "lastAccessed": 1793455183002,
+      "keyFiles": [
+        "bright.html",
+        "delayed-bright.html",
+        "index.html",
+        "main.js",
+        "run.sh"
+      ]
+    },
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 28,
+      "lastAccessed": 1793455183003,
+      "keyFiles": [
+        "agent-navigation.d.ts",
+        "agent-navigation.d.ts.map",
+        "agent-navigation.js",
+        "agent-navigation.js.map",
+        "desktop-startup.d.ts"
+      ]
+    },
+    "e2e": {
+      "path": "e2e",
+      "purpose": null,
+      "fileCount": 19,
+      "lastAccessed": 1793455183003,
+      "keyFiles": [
+        "appearance-font-size.electron.mjs",
+        "browser-tabs.e2e.mjs",
+        "daemon-lifecycle-renderer.electron.mjs",
+        "daemon-lifecycle.e2e.mjs",
+        "keyboard-shortcut-unassign.spec.ts"
+      ]
+    },
+    "release": {
+      "path": "release",
+      "purpose": null,
+      "fileCount": 9,
+      "lastAccessed": 1793455183003,
+      "keyFiles": [
+        "Paseo-0.13.13-mgln-dev-amd64.deb",
+        "Paseo-0.13.13-mgln-dev-x64.tar.gz",
+        "Paseo-0.13.13-mgln-dev-x86_64.rpm",
+        "Paseo-0.13.14-mgln-dev-amd64.deb",
+        "Paseo-0.13.14-mgln-dev-x64.tar.gz"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 15,
+      "lastAccessed": 1793455183003,
+      "keyFiles": [
+        "after-pack.js",
+        "after-sign.js",
+        "dev-runner-args.mjs",
+        "dev-runner-args.test.mjs",
+        "dev-runner-config.mjs"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 14,
+      "lastAccessed": 1793455183003,
+      "keyFiles": [
+        "agent-navigation.test.ts",
+        "agent-navigation.ts",
+        "desktop-startup.test.ts",
+        "desktop-startup.ts",
+        "login-shell-env.test.ts"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}

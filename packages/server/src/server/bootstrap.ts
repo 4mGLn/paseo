@@ -197,6 +197,7 @@ import { admitSecuredRelaySocket } from "./websocket/secure-relay-ingress.js";
 import type { PushNotificationSender } from "./push/index.js";
 import { getOrCreateServerId } from "./server-id.js";
 import { resolveDaemonVersion } from "./daemon-version.js";
+import { listResolvedAgentTeams, type AgentTeamsConfig } from "./agent/agent-teams.js";
 import type { AgentClient, AgentProvider } from "./agent/agent-sdk-types.js";
 import type {
   AgentProfile,
@@ -438,6 +439,8 @@ export interface PaseoDaemonConfig {
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
   agentProfiles?: AgentProfile[];
+  /** Read from the config file at startup; a change takes a daemon restart. */
+  teams?: AgentTeamsConfig;
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   plugins?: Record<string, PluginSource>;
@@ -626,6 +629,18 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
   return initialConfig;
 }
 
+function warnAboutUnusableTeams(
+  teams: AgentTeamsConfig | undefined,
+  daemonConfigStore: DaemonConfigStore,
+  logger: Logger,
+): void {
+  const { error } = listResolvedAgentTeams({
+    teams,
+    agentProfiles: daemonConfigStore.get().agentProfiles,
+  });
+  if (error) logger.warn({ problems: error }, "Some teams in daemon.teams cannot be used");
+}
+
 export async function createPaseoDaemon(
   config: PaseoDaemonConfig,
   rootLogger: Logger,
@@ -672,6 +687,7 @@ export async function createPaseoDaemon(
       },
     },
   });
+  warnAboutUnusableTeams(config.teams, daemonConfigStore, logger);
   const orchestrationSkills = createOrchestrationSkills(daemonConfigStore);
   void orchestrationSkills.autoUpdate().catch((error) => {
     logger.error({ err: error }, "Failed to maintain orchestration skills at startup");
@@ -1901,6 +1917,7 @@ export async function createPaseoDaemon(
               {
                 listen: formatListenTarget(boundListenTarget ?? listenTarget),
                 worktreesRoot: config.worktreesRoot,
+                teams: config.teams,
                 get appBaseUrl() {
                   return appBaseUrl;
                 },

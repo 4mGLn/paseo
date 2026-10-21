@@ -1,0 +1,59 @@
+{
+  "agents": [
+    {
+      "agent_id": "a0db1080707a6ef8e",
+      "agent_type": "untracked-native-fork",
+      "started_at": "2026-10-28T05:19:17.919Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-10-28T05:19:17.919Z",
+      "synthetic": true,
+      "telemetry_status": "unmatched_stop",
+      "telemetry_note": "SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."
+    },
+    {
+      "agent_id": "a454b346353302402",
+      "agent_type": "oh-my-claudecode:designer",
+      "started_at": "2026-10-28T05:24:44.707Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-10-28T05:33:41.674Z",
+      "duration_ms": 536967
+    },
+    {
+      "agent_id": "ad1fad895bba15d72",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-10-28T05:33:50.787Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-10-28T05:35:35.861Z",
+      "duration_ms": 105074
+    },
+    {
+      "agent_id": "abe909fe74324d223",
+      "agent_type": "untracked-native-fork",
+      "started_at": "2026-10-28T05:24:53.387Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-10-28T05:24:53.387Z",
+      "synthetic": true,
+      "telemetry_status": "unmatched_stop",
+      "telemetry_note": "SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."
+    },
+    {
+      "agent_id": "aa4ee5e41991a307b",
+      "agent_type": "untracked-native-fork",
+      "started_at": "2026-10-28T05:28:15.228Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-10-28T05:28:15.228Z",
+      "synthetic": true,
+      "telemetry_status": "unmatched_stop",
+      "telemetry_note": "SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."
+    }
+  ],
+  "total_spawned": 4,
+  "total_completed": 9,
+  "total_failed": 0,
+  "last_updated": "2026-10-28T05:35:35.865Z"
+}

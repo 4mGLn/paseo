@@ -1,0 +1,345 @@
+{
+  "version": 1,
+  "jobId": "9eefffc1-0514-4c6a-99da-da2d8494847e",
+  "sessionId": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+  "scopeKey": "92c9248400f500c8fe34b3549be78d896950264221a68bf3b2070bcd1007e824",
+  "revision": 60,
+  "createdAt": "2026-10-27T06:28:30.642Z",
+  "updatedAt": "2026-10-27T06:29:01.486Z",
+  "producerGraceExpiresAt": "2026-10-27T06:29:00.643Z",
+  "bestEffortDeadlineAt": "2026-10-27T06:29:53.643Z",
+  "producers": {
+    "core": {
+      "state": "sealed",
+      "intentKey": "a43a0bda498a79818002808002fee3bd4474424553be034797722a5083fbcf5b",
+      "payloadDigest": "a43a0bda498a79818002808002fee3bd4474424553be034797722a5083fbcf5b",
+      "sealedAt": "2026-10-27T06:29:00.859Z",
+      "sealedBy": "recovery"
+    },
+    "wiki": {
+      "state": "no-op",
+      "sealedAt": "2026-10-27T06:28:30.642Z",
+      "sealedBy": "wiki-producer"
+    }
+  },
+  "actions": {
+    "foreground-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "febf6dba2f2536433960a07f7cedce72e946b43ced0896570df80f017b8914d2",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "ended_at": "2026-10-27T06:29:00.794Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-27T06:29:00.712Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "9ec4dca1-bbf2-408b-9d5f-6f18a1a563d8",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:00.857Z"
+    },
+    "wiki-capture": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 0,
+      "idempotencyKey": "1719cd1ef5b51e0269b78c4cb8c9308c9c1f7b82fd1c067fc034c060f23863f5",
+      "payload": {},
+      "budgetMs": 9000,
+      "completedAt": "2026-10-27T06:28:30.642Z"
+    },
+    "team-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "cee6ac31df545408e1e822247ac249b3f8182a98a5fe8e448ae3b251e55bdee1",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "ended_at": "2026-10-27T06:29:00.794Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-27T06:29:00.866Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "b06f698f-8a49-40f6-9ece-9dd5dc4b9301",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:00.950Z"
+    },
+    "python-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "1f1370c4ac056606059d517e2f106b602d8cbcb04587b3fcc5f3b9f89e649cd0",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "ended_at": "2026-10-27T06:29:00.794Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-27T06:29:00.955Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "cf4c5fea-7dfd-425a-83f0-3fa8f6bf854b",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:01.034Z"
+    },
+    "reply-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "0b3a8b47c28b26d56aca004d4f572b96c118f16819c0d35162418816f9a5420a",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-27T06:29:01.039Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "333c217a-b8ef-4d6b-b93d-e7b3aa8797d6",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:01.122Z"
+    },
+    "callback": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "d068ede2655bf89e0c0950e087d0603d7dcf45538e94f20a654d08c6f4841895",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "ended_at": "2026-10-27T06:29:00.794Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-27T06:29:01.127Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "96c2dabb-bee7-42a0-80d1-e457991a4179",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:01.211Z"
+    },
+    "notification": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "89c0438ff63097ce04beb60efb87292ff68a7af350a0ee331f3de9dbf42d62fc",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "ended_at": "2026-10-27T06:29:00.794Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-27T06:29:01.217Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "eeb7b0fe-31ca-425b-9a30-c7bda642fe85",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:01.297Z"
+    },
+    "openclaw": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "31fe8f6e1cf204e27006de511df257326fdd98655122ca437013e8779ffc735b",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "ended_at": "2026-10-27T06:29:00.794Z",
+          "reason": "other",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-27T06:29:01.302Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "0ca0c87c-e492-44dc-90f6-a8d25cfd09ab",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:01.388Z"
+    },
+    "spawn-next": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "408951e1348d4a381fd7b22db242636c91151ee01597146cf28243ae3875d0be",
+      "payload": {
+        "transcriptPath": null,
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "other",
+        "input": {
+          "session_id": "01a17c0a-515d-76b2-b26a-80b9bca0cbc8",
+          "transcript_path": null,
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "hook_event_name": "SessionEnd",
+          "reason": "other"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-27T06:29:01.396Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "8f011853-f34c-4881-8051-a77a95ce1b91",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-27T06:29:10.665Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-27T06:29:01.477Z"
+    }
+  },
+  "owner": null,
+  "phase": "complete",
+  "recoverableFailure": {
+    "reason": "actions-settled",
+    "releasedAt": "2026-10-27T06:29:01.481Z",
+    "ownerNonce": "e41c09b1-1a4a-4e94-b5fb-cd363849b67a"
+  },
+  "completion": {
+    "completedAt": "2026-10-27T06:29:01.481Z",
+    "terminalDigest": "b7646b804ccb238a003dbabe49aa02bf82c78bbd89d1d0722340f01b0a4663c7",
+    "terminalRevision": 59
+  }
+}

@@ -229,6 +229,12 @@ export const ptBR: TranslationResources = {
       searchPlaceholder: "Buscar modos...",
       selectWithValue: "Selecionar modo do agente ({{value}})",
     },
+    team: {
+      title: "Equipe",
+      none: "Nenhuma",
+      selectWithValue: "Selecionar equipe ({{value}})",
+      tabLabel: "Equipe {{name}}",
+    },
     hints: {
       thinking: "Modo de raciocínio",
       model: "Alterar modelo",

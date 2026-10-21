@@ -31,6 +31,7 @@ import {
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import Animated from "react-native-reanimated";
 import { useTranslation } from "react-i18next";
+import { AGENT_TEAM_LABEL } from "@getpaseo/protocol/agent-labels";
 import { useStartGoalFromChat } from "@/hooks/use-start-goal-from-chat";
 import { SortableInlineList } from "@/components/sortable-inline-list";
 import type {
@@ -176,6 +177,12 @@ function AgentTabTooltipBody({
   });
   const compactActivity = useCompactTimeAgo(lastActivityAt);
   const activity = formatCompactTimeAgoAsProse(compactActivity);
+  const team = useSessionStore((state) => {
+    const session = state.sessions[serverId];
+    const agent = session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
+    return agent?.labels[AGENT_TEAM_LABEL] ?? null;
+  });
+  const { t } = useTranslation();
 
   return (
     <View style={styles.tooltipAgentContent}>
@@ -188,6 +195,14 @@ function AgentTabTooltipBody({
           <>
             <Text style={styles.tooltipAgentSeparator}>·</Text>
             <Text style={styles.tooltipAgentActivity}>{activity}</Text>
+          </>
+        ) : null}
+        {team ? (
+          <>
+            <Text style={styles.tooltipAgentSeparator}>·</Text>
+            <Text style={styles.tooltipAgentActivity}>
+              {t("agentControls.team.tabLabel", { name: team })}
+            </Text>
           </>
         ) : null}
       </View>

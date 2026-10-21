@@ -1,0 +1,403 @@
+{
+  "version": 1,
+  "jobId": "8e5e5a33-9e0e-4f53-8998-edfb583aa2d4",
+  "sessionId": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+  "scopeKey": "92c9248400f500c8fe34b3549be78d896950264221a68bf3b2070bcd1007e824",
+  "revision": 68,
+  "createdAt": "2026-10-28T05:13:12.050Z",
+  "updatedAt": "2026-10-28T05:13:44.209Z",
+  "producerGraceExpiresAt": "2026-10-28T05:13:42.051Z",
+  "bestEffortDeadlineAt": "2026-10-28T05:14:35.051Z",
+  "producers": {
+    "core": {
+      "state": "sealed",
+      "intentKey": "796a3dec02e450b70dea34861b37e04a470b61f4967faa96bba40e7a0cf80289",
+      "payloadDigest": "796a3dec02e450b70dea34861b37e04a470b61f4967faa96bba40e7a0cf80289",
+      "sealedAt": "2026-10-28T05:13:43.149Z",
+      "sealedBy": "recovery"
+    },
+    "wiki": {
+      "state": "no-op",
+      "sealedAt": "2026-10-28T05:13:12.058Z",
+      "sealedBy": "wiki-producer"
+    }
+  },
+  "actions": {
+    "foreground-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "d854c847eb279a54c12402be41eaa30813057e17782f076672ce05287871144a",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        },
+        "metrics": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "ended_at": "2026-10-28T05:13:42.836Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-28T05:13:42.450Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "4917c77e-83e7-4d32-b461-4c142b918aa1",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:43.143Z"
+    },
+    "wiki-capture": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 0,
+      "idempotencyKey": "ac9ad92e819ff5cf0767a934244a6d865f17d7b788b5be373149a23ba35e520d",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        }
+      },
+      "budgetMs": 9000,
+      "completedAt": "2026-10-28T05:13:12.058Z"
+    },
+    "team-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "3c6635db87c9d57d067aa875dc6c59db4475754d7587710e889b70771b326827",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        },
+        "metrics": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "ended_at": "2026-10-28T05:13:42.836Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-28T05:13:43.163Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "deedd3a9-534b-4968-8a7a-37c901e24379",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:43.262Z"
+    },
+    "python-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "bf1e8528bd0506f55a0cc5b659f4d9c90b600f5d930e0913ef7cc36adfad5306",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        },
+        "metrics": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "ended_at": "2026-10-28T05:13:42.836Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-28T05:13:43.274Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "89159d6e-aca0-4522-8b44-2d6b572fa658",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:43.591Z"
+    },
+    "reply-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "cbdb2547d04763c2c02f8c491c1a7f2de17d1cacbde39a17d53e60c06f984caf",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-10-28T05:13:43.604Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "637d4206-19ef-44ec-bdf6-a6be2b0f4f44",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:43.721Z"
+    },
+    "callback": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "f3b7c3aca73533af50f7d395bac359492bdf180a067de322b9dee9e3d23d9d24",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        },
+        "metrics": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "ended_at": "2026-10-28T05:13:42.836Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-28T05:13:43.732Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "d025b03c-54a3-49ab-b69c-f48fcc2246cf",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:43.857Z"
+    },
+    "notification": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "d7cedc8d9ea69bc11b9ea8118218ed885f457d4b09382aae77562b71d2274aab",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        },
+        "metrics": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "ended_at": "2026-10-28T05:13:42.836Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-28T05:13:43.870Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "5f4b2097-2d9c-4c32-91e3-8737732fb557",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:43.964Z"
+    },
+    "openclaw": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "b2d50c1e4683d427eab54365324de8fb2d2bdbc36c3a01103f67d80abef9e6bb",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        },
+        "metrics": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "ended_at": "2026-10-28T05:13:42.836Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-28T05:13:43.976Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "b67cafe4-b11c-4e39-a3ac-12c62b24e8ec",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:44.072Z"
+    },
+    "spawn-next": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "9083eb44f5f2087cbaf2cecc09c363f22d67c9f38b9b9f024554a8a91099dd2d",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "dd111fab-0c5c-4ce9-b15c-5072d4b05751",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo/packages/server",
+          "scratchpad_dir": "/tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/dd111fab-0c5c-4ce9-b15c-5072d4b05751/scratchpad",
+          "prompt_id": "e316532b-2d06-43ca-91d0-1661a69f5369",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {
+          "tmux": "/tmp/tmux-1000/default,243561,0",
+          "tmuxPane": "%0"
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-10-28T05:13:44.083Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "682245c0-e02e-4082-b88c-d0030874da1d",
+        "phase": "terminal",
+        "deadlineAt": "2026-10-28T05:13:52.062Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-10-28T05:13:44.183Z"
+    }
+  },
+  "owner": null,
+  "phase": "complete",
+  "recoverableFailure": {
+    "reason": "actions-settled",
+    "releasedAt": "2026-10-28T05:13:44.196Z",
+    "ownerNonce": "b0a00ff7-4fd2-41ed-87e2-ca43794dcfc7"
+  },
+  "completion": {
+    "completedAt": "2026-10-28T05:13:44.196Z",
+    "terminalDigest": "ce5eadc9eae6dd56b554dd1792b7586fd306bcdfb4ef96ea61e618106748bdb5",
+    "terminalRevision": 67
+  }
+}
