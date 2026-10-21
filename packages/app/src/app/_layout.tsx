@@ -56,6 +56,7 @@ import { SidebarModelProvider } from "@/components/sidebar/sidebar-model";
 import { WorkspacePinShortcutHandler } from "@/components/workspace-pin-shortcut-handler";
 import { WorkspaceRenameHost } from "@/components/workspace-rename-host";
 import { WorkspaceArchiveUndoShortcutHost } from "@/workspace/archive-undo";
+import { GoalLaunchHost } from "@/components/goals/goal-launch-host";
 import { WorkspaceExplorerOpenGesture } from "@/mobile-panels/explorer-open-gesture";
 import { ProviderSettingsHost } from "@/components/provider-settings-host";
 import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
@@ -564,6 +565,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
         <HostChooserModal />
         <HostConfirmationSheet />
         <ProviderSettingsHost />
+        <GoalLaunchHost />
         <WorkspaceSetupDialog />
         <KeyboardShortcutsDialog />
         <AppDiagnosticHost />
