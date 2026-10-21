@@ -19,7 +19,7 @@ import { ensureValidJson } from "../../json-utils.js";
 import type { Logger } from "pino";
 
 import type { AgentMode, AgentProvider, AgentSessionConfig } from "../agent-sdk-types.js";
-import type { AgentManager } from "../agent-manager.js";
+import type { AgentManager, ManagedAgent } from "../agent-manager.js";
 import { ActiveTurnBehaviorSchema, AgentProfileSchema } from "@getpaseo/protocol/messages";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import {
@@ -36,7 +36,7 @@ import {
   toAgentPayload,
 } from "../agent-projections.js";
 import { summarizeAgentActivity } from "../activity-curator.js";
-import type { AgentStorage } from "../agent-storage.js";
+import type { AgentStorage, StoredAgentRecord } from "../agent-storage.js";
 import { AgentNotFoundError, ensureAgentLoaded } from "../agent-loading.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
 import {
@@ -121,6 +121,19 @@ import {
 } from "./types.js";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
+import {
+  AGENT_TEAM_LABEL,
+  AGENT_TEAM_ROLE_LABEL,
+  AGENT_TEAM_RUN_LABEL,
+  DAEMON_OWNED_TEAM_LABELS,
+  resolveTeamRunId,
+  type AgentTeamsConfig,
+} from "../agent-teams.js";
+import {
+  defaultTeamMessageLimiter,
+  TEAM_MESSAGE_MAX_LENGTH,
+  type TeamMessageLimiter,
+} from "../team-messaging.js";
 
 export interface PaseoToolHostDependencies {
   agentMessages?: () => AgentMessageDelivery;
@@ -166,6 +179,10 @@ export interface PaseoToolHostDependencies {
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
+  /** daemon.teams, read at startup. Gates list_team_members and send_team_message. */
+  agentTeams?: AgentTeamsConfig;
+  /** Defaults to one limiter shared by the whole daemon process. */
+  teamMessageLimiter?: TeamMessageLimiter;
   /**
    * ID of the agent that is using this tool catalog.
    * Used for cwd/mode inheritance when agents spawn child agents.
@@ -378,6 +395,77 @@ async function waitForSubagentTurn(params: WaitForSubagentTurnParams): Promise<P
     unsubscribeClosed();
     hold.settle(delivered);
   }
+}
+
+/**
+ * Drops daemon-owned team labels a caller tried to set, then stamps the team
+ * run the caller belongs to, so membership cannot be forged through labels.
+ */
+function withDaemonOwnedTeamLabels(
+  labels: Record<string, string> | undefined,
+  teamRunId: string | null,
+): Record<string, string> | undefined {
+  const kept = Object.fromEntries(
+    Object.entries(labels ?? {}).filter(([key]) => !DAEMON_OWNED_TEAM_LABELS.includes(key)),
+  );
+  if (teamRunId) kept[AGENT_TEAM_RUN_LABEL] = teamRunId;
+  return Object.keys(kept).length > 0 ? kept : undefined;
+}
+
+interface TeamAgentView {
+  id: string;
+  title: string | null;
+  labels: Record<string, string>;
+  provider: string;
+  status: string;
+  archived: boolean;
+  internal: boolean;
+}
+
+function toTeamAgentView(
+  live: ManagedAgent | null,
+  record: StoredAgentRecord | null,
+): TeamAgentView | null {
+  if (live) {
+    return {
+      id: live.id,
+      title: record?.title ?? live.config.title ?? null,
+      labels: live.labels,
+      provider: live.provider,
+      status: live.lifecycle,
+      archived: Boolean(record?.archivedAt),
+      internal: Boolean(live.internal),
+    };
+  }
+  if (!record) return null;
+  return {
+    id: record.id,
+    title: record.title ?? null,
+    labels: record.labels,
+    provider: record.provider,
+    status: record.lastStatus,
+    archived: Boolean(record.archivedAt),
+    internal: Boolean(record.internal),
+  };
+}
+
+type TeamMessageOutcome = "delivered" | "queued" | "failed";
+
+function describeTeamMessageDisposition(disposition: PromptDispatchDisposition): {
+  outcome: TeamMessageOutcome;
+  detail: string;
+} {
+  if (disposition === "steered") {
+    return {
+      outcome: "queued",
+      detail:
+        "The receiver is mid-turn; the message joined its running turn and is read when its provider next accepts input.",
+    };
+  }
+  return {
+    outcome: "delivered",
+    detail: "The receiver accepted the message and started a turn on it.",
+  };
 }
 
 async function isExistingDirectory(path: string): Promise<boolean> {
@@ -1758,6 +1846,11 @@ function createToolCatalog(
       }
       const selectedProvider = resolveRequiredProviderModel(parsedArgs.provider).provider;
       const inheritedConfig = resolveInheritedProviderConfig(selectedProvider);
+      const callerForTeam = resolvedArgs.detached ? null : resolveCallerAgent();
+      const labels = withDaemonOwnedTeamLabels(
+        parsedArgs.labels,
+        callerForTeam ? resolveTeamRunId(callerForTeam) : null,
+      );
       const { snapshot, initialPromptStarted } = await createAgentCommand(
         {
           agentManager,
@@ -1784,7 +1877,7 @@ function createToolCatalog(
           thinking: parsedArgs.settings?.thinkingOptionId,
           features: parsedArgs.settings?.features,
           labels: {
-            ...parsedArgs.labels,
+            ...labels,
             ...(callerAgentId && !resolvedArgs.detached && options.serverId
               ? { "paseo.parent-server-id": options.serverId }
               : {}),
@@ -2424,6 +2517,14 @@ function createToolCatalog(
       },
     },
     async ({ agentId, name, labels, settings }) => {
+      const daemonOwned = Object.keys(labels ?? {}).filter((key) =>
+        DAEMON_OWNED_TEAM_LABELS.includes(key),
+      );
+      if (daemonOwned.length > 0) {
+        throw new PaseoToolInputError(
+          `Labels ${daemonOwned.join(", ")} are set by the daemon and cannot be changed`,
+        );
+      }
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
       }
@@ -3404,6 +3505,192 @@ function createToolCatalog(
           snapshot.lifecycle === "initializing" ||
           agentManager.hasInFlightRun(agentId),
       });
+    },
+  );
+
+  const teamMessageLimiter = options.teamMessageLimiter ?? defaultTeamMessageLimiter;
+
+  async function loadTeamAgentView(agentId: string): Promise<TeamAgentView | null> {
+    return toTeamAgentView(agentManager.getAgent(agentId), await agentStorage.get(agentId));
+  }
+
+  async function requireTeamPeerContext(
+    toolName: string,
+  ): Promise<{ caller: TeamAgentView; runId: string; teamName: string }> {
+    if (!callerAgentId) {
+      throw new PaseoToolInputError(`${toolName} is only available to agents in a team run`);
+    }
+    const caller = await loadTeamAgentView(callerAgentId);
+    if (!caller) {
+      throw new PaseoToolInputError(`Caller agent ${callerAgentId} not found`);
+    }
+    const runId = resolveTeamRunId(caller);
+    if (!runId) {
+      throw new PaseoToolInputError(
+        `${toolName} is only available to members of a team run; you are not in one`,
+      );
+    }
+    const lead = runId === caller.id ? caller : await loadTeamAgentView(runId);
+    const teamName = lead?.labels[AGENT_TEAM_LABEL]?.trim();
+    if (!teamName) {
+      throw new PaseoToolInputError(`Team run ${runId} has no team chat`);
+    }
+    if (options.agentTeams?.[teamName]?.peerMessaging !== true) {
+      throw new PaseoToolInputError(
+        `Team "${teamName}" does not enable peer messaging; set daemon.teams.${teamName}.peerMessaging to true`,
+      );
+    }
+    return { caller, runId, teamName };
+  }
+
+  async function listTeamRunMembers(runId: string): Promise<TeamAgentView[]> {
+    const records = new Map((await agentStorage.list()).map((record) => [record.id, record]));
+    const views = new Map<string, TeamAgentView>();
+    for (const live of agentManager.listAgents()) {
+      const view = toTeamAgentView(live, records.get(live.id) ?? null);
+      if (view) views.set(view.id, view);
+    }
+    for (const record of records.values()) {
+      if (views.has(record.id)) continue;
+      const view = toTeamAgentView(null, record);
+      if (view) views.set(view.id, view);
+    }
+    return [...views.values()]
+      .filter((view) => !view.internal && !view.archived && resolveTeamRunId(view) === runId)
+      .sort((a, b) => Number(b.id === runId) - Number(a.id === runId));
+  }
+
+  registerTool(
+    "list_team_members",
+    {
+      title: "List team members",
+      description:
+        "List the members of your team run: the team chat and every helper it (or its helpers) created. Only available when your team enables peer messaging.",
+      inputSchema: {},
+      outputSchema: {
+        teamRunId: z.string(),
+        team: z.string(),
+        members: z.array(
+          z.object({
+            agentId: z.string(),
+            title: z.string().nullable(),
+            role: z.string().optional(),
+            provider: z.string(),
+            status: z.string(),
+            isParent: z.boolean(),
+            isSelf: z.boolean(),
+          }),
+        ),
+      },
+    },
+    async () => {
+      const { caller, runId, teamName } = await requireTeamPeerContext("list_team_members");
+      const parentId = getParentAgentIdFromLabels(caller.labels);
+      const members: Array<Record<string, string | boolean | null>> = [];
+      for (const member of await listTeamRunMembers(runId)) {
+        const entry: Record<string, string | boolean | null> = {
+          agentId: member.id,
+          title: member.title,
+          provider: member.provider,
+          status: member.status,
+          isParent: member.id === parentId,
+          isSelf: member.id === caller.id,
+        };
+        const role = member.labels[AGENT_TEAM_ROLE_LABEL]?.trim();
+        if (role) entry.role = role;
+        members.push(entry);
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ teamRunId: runId, team: teamName, members }),
+      };
+    },
+  );
+
+  registerTool(
+    "send_team_message",
+    {
+      title: "Send team message",
+      description: `Send a message to another member of your team run (a teammate or the team chat). The receiver sees who sent it. Returns outcome "delivered" (it started a turn), "queued" (it joined the receiver's running turn) or "failed" with the reason. Limits: ${TEAM_MESSAGE_MAX_LENGTH} characters, 20 messages per sender per minute, 200 per team run. Only available when your team enables peer messaging.`,
+      inputSchema: {
+        agentId: z.string().min(1).describe("A member id from list_team_members."),
+        message: z
+          .string()
+          .trim()
+          .min(1, "message is required")
+          .max(
+            TEAM_MESSAGE_MAX_LENGTH,
+            `message must be ${TEAM_MESSAGE_MAX_LENGTH} characters or fewer`,
+          ),
+      },
+      outputSchema: {
+        outcome: z.enum(["delivered", "queued", "failed"]),
+        detail: z.string(),
+        agentId: z.string(),
+        disposition: z.enum(["turn_started", "out_of_band", "steered"]).optional(),
+      },
+    },
+    async ({ agentId, message }: { agentId: string; message: string }) => {
+      const { caller, runId } = await requireTeamPeerContext("send_team_message");
+      if (agentId === caller.id) {
+        throw new PaseoToolInputError("You cannot send a team message to yourself");
+      }
+      const target = await loadTeamAgentView(agentId);
+      if (!target || target.internal) {
+        throw new PaseoToolInputError(`Agent ${agentId} not found`);
+      }
+      if (resolveTeamRunId(target) !== runId) {
+        throw new PaseoToolInputError(`Agent ${agentId} is not a member of your team run`);
+      }
+      if (target.archived || agentManager.getAgent(agentId)?.lifecycle === "closed") {
+        throw new PaseoToolInputError(
+          `Agent ${agentId} is archived or closed and cannot receive messages`,
+        );
+      }
+      const failed = (detail: string): PaseoToolResult => ({
+        content: [],
+        structuredContent: ensureValidJson({ outcome: "failed", detail, agentId }),
+      });
+      const admission = teamMessageLimiter.admit({ senderId: caller.id, runId });
+      if (!admission.admitted) {
+        return failed(admission.reason);
+      }
+
+      const role = caller.labels[AGENT_TEAM_ROLE_LABEL]?.trim();
+      const sender = `${caller.title ?? "Teammate"}${role ? ` (${role})` : ""} [agent ${caller.id}]`;
+      const prompt = [
+        `Message from ${sender}:`,
+        "",
+        message,
+        "",
+        `To reply, call send_team_message with agentId "${caller.id}".`,
+      ].join("\n");
+      try {
+        const { disposition } = await sendPromptToAgent({
+          agentManager,
+          agentStorage,
+          agentId,
+          prompt,
+          source: { kind: "agent-message", agentId: caller.id },
+          activeTurnBehavior: "steer",
+          unarchive: false,
+          logger: childLogger,
+        });
+        if (disposition === "turn_started") {
+          await waitForAgentRunStartWithTimeout(agentManager, agentId);
+        }
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ...describeTeamMessageDisposition(disposition),
+            agentId,
+            disposition,
+          }),
+        };
+      } catch (error) {
+        childLogger.warn({ err: error, agentId, senderId: caller.id }, "Team message failed");
+        return failed(error instanceof Error ? error.message : String(error));
+      }
     },
   );
 

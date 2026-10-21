@@ -189,6 +189,9 @@
               "description": {
                 "type": "string"
               },
+              "peerMessaging": {
+                "type": "boolean"
+              },
               "roles": {
                 "type": "object",
                 "propertyNames": {

@@ -7,6 +7,7 @@ import {
   AgentTeamProfileNotFoundError,
   listResolvedAgentTeams,
   resolveAgentTeam,
+  resolveTeamRunId,
   type AgentTeamsConfig,
 } from "./agent-teams.js";
 
@@ -46,6 +47,17 @@ describe("daemon.teams config", () => {
     expect(parsed.data?.daemon?.teams).toEqual(fullStack);
   });
 
+  test("accepts a boolean peerMessaging and rejects other types", () => {
+    const roles = { r: { description: "x", provider: "codex" } };
+    const enabled = parseTeams({ t: { peerMessaging: true, roles } });
+    expect(enabled.success).toBe(true);
+    expect(enabled.data?.daemon?.teams?.t?.peerMessaging).toBe(true);
+    expect(parseTeams({ t: { peerMessaging: false, roles } }).success).toBe(true);
+    for (const peerMessaging of ["true", 1, null, {}]) {
+      expect(parseTeams({ t: { peerMessaging, roles } }).success).toBe(false);
+    }
+  });
+
   test("rejects a team without roles", () => {
     const parsed = parseTeams({ empty: { roles: {} } });
     expect(parsed.success).toBe(false);
@@ -79,6 +91,14 @@ describe("daemon.teams config", () => {
       t: { roles: { r: { description: "x", provider: "codex", foo: 1 } } },
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("resolveTeamRunId", () => {
+  test("is the team-run label, else the agent's own id when it leads a team, else null", () => {
+    expect(resolveTeamRunId({ id: "helper", labels: { "paseo.team-run": "chat" } })).toBe("chat");
+    expect(resolveTeamRunId({ id: "chat", labels: { "paseo.team": "full-stack" } })).toBe("chat");
+    expect(resolveTeamRunId({ id: "solo", labels: {} })).toBeNull();
   });
 });
 

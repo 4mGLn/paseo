@@ -165,6 +165,12 @@ export const PASEO_TOOL_CATALOG = {
       outputFields: ["status", "agentStatus", "lastMessage", "permission"],
     },
   },
+  list_team_members: { label: "List team members" },
+  send_team_message: {
+    label: "Message teammate",
+    context: targetAgent(),
+    detail: { inputOrder: ["agentId", "message"], outputFields: ["outcome", "detail"] },
+  },
   list_agents: {
     label: "List agents",
     detail: { inputOrder: ["cwd", "statuses", "sinceHours", "limit", "includeArchived"] },

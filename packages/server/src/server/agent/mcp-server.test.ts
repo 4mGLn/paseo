@@ -78,6 +78,13 @@ import { areEquivalentPaths } from "../../utils/path.js";
 import { createTerminalManager, type TerminalManager } from "../../terminal/terminal-manager.js";
 import { createWorkerTerminalManager } from "../../terminal/worker-terminal-manager.js";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import {
+  AGENT_TEAM_LABEL,
+  AGENT_TEAM_ROLE_LABEL,
+  AGENT_TEAM_RUN_LABEL,
+  type AgentTeamsConfig,
+} from "./agent-teams.js";
+import { TeamMessageLimiter } from "./team-messaging.js";
 import { PASEO_TOOL_NAMES } from "@getpaseo/protocol/paseo-tool-presentation/index";
 import { MutableDaemonConfigSchema, type AgentProfile } from "@getpaseo/protocol/messages";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
@@ -7289,5 +7296,456 @@ describe("wait_for_agent", () => {
     } finally {
       await scenario.cleanup();
     }
+  });
+});
+
+describe("team peer messaging tools", () => {
+  const logger = createTestLogger();
+  const teams: AgentTeamsConfig = {
+    pair: {
+      peerMessaging: true,
+      roles: { implementer: { description: "Writes code.", provider: "claude" } },
+    },
+    quiet: { roles: { implementer: { description: "Writes code.", provider: "claude" } } },
+  };
+
+  interface ToolCallResult {
+    structured: LooseStructuredContent;
+    isError: boolean;
+    text: string;
+  }
+
+  interface TeamScenario {
+    agentManager: AgentManager;
+    storage: AgentStorage;
+    heldCodex: HeldTurnAgentClient;
+    chatId: string;
+    createMember(input: {
+      title: string;
+      labels?: Record<string, string>;
+      provider?: AgentProvider;
+    }): Promise<string>;
+    callTool(
+      callerAgentId: string | null,
+      name: string,
+      args: Record<string, unknown>,
+      options?: { limiter?: TeamMessageLimiter },
+    ): Promise<ToolCallResult>;
+    cleanup(): Promise<void>;
+  }
+
+  async function createTeamScenario(): Promise<TeamScenario> {
+    const workdir = await mkdtemp(join(tmpdir(), "mcp-team-messaging-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const heldCodex = new HeldTurnAgentClient("codex", true, { steerResult: "accepted" });
+    const agentManager = new AgentManager({
+      clients: { ...createTestAgentClients(), codex: heldCodex },
+      registry: storage,
+      logger,
+    });
+    const createMember: TeamScenario["createMember"] = async ({ title, labels, provider }) =>
+      (
+        await agentManager.createAgent(
+          { provider: provider ?? "claude", cwd: workdir, title, modeId: "bypassPermissions" },
+          undefined,
+          { workspaceId: "wks_team", ...(labels ? { labels } : {}) },
+        )
+      ).id;
+    const chatId = await createMember({
+      title: "Team chat",
+      labels: { [AGENT_TEAM_LABEL]: "pair" },
+    });
+    const closers: Array<() => Promise<void>> = [];
+
+    return {
+      agentManager,
+      storage,
+      heldCodex,
+      chatId,
+      createMember,
+      async callTool(callerAgentId, name, args, options) {
+        const server = await createAgentMcpServer({
+          agentManager,
+          agentStorage: storage,
+          ...(callerAgentId ? { callerAgentId } : {}),
+          agentTeams: teams,
+          teamMessageLimiter: options?.limiter ?? new TeamMessageLimiter(),
+          providerSnapshotManager: createOpenCodeManager().manager,
+          logger,
+        });
+        const client = await connectInMemoryMcpClient(server);
+        closers.push(async () => {
+          await client.close();
+          await server.close();
+        });
+        const result = await client.callTool({ name, arguments: args });
+        const content = (result.content ?? []) as LooseContentBlock[];
+        return {
+          structured: (result.structuredContent ?? {}) as LooseStructuredContent,
+          isError: result.isError === true,
+          text: content.map((block) => block.text ?? "").join("\n"),
+        };
+      },
+      async cleanup() {
+        for (const session of heldCodex.sessions) {
+          await session.interrupt();
+        }
+        for (const close of closers) await close();
+        await removeAgentStateDir(agentManager, storage, workdir);
+      },
+    };
+  }
+
+  function helperLabels(runId: string, parentId: string, role: string): Record<string, string> {
+    return {
+      [AGENT_TEAM_RUN_LABEL]: runId,
+      [PARENT_AGENT_ID_LABEL]: parentId,
+      [AGENT_TEAM_ROLE_LABEL]: role,
+    };
+  }
+
+  function agentMessages(agentManager: AgentManager, agentId: string): string[] {
+    return agentManager
+      .getTimeline(agentId)
+      .filter((item) => item.type === "tool_call" && item.name === "agent_message")
+      .map((item) => JSON.stringify(item));
+  }
+
+  it("lists the caller's team run with roles, self and parent", async () => {
+    const scenario = await createTeamScenario();
+    try {
+      const { chatId } = scenario;
+      const implementer = await scenario.createMember({
+        title: "Implementer",
+        labels: helperLabels(chatId, chatId, "implementer"),
+      });
+      const reviewer = await scenario.createMember({
+        title: "Reviewer",
+        labels: helperLabels(chatId, chatId, "reviewer"),
+      });
+      const subHelper = await scenario.createMember({
+        title: "Sub helper",
+        labels: { [AGENT_TEAM_RUN_LABEL]: chatId, [PARENT_AGENT_ID_LABEL]: implementer },
+      });
+      await scenario.createMember({ title: "Outsider" });
+      const archived = await scenario.createMember({
+        title: "Archived",
+        labels: helperLabels(chatId, chatId, "reviewer"),
+      });
+      await scenario.agentManager.archiveAgent(archived);
+
+      const { structured, isError } = await scenario.callTool(implementer, "list_team_members", {});
+
+      expect(isError).toBe(false);
+      expect(structured.teamRunId).toBe(chatId);
+      expect(structured.team).toBe("pair");
+      const members = z
+        .array(z.object({ agentId: z.string() }).passthrough())
+        .parse(structured.members);
+      expect(members[0]?.agentId).toBe(chatId);
+      expect(members).toHaveLength(4);
+      expect(members).toEqual(
+        expect.arrayContaining([
+          {
+            agentId: chatId,
+            title: "Team chat",
+            provider: "claude",
+            status: "idle",
+            isParent: true,
+            isSelf: false,
+          },
+          expect.objectContaining({
+            agentId: implementer,
+            role: "implementer",
+            isParent: false,
+            isSelf: true,
+          }),
+          expect.objectContaining({ agentId: reviewer, role: "reviewer", isSelf: false }),
+          expect.objectContaining({ agentId: subHelper, title: "Sub helper", isParent: false }),
+        ]),
+      );
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("delivers a message marked with the sender and reports delivered", async () => {
+    const scenario = await createTeamScenario();
+    try {
+      const { chatId } = scenario;
+      const implementer = await scenario.createMember({
+        title: "Implementer",
+        labels: helperLabels(chatId, chatId, "implementer"),
+      });
+      const reviewer = await scenario.createMember({
+        title: "Reviewer",
+        labels: helperLabels(chatId, chatId, "reviewer"),
+      });
+
+      const { structured, isError } = await scenario.callTool(implementer, "send_team_message", {
+        agentId: reviewer,
+        message: "Please review src/feature.ts",
+      });
+
+      expect(isError).toBe(false);
+      expect(structured).toMatchObject({
+        outcome: "delivered",
+        agentId: reviewer,
+        disposition: "turn_started",
+      });
+      await vi.waitFor(() => {
+        expect(agentMessages(scenario.agentManager, reviewer)).toHaveLength(1);
+      });
+      const [delivered] = agentMessages(scenario.agentManager, reviewer);
+      expect(delivered).toContain(`"id":"${implementer}"`);
+      expect(delivered).toContain(
+        `Message from Implementer (implementer) [agent ${implementer}]:\\n\\nPlease review src/feature.ts`,
+      );
+
+      const toChat = await scenario.callTool(reviewer, "send_team_message", {
+        agentId: chatId,
+        message: "Review done",
+      });
+      expect(toChat.structured).toMatchObject({ outcome: "delivered", agentId: chatId });
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("reports queued when the receiver is mid-turn and the message joins it", async () => {
+    const scenario = await createTeamScenario();
+    try {
+      const { chatId } = scenario;
+      const implementer = await scenario.createMember({
+        title: "Implementer",
+        labels: helperLabels(chatId, chatId, "implementer"),
+      });
+      const busy = await scenario.createMember({
+        title: "Busy reviewer",
+        provider: "codex",
+        labels: helperLabels(chatId, chatId, "reviewer"),
+      });
+
+      const first = await scenario.callTool(implementer, "send_team_message", {
+        agentId: busy,
+        message: "first",
+      });
+      expect(first.structured).toMatchObject({ outcome: "delivered" });
+      expect(scenario.agentManager.getAgent(busy)?.lifecycle).toBe("running");
+
+      const second = await scenario.callTool(chatId, "send_team_message", {
+        agentId: busy,
+        message: "second while busy",
+      });
+
+      expect(second.isError).toBe(false);
+      expect(second.structured).toMatchObject({ outcome: "queued", disposition: "steered" });
+      const steered = scenario.heldCodex.sessions.flatMap((session) => session.steeredPrompts);
+      expect(JSON.stringify(steered)).toContain("second while busy");
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("refuses targets outside the caller's run, itself, and archived members", async () => {
+    const scenario = await createTeamScenario();
+    try {
+      const { chatId } = scenario;
+      const implementer = await scenario.createMember({
+        title: "Implementer",
+        labels: helperLabels(chatId, chatId, "implementer"),
+      });
+      const otherChat = await scenario.createMember({
+        title: "Other chat",
+        labels: { [AGENT_TEAM_LABEL]: "pair" },
+      });
+      const otherHelper = await scenario.createMember({
+        title: "Other helper",
+        labels: helperLabels(otherChat, otherChat, "reviewer"),
+      });
+      const outsider = await scenario.createMember({ title: "Outsider" });
+      const archived = await scenario.createMember({
+        title: "Archived",
+        labels: helperLabels(chatId, chatId, "reviewer"),
+      });
+      await scenario.agentManager.archiveAgent(archived);
+
+      const cases: Array<[string, string]> = [
+        [otherChat, "is not a member of your team run"],
+        [otherHelper, "is not a member of your team run"],
+        [outsider, "is not a member of your team run"],
+        [implementer, "cannot send a team message to yourself"],
+        [archived, "archived or closed"],
+        [randomUUID(), "not found"],
+      ];
+      for (const [agentId, expected] of cases) {
+        const result = await scenario.callTool(implementer, "send_team_message", {
+          agentId,
+          message: "hello",
+        });
+        expect(result.isError).toBe(true);
+        expect(result.text).toContain(expected);
+      }
+      expect(agentMessages(scenario.agentManager, otherHelper)).toEqual([]);
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("refuses callers without peer messaging or outside a team run, and bad messages", async () => {
+    const scenario = await createTeamScenario();
+    try {
+      const { chatId } = scenario;
+      const reviewer = await scenario.createMember({
+        title: "Reviewer",
+        labels: helperLabels(chatId, chatId, "reviewer"),
+      });
+      const quietChat = await scenario.createMember({
+        title: "Quiet chat",
+        labels: { [AGENT_TEAM_LABEL]: "quiet" },
+      });
+      const quietHelper = await scenario.createMember({
+        title: "Quiet helper",
+        labels: helperLabels(quietChat, quietChat, "implementer"),
+      });
+      const loner = await scenario.createMember({ title: "Loner" });
+
+      for (const name of ["list_team_members", "send_team_message"]) {
+        const args = name === "send_team_message" ? { agentId: quietChat, message: "hi" } : {};
+        const quiet = await scenario.callTool(quietHelper, name, args);
+        expect(quiet.isError).toBe(true);
+        expect(quiet.text).toContain('Team "quiet" does not enable peer messaging');
+
+        const alone = await scenario.callTool(loner, name, args);
+        expect(alone.isError).toBe(true);
+        expect(alone.text).toContain("you are not in one");
+
+        const topLevel = await scenario.callTool(null, name, args);
+        expect(topLevel.isError).toBe(true);
+        expect(topLevel.text).toContain("only available to agents in a team run");
+      }
+
+      for (const message of ["", "   ", "x".repeat(8001)]) {
+        const result = await scenario.callTool(chatId, "send_team_message", {
+          agentId: reviewer,
+          message,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.text).toContain("message");
+      }
+      expect(agentMessages(scenario.agentManager, reviewer)).toEqual([]);
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("stamps the run on helpers and helpers of helpers, ignoring forged team labels", async () => {
+    const scenario = await createTeamScenario();
+    try {
+      const { chatId } = scenario;
+      const created = await scenario.callTool(chatId, "create_agent", {
+        title: "Implementer",
+        provider: "claude/test-model",
+        initialPrompt: "say done",
+        notifyOnFinish: false,
+        labels: {
+          [AGENT_TEAM_ROLE_LABEL]: "implementer",
+          [AGENT_TEAM_RUN_LABEL]: "forged-run",
+          [AGENT_TEAM_LABEL]: "pair",
+        },
+      });
+      expect(created.isError).toBe(false);
+      const helperId = String(created.structured.agentId);
+      const helper = scenario.agentManager.getAgent(helperId);
+      expect(helper?.labels[AGENT_TEAM_RUN_LABEL]).toBe(chatId);
+      expect(helper?.labels[AGENT_TEAM_ROLE_LABEL]).toBe("implementer");
+      expect(helper?.labels[AGENT_TEAM_LABEL]).toBeUndefined();
+
+      const nested = await scenario.callTool(helperId, "create_agent", {
+        title: "Sub helper",
+        provider: "claude/test-model",
+        initialPrompt: "say done",
+        notifyOnFinish: false,
+        labels: { [AGENT_TEAM_RUN_LABEL]: "forged-run" },
+      });
+      expect(nested.isError).toBe(false);
+      const nestedHelper = scenario.agentManager.getAgent(String(nested.structured.agentId));
+      expect(nestedHelper?.labels[AGENT_TEAM_RUN_LABEL]).toBe(chatId);
+      expect(nestedHelper?.labels[PARENT_AGENT_ID_LABEL]).toBe(helperId);
+
+      const outsider = await scenario.createMember({ title: "Outsider" });
+      const outsiderChild = await scenario.callTool(outsider, "create_agent", {
+        title: "Joiner",
+        provider: "claude/test-model",
+        initialPrompt: "say done",
+        notifyOnFinish: false,
+        labels: { [AGENT_TEAM_RUN_LABEL]: chatId },
+      });
+      const joiner = scenario.agentManager.getAgent(String(outsiderChild.structured.agentId));
+      expect(joiner?.labels[AGENT_TEAM_RUN_LABEL]).toBeUndefined();
+
+      for (const label of [AGENT_TEAM_RUN_LABEL, AGENT_TEAM_LABEL]) {
+        const forged = await scenario.callTool(outsider, "update_agent", {
+          agentId: outsider,
+          labels: { [label]: chatId },
+        });
+        expect(forged.isError).toBe(true);
+        expect(forged.text).toContain("set by the daemon and cannot be changed");
+      }
+      expect(
+        scenario.agentManager.getAgent(outsider)?.labels[AGENT_TEAM_RUN_LABEL],
+      ).toBeUndefined();
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("returns failed once a sender exceeds its rate or the run hits its cap", async () => {
+    const scenario = await createTeamScenario();
+    try {
+      const { chatId } = scenario;
+      const implementer = await scenario.createMember({
+        title: "Implementer",
+        labels: helperLabels(chatId, chatId, "implementer"),
+      });
+      const reviewer = await scenario.createMember({
+        title: "Reviewer",
+        labels: helperLabels(chatId, chatId, "reviewer"),
+      });
+      const limiter = new TeamMessageLimiter({ limits: { perSenderPerMinute: 2, perRun: 3 } });
+      const send = (from: string, to: string) =>
+        scenario.callTool(from, "send_team_message", { agentId: to, message: "ping" }, { limiter });
+
+      expect((await send(implementer, reviewer)).structured.outcome).toBe("delivered");
+      expect((await send(implementer, reviewer)).structured.outcome).toBe("delivered");
+      const limited = await send(implementer, reviewer);
+      expect(limited.isError).toBe(false);
+      expect(limited.structured).toMatchObject({ outcome: "failed" });
+      expect(String(limited.structured.detail)).toContain("at most 2 team messages per sender");
+
+      expect((await send(reviewer, implementer)).structured.outcome).toBe("delivered");
+      const capped = await send(reviewer, implementer);
+      expect(capped.structured).toMatchObject({ outcome: "failed" });
+      expect(String(capped.structured.detail)).toContain("limit of 3 team messages");
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+});
+
+describe("TeamMessageLimiter", () => {
+  it("admits a sender again once its minute has passed but never past the run cap", () => {
+    let now = 0;
+    const limiter = new TeamMessageLimiter({
+      limits: { perSenderPerMinute: 1, perRun: 2 },
+      now: () => now,
+    });
+    expect(limiter.admit({ senderId: "a", runId: "r" }).admitted).toBe(true);
+    expect(limiter.admit({ senderId: "a", runId: "r" }).admitted).toBe(false);
+    now = 60_000;
+    expect(limiter.admit({ senderId: "a", runId: "r" }).admitted).toBe(true);
+    now = 120_000;
+    expect(limiter.admit({ senderId: "a", runId: "r" }).admitted).toBe(false);
+    expect(limiter.admit({ senderId: "b", runId: "other" }).admitted).toBe(true);
   });
 });
