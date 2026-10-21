@@ -1,0 +1,5 @@
+context platform=android timeout=20000 retries=0
+
+open "sh.paseo"
+wait "text=\"Partition review payload limit\"" 15000
+close
