@@ -36,7 +36,7 @@ All items were verified against source at the base commit.
 - **No durable event log.** Timeline `seq` is in memory (`S/agent/agent-timeline-store.ts:45`). `MessageReceipts` is per-request idempotency, not an ordered log. `VersionedValue` in `S/directory-sync/internal/versioned-collection.ts` is for snapshot sync.
 - **No conflict dry run, rebase, cherry-pick, or patch-apply helper.** Conflict detection matches stderr strings (`S/utils/checkout-git.ts` ~:3726, ~:3908). Phase 3 needs `git merge-tree` or a throwaway worktree.
 - **No push events for list-style features.** Schedules poll every 5 seconds (`packages/app/src/hooks/use-schedules.ts:33`). A Goal progress view needs outbound events.
-- **No wait tool for agents.** Callers poll `get_agent_status` or `get_agent_activity`. The Manager uses `waitForAgentEvent` internally instead.
+- **Agent wait.** `wait_for_agent` (added after the goal phases) lets a chat agent block on one of its own subagents; before it, callers polled `get_agent_status` or `get_agent_activity`.
 - **`loop/*` is a stub.** Schemas and permission entries exist (`packages/protocol/src/loop/rpc-schemas.ts`, `S/authorization/operation-permissions.ts:117-121`), but there is no handler, client method, or UI. Decide whether to remove it before adding Goal RPCs with similar meaning.
 
 ## Extension points
