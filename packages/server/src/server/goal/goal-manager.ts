@@ -366,10 +366,17 @@ export class GoalManager {
         break;
       case "goal.completed":
         this.clearDeadline(goal.id);
+        this.notifyOrigin(goal, "completed");
         break;
       case "goal.cancelled":
       case "goal.failed":
         this.clearDeadline(goal.id);
+        this.notifyOrigin(
+          goal,
+          event.type === "goal.failed"
+            ? `failed: ${goal.failureReason ?? "unknown reason"}`
+            : "cancelled",
+        );
         this.track(this.abortGoalWork(goal.id));
         this.track(this.pipeline.abort(goal.id));
         break;
@@ -952,6 +959,15 @@ export class GoalManager {
       goalId,
       type: "goal.failed",
       reason,
+    });
+  }
+
+  /** Tell the chat the goal was started from how it ended. Best effort, once, as the goal ends. */
+  private notifyOrigin(goal: Goal, outcome: string): void {
+    const origin = goal.config?.originAgentId;
+    if (!origin) return;
+    this.agents.notify(origin, buildLeadNotification(goal, outcome)).catch((error) => {
+      this.logger.warn({ err: error, goalId: goal.id }, "Failed to notify the originating chat");
     });
   }
 

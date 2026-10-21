@@ -469,6 +469,48 @@ describe("re-planning", () => {
   });
 });
 
+describe("originating chat", () => {
+  test("is told how the goal ended: completed, failed or cancelled", async () => {
+    for (const ending of ["completed", "failed", "cancelled"] as const) {
+      const env = createGoalTestEnv();
+      await env.init();
+      try {
+        const config = { ...CONFIG, originAgentId: "chat-1", notifyLead: false };
+        if (ending === "failed")
+          env.script([task("a")], () => ({ outcome: "failed", error: "nope" }));
+        else env.script([task("a")], ending === "cancelled" ? () => "hold" : undefined);
+        const { store, manager } = await env.boot();
+        await env.createGoal(store, config);
+        if (ending === "cancelled") {
+          await new Promise((r) => setTimeout(r, 80));
+          await store.dispatch("g1", { id: "cancel", goalId: "g1", type: "goal.cancelled" });
+        }
+        await new Promise((r) => setTimeout(r, 80));
+        await env.settle(manager).catch(() => undefined);
+        const toChat = env.harness.notified.filter((n) => n.agentId === "chat-1");
+        expect(toChat, ending).toHaveLength(1);
+        expect(toChat[0]?.text).toContain(ending === "failed" ? "failed:" : ending);
+      } finally {
+        await env.cleanup();
+      }
+    }
+  });
+
+  test("a goal started without a chat notifies no one but its Lead", async () => {
+    const env = createGoalTestEnv();
+    await env.init();
+    try {
+      env.script([task("a")]);
+      const { store, manager } = await env.boot();
+      await env.createGoal(store, { ...CONFIG, notifyLead: false });
+      await env.settle(manager);
+      expect(env.harness.notified).toHaveLength(0);
+    } finally {
+      await env.cleanup();
+    }
+  });
+});
+
 describe("extractPlan", () => {
   test("uses the last fenced block and accepts a bare array", () => {
     const text = `first\n\`\`\`json\n[{"id":"x","title":"X","description":"","kind":"read","dependsOn":[]}]\n\`\`\`\nrevised\n\`\`\`json\n[{"id":"y","title":"Y","description":"","kind":"read","dependsOn":[]}]\n\`\`\``;

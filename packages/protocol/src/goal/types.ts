@@ -91,6 +91,8 @@ export const GoalConfigSchema = z.object({
   // What to do when an unattended agent asks for a permission: fail the run, or leave
   // the request pending in Paseo for a person to answer (bounded by the run timeout).
   onPermissionRequest: z.enum(["fail", "wait"]).optional(),
+  // The chat the goal was started from. Its outcome is posted back there when the goal ends.
+  originAgentId: z.string().trim().min(1).optional(),
   // Providers the goal may use; a plan naming any other is sent back to the Lead.
   allowedProviders: z.array(AgentProviderSchema.trim().min(1)).min(1).optional(),
 });
