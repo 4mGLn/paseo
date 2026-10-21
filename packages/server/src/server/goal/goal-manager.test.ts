@@ -563,30 +563,32 @@ describe("notification delivery", () => {
     ).toEqual(["failed", "delivered"]);
   });
 
-  test("three failed attempts leave the notice failed with the last error", async () => {
+  test("five failed attempts leave the notice failed with the last error", async () => {
     env.script([task("a")]);
-    env.harness.notifyFailures = 5;
+    env.harness.notifyFailures = 10;
     const { store, manager } = await env.boot();
     await env.createGoal(store);
     await env.settle(manager);
-    env.clock.advance(5_000);
-    await env.settle(manager);
-    expect(leadNotice(store)).toMatchObject({ status: "pending", attempts: 2 });
-    env.clock.advance(29_999);
-    await env.settle(manager);
-    expect(env.harness.notifyAttempts).toBe(2);
-    env.clock.advance(1);
-    await env.settle(manager);
+    // The wait after attempt n, for n = 1..4.
+    const waits = [5_000, 30_000, 120_000, 300_000];
+    for (const [i, wait] of waits.entries()) {
+      expect(leadNotice(store)).toMatchObject({ status: "pending", attempts: i + 1 });
+      env.clock.advance(wait - 1);
+      await env.settle(manager);
+      expect(env.harness.notifyAttempts).toBe(i + 1);
+      env.clock.advance(1);
+      await env.settle(manager);
+    }
 
     expect(leadNotice(store)).toMatchObject({
       status: "failed",
-      attempts: 3,
+      attempts: 5,
       lastError: "agent agent-2 unavailable",
     });
-    // No fourth attempt, however long it waits.
-    env.clock.advance(600_000);
+    // No sixth attempt, however long it waits.
+    env.clock.advance(3_600_000);
     await env.settle(manager);
-    expect(env.harness.notifyAttempts).toBe(3);
+    expect(env.harness.notifyAttempts).toBe(5);
     expect(env.harness.notified).toHaveLength(0);
   });
 

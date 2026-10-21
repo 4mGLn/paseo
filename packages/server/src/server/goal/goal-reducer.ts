@@ -28,7 +28,13 @@ const TERMINAL_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set([
 ]);
 
 /** Delivery attempts per notification, the first included. */
-export const MAX_NOTIFICATION_ATTEMPTS = 3;
+export const MAX_NOTIFICATION_ATTEMPTS = 5;
+
+/**
+ * Wait before the next delivery attempt, indexed by attempts made so far minus one.
+ * One wait sits between each pair of attempts, so it is one shorter than the cap.
+ */
+export const NOTIFICATION_BACKOFF_MS = [5_000, 30_000, 120_000, 300_000];
 
 export function isTerminalGoalStatus(status: GoalStatus): boolean {
   return TERMINAL_GOAL_STATUSES.has(status);
