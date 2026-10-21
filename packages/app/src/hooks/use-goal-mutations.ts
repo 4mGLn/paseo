@@ -2,12 +2,14 @@ import { useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { Goal } from "@getpaseo/protocol/goal/types";
 import type { GoalCreateInput } from "@/goals/goal-form-model";
 import { goalsHostQueryKey } from "@/hooks/use-goals";
 import { useSessionStore } from "@/stores/session-store";
 
 export interface UseGoalMutationsResult {
-  createGoal: (input: GoalCreateInput) => Promise<void>;
+  /** Resolves with the created goal. */
+  createGoal: (input: GoalCreateInput) => Promise<Goal | null>;
   approvePlan: (goalId: string) => Promise<void>;
   cancelGoal: (goalId: string) => Promise<void>;
   isCreating: boolean;
@@ -39,9 +41,11 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
   }, [queryClient, serverId]);
 
   const createMutation = useMutation({
-    mutationFn: async (input: GoalCreateInput): Promise<void> => {
+    mutationFn: async (input: GoalCreateInput): Promise<Goal | null> => {
       const client = requireClient(serverId, unavailableMessage);
-      throwPayloadError(await client.goalCreate(input));
+      const payload = await client.goalCreate(input);
+      throwPayloadError(payload);
+      return payload.goal;
     },
     onSettled: invalidate,
   });

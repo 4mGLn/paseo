@@ -15,9 +15,12 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { GOAL_STATUS_BADGE, summarizeGoalProgress } from "@/goals/goal-derivation";
+import type { GoalFormPrefill } from "@/goals/goal-form-model";
 import { useGoalList } from "@/hooks/use-goals";
 import { useHostFeatureAvailabilityMap } from "@/runtime/host-features";
 import { useHosts } from "@/runtime/host-runtime";
+import { useLastWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
+import { useWorkspaceFields } from "@/stores/session-store-hooks";
 import { settingsStyles } from "@/styles/settings";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { resolveGoalsScreenBodyState } from "./goals-screen-state";
@@ -27,23 +30,29 @@ const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMut
 
 const EMPTY_GOALS: Goal[] = [];
 
-export function GoalsScreen(): ReactElement {
+interface GoalsScreenProps {
+  /** Opens on this host and goal, such as one just started from a chat. */
+  initialServerId?: string;
+  initialGoalId?: string;
+}
+
+export function GoalsScreen(props: GoalsScreenProps): ReactElement {
   const isFocused = useIsFocused();
 
   if (!isFocused) {
     return <View style={styles.container} />;
   }
 
-  return <GoalsScreenContent />;
+  return <GoalsScreenContent {...props} />;
 }
 
-function GoalsScreenContent(): ReactElement {
+function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps): ReactElement {
   const { t } = useTranslation();
   const hosts = useHosts();
   const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const goalsSupport = useHostFeatureAvailabilityMap(serverIds, "goals");
-  const [pickedServerId, setPickedServerId] = useState<string | null>(null);
-  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
+  const [pickedServerId, setPickedServerId] = useState<string | null>(initialServerId ?? null);
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(initialGoalId ?? null);
   const [isFormOpen, setIsFormOpen] = useState(false);
 
   // A picked host that was removed falls back to the first host that supports goals.
@@ -73,6 +82,8 @@ function GoalsScreenContent(): ReactElement {
   const openForm = useCallback(() => setIsFormOpen(true), []);
   const closeForm = useCallback(() => setIsFormOpen(false), []);
   const closeDetail = useCallback(() => setSelectedGoalId(null), []);
+  const selectCreatedGoal = useCallback((goal: Goal) => setSelectedGoalId(goal.id), []);
+  const formPrefill = useLastWorkspacePrefill(serverId);
 
   // The detail stays reachable only while the host can still serve goals.
   const detailGoalId = canCreate ? selectedGoalId : null;
@@ -116,8 +127,29 @@ function GoalsScreenContent(): ReactElement {
       >
         <View style={styles.column}>{body}</View>
       </ScrollView>
-      {isFormOpen ? <GoalFormSheet serverId={serverId} onClose={closeForm} /> : null}
+      {isFormOpen ? (
+        <GoalFormSheet
+          serverId={serverId}
+          prefill={formPrefill}
+          onClose={closeForm}
+          onCreated={selectCreatedGoal}
+        />
+      ) : null}
     </View>
+  );
+}
+
+/** The working directory starts from the last workspace you were in on this host. */
+function useLastWorkspacePrefill(serverId: string): GoalFormPrefill | undefined {
+  const lastWorkspace = useLastWorkspaceSelection();
+  const lastWorkspaceDirectory = useWorkspaceFields(
+    lastWorkspace?.serverId === serverId ? serverId : null,
+    lastWorkspace?.workspaceId ?? null,
+    (workspace) => workspace.workspaceDirectory,
+  );
+  return useMemo(
+    () => (lastWorkspaceDirectory ? { cwd: lastWorkspaceDirectory } : undefined),
+    [lastWorkspaceDirectory],
   );
 }
 
