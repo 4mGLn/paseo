@@ -64,6 +64,24 @@ import {
   ChatWaitResponseSchema,
 } from "./chat/rpc-schemas.js";
 import {
+  GoalCreateRequestSchema,
+  GoalListRequestSchema,
+  GoalInspectRequestSchema,
+  GoalProposePlanRequestSchema,
+  GoalApprovePlanRequestSchema,
+  GoalCancelRequestSchema,
+  GoalApproveChangeSetRequestSchema,
+  GoalApproveChangeSetResponseSchema,
+  GoalRequestChangesRequestSchema,
+  GoalRequestChangesResponseSchema,
+  GoalCreateResponseSchema,
+  GoalListResponseSchema,
+  GoalInspectResponseSchema,
+  GoalProposePlanResponseSchema,
+  GoalApprovePlanResponseSchema,
+  GoalCancelResponseSchema,
+} from "./goal/rpc-schemas.js";
+import {
   ScheduleCreateRequestSchema,
   ScheduleListRequestSchema,
   ScheduleInspectRequestSchema,
@@ -3726,6 +3744,14 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectRequestSchema,
   LoopLogsRequestSchema,
   LoopStopRequestSchema,
+  GoalCreateRequestSchema,
+  GoalListRequestSchema,
+  GoalInspectRequestSchema,
+  GoalProposePlanRequestSchema,
+  GoalApprovePlanRequestSchema,
+  GoalCancelRequestSchema,
+  GoalApproveChangeSetRequestSchema,
+  GoalRequestChangesRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -4096,6 +4122,8 @@ export const ServerInfoStatusPayloadSchema = z
         binaryChunkingV1: z.boolean().optional(),
         workspaceSetupObservation: z.boolean().optional(),
         workspaceSortTimes: z.boolean().optional(),
+        // COMPAT(goals): added in v0.12.0, remove gate after 2027-10-21.
+        goals: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
@@ -7613,6 +7641,14 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectResponseSchema,
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
+  GoalCreateResponseSchema,
+  GoalListResponseSchema,
+  GoalInspectResponseSchema,
+  GoalProposePlanResponseSchema,
+  GoalApprovePlanResponseSchema,
+  GoalCancelResponseSchema,
+  GoalApproveChangeSetResponseSchema,
+  GoalRequestChangesResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);
