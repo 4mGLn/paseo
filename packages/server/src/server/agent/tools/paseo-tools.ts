@@ -1,4 +1,9 @@
-import type { FinishSubscriptions, FinishRegistration } from "../finish-subscriptions/index.js";
+import type {
+  FinishNotificationHold,
+  FinishRegistration,
+  FinishSubscriptions,
+  WaitDeliveredOutcome,
+} from "../finish-subscriptions/index.js";
 import type { AgentMessageDelivery } from "../agent-messages/index.js";
 import {
   createHostResolver,
@@ -80,6 +85,8 @@ import {
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
 } from "../agent-prompt.js";
+import type { AgentPermissionRequest } from "../agent-sdk-types.js";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -230,6 +237,146 @@ function assertOptionsAbsent(
 ): void {
   if (options.some(([, value]) => value !== undefined)) {
     throw new PaseoToolInputError(message);
+  }
+}
+
+const WAIT_FOR_AGENT_DEFAULT_TIMEOUT_SECONDS = 600;
+const WAIT_FOR_AGENT_MIN_TIMEOUT_SECONDS = 1;
+const WAIT_FOR_AGENT_MAX_TIMEOUT_SECONDS = 1800;
+const WAIT_FOR_AGENT_MESSAGE_LIMIT = 4000;
+
+type WaitForAgentOutcome = "finished" | "error" | "permission_requested" | "timeout" | "closed";
+
+interface WaitForAgentResultInput {
+  outcome: WaitForAgentOutcome;
+  agentId: string;
+  agentStatus: string;
+  lastMessage: string | null;
+  permission?: AgentPermissionRequest | null;
+}
+
+function toWaitForAgentTurnOutcome(agentStatus: string): WaitForAgentOutcome {
+  if (agentStatus === "error") return "error";
+  if (agentStatus === "closed") return "closed";
+  return "finished";
+}
+
+function buildWaitForAgentResult(input: WaitForAgentResultInput): PaseoToolResult {
+  const message = input.lastMessage?.trim() ?? null;
+  const truncated = message !== null && message.length > WAIT_FOR_AGENT_MESSAGE_LIMIT;
+  const guidance: Record<WaitForAgentOutcome, string> = {
+    finished: "The agent's turn ended. lastMessage is its final response.",
+    error: "The agent's turn failed. Inspect it with get_agent_activity.",
+    permission_requested:
+      "The agent is blocked on a permission request. Answer it with respond_to_permission using agentId and requestId, then call wait_for_agent again.",
+    timeout:
+      "The wait timed out. The agent is still running; call wait_for_agent again to keep waiting.",
+    closed: "The agent was closed or archived and will not run further.",
+  };
+  return {
+    content: [],
+    structuredContent: ensureValidJson({
+      status: input.outcome,
+      agentId: input.agentId,
+      agentStatus: input.agentStatus,
+      lastMessage: truncated ? message.slice(0, WAIT_FOR_AGENT_MESSAGE_LIMIT) : message,
+      lastMessageTruncated: truncated,
+      ...(input.permission
+        ? {
+            permission: {
+              agentId: input.agentId,
+              requestId: input.permission.id,
+              request: sanitizePermissionRequest(input.permission),
+            },
+          }
+        : {}),
+      guidance: truncated
+        ? `${guidance[input.outcome]} lastMessage was truncated; use get_agent_activity for the full response.`
+        : guidance[input.outcome],
+    }),
+  };
+}
+
+interface WaitForSubagentTurnParams {
+  agentManager: AgentManager;
+  agentId: string;
+  /** Keeps finish notifications for this caller/child pair from repeating the wait's result. */
+  hold: FinishNotificationHold;
+  timeoutSeconds: number;
+  signal?: AbortSignal;
+  observesTurn: boolean;
+}
+
+async function waitForSubagentTurn(params: WaitForSubagentTurnParams): Promise<PaseoToolResult> {
+  const { agentManager, agentId, hold, timeoutSeconds, signal, observesTurn } = params;
+  const timeoutAbort = new AbortController();
+  const closedAbort = new AbortController();
+  const timer = setTimeout(() => timeoutAbort.abort(), timeoutSeconds * 1000);
+  const unsubscribeClosed = agentManager.subscribe(
+    (event) => {
+      if (event.type === "agent_state" && event.agent.lifecycle === "closed") {
+        closedAbort.abort();
+      }
+    },
+    { agentId, replayState: false },
+  );
+  let delivered: WaitDeliveredOutcome | null = null;
+  try {
+    const result = await agentManager.waitForAgentEvent(agentId, {
+      waitForActive: true,
+      signal: AbortSignal.any([
+        timeoutAbort.signal,
+        closedAbort.signal,
+        ...(signal ? [signal] : []),
+      ]),
+    });
+    if (result.permission) {
+      delivered = { kind: "permission", requestId: result.permission.id };
+      return buildWaitForAgentResult({
+        outcome: "permission_requested",
+        agentId,
+        agentStatus: result.status,
+        lastMessage: result.lastMessage,
+        permission: result.permission,
+      });
+    }
+    if (observesTurn) {
+      delivered = { kind: "terminal" };
+    }
+    return buildWaitForAgentResult({
+      outcome: toWaitForAgentTurnOutcome(result.status),
+      agentId,
+      agentStatus: result.status,
+      lastMessage: result.lastMessage,
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+    if (closedAbort.signal.aborted) {
+      if (observesTurn) {
+        delivered = { kind: "terminal" };
+      }
+      return buildWaitForAgentResult({
+        outcome: "closed",
+        agentId,
+        agentStatus: "closed",
+        lastMessage: await agentManager.getLastAssistantMessage(agentId),
+      });
+    }
+    if (timeoutAbort.signal.aborted) {
+      return buildWaitForAgentResult({
+        outcome: "timeout",
+        agentId,
+        agentStatus: agentManager.getAgent(agentId)?.lifecycle ?? "closed",
+        lastMessage: await agentManager.getLastAssistantMessage(agentId),
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    unsubscribeClosed();
+    hold.settle(delivered);
   }
 }
 
@@ -3181,6 +3328,82 @@ function createToolCatalog(
           currentModeId: snapshot?.currentModeId ?? null,
         }),
       };
+    },
+  );
+
+  registerTool(
+    "wait_for_agent",
+    {
+      title: "Wait for agent",
+      description: `Block until one of your own subagents (created by you with create_agent) ends its current turn, then return its final message. Returns immediately with status "permission_requested" when the agent needs permission, and immediately with the current state when the agent is not running a turn. timeoutSeconds defaults to ${WAIT_FOR_AGENT_DEFAULT_TIMEOUT_SECONDS} (min ${WAIT_FOR_AGENT_MIN_TIMEOUT_SECONDS}, max ${WAIT_FOR_AGENT_MAX_TIMEOUT_SECONDS}); on "timeout" the agent keeps running and you may wait again.`,
+      inputSchema: {
+        agentId: z.string(),
+        timeoutSeconds: z
+          .number()
+          .int()
+          .min(WAIT_FOR_AGENT_MIN_TIMEOUT_SECONDS)
+          .max(WAIT_FOR_AGENT_MAX_TIMEOUT_SECONDS)
+          .optional()
+          .describe(
+            `Seconds to wait before returning "timeout". Default ${WAIT_FOR_AGENT_DEFAULT_TIMEOUT_SECONDS}, max ${WAIT_FOR_AGENT_MAX_TIMEOUT_SECONDS}.`,
+          ),
+      },
+      outputSchema: {
+        status: z.enum(["finished", "error", "permission_requested", "timeout", "closed"]),
+        agentId: z.string(),
+        agentStatus: z.string(),
+        lastMessage: z.string().nullable(),
+        lastMessageTruncated: z.boolean(),
+        permission: z
+          .object({
+            agentId: z.string(),
+            requestId: z.string(),
+            request: AgentPermissionRequestPayloadSchema,
+          })
+          .optional(),
+        guidance: z.string(),
+      },
+    },
+    async ({ agentId, timeoutSeconds = WAIT_FOR_AGENT_DEFAULT_TIMEOUT_SECONDS }, context) => {
+      if (!callerAgentId) {
+        throw new PaseoToolInputError(
+          "wait_for_agent is only available to agents; it waits on the caller's own subagents",
+        );
+      }
+      const snapshot = agentManager.getAgent(agentId);
+      const record = snapshot ? null : await agentStorage.get(agentId);
+      if (!snapshot && (!record || record.internal)) {
+        throw new PaseoToolInputError(`Agent ${agentId} not found`);
+      }
+      const labels = snapshot?.labels ?? record?.labels;
+      if (getParentAgentIdFromLabels(labels) !== callerAgentId) {
+        throw new PaseoToolInputError(
+          `Agent ${agentId} is not a subagent of ${callerAgentId}; wait_for_agent only waits on agents you created`,
+        );
+      }
+      if (!snapshot || snapshot.lifecycle === "closed") {
+        return buildWaitForAgentResult({
+          outcome: "closed",
+          agentId,
+          agentStatus: "closed",
+          lastMessage: await agentManager.getLastAssistantMessage(agentId),
+        });
+      }
+
+      return await waitForSubagentTurn({
+        agentManager,
+        agentId,
+        hold: options.finishSubscriptions?.().hold({ callerAgentId, childAgentId: agentId }) ?? {
+          settle() {},
+        },
+        timeoutSeconds,
+        signal: context.signal,
+        // A turn that is running or queued ends in an outcome this wait delivers.
+        observesTurn:
+          snapshot.lifecycle === "running" ||
+          snapshot.lifecycle === "initializing" ||
+          agentManager.hasInFlightRun(agentId),
+      });
     },
   );
 

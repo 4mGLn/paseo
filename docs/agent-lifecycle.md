@@ -154,6 +154,8 @@ Permission requests are notification checkpoints, not the end of that subscripti
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
 
+A caller that needs the result inline calls `wait_for_agent` instead of waiting for the notification. It only accepts the caller's own subagents (matched by `paseo.parent-agent-id`), returns when the current or queued turn ends, and returns at once on a pending permission or when no turn is running. `timeoutSeconds` is capped at 1800 so a tool call never blocks indefinitely; a timeout leaves the child running. While a wait is open, notifications for the same caller and child are held, and an outcome the wait returned (the turn's end, or a specific permission request) is not notified again. A wait that returns at once without observing a turn suppresses nothing, so a notification already in flight for an earlier finish can still arrive. The suppression lives in `packages/server/src/server/agent/agent-prompt.ts` (`holdFinishNotifications`).
+
 ## Provider-managed child agents
 
 Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.

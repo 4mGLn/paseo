@@ -6915,3 +6915,379 @@ describe("local durable finish subscription MCP wiring", () => {
     }
   });
 });
+
+describe("wait_for_agent", () => {
+  const logger = createTestLogger();
+  const GATED = "GATED";
+
+  function findTimerCall(spy: { mock: { calls: unknown[][] } }, delay: number): number {
+    return spy.mock.calls.findIndex((call) => call[1] === delay);
+  }
+
+  interface WaitScenario {
+    agentManager: AgentManager;
+    storage: AgentStorage;
+    parentId: string;
+    childId: string;
+    client: Client;
+    releaseTurn(): void;
+    startChildTurn(prompt: string): Promise<void>;
+    startChildRun(prompt: string): void;
+    callWait(
+      args: Record<string, unknown>,
+      options?: { signal?: AbortSignal },
+    ): Promise<{ structured: LooseStructuredContent; isError: boolean; text: string }>;
+    createAgent(labels?: Record<string, string>): Promise<string>;
+    parentNotifications(marker: string): string[];
+    subscribeParent(): Promise<void>;
+    cleanup(): Promise<void>;
+  }
+
+  async function createWaitScenario(options?: { callerAgentId?: null }): Promise<WaitScenario> {
+    const workdir = await mkdtemp(join(tmpdir(), "mcp-wait-for-agent-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const agentManager = new AgentManager({
+      clients: createTestAgentClients({
+        respond: (prompt) => (prompt.startsWith(GATED) ? `final answer for ${prompt}` : undefined),
+        beforeTurnComplete: async (prompt) => {
+          if (typeof prompt === "string" && prompt.startsWith(GATED)) await gate;
+        },
+      }),
+      registry: storage,
+      logger,
+    });
+    const parent = await agentManager.createAgent(
+      { provider: "claude", cwd: workdir, modeId: "bypassPermissions" },
+      undefined,
+      { workspaceId: "wks_parent" },
+    );
+    const createAgent = async (labels?: Record<string, string>) =>
+      (
+        await agentManager.createAgent({ provider: "claude", cwd: workdir }, undefined, {
+          workspaceId: "wks_parent",
+          ...(labels ? { labels } : {}),
+        })
+      ).id;
+    const childId = await createAgent({ [PARENT_AGENT_ID_LABEL]: parent.id });
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage: storage,
+      ...(options?.callerAgentId === null ? {} : { callerAgentId: parent.id }),
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger,
+    });
+    const client = await connectInMemoryMcpClient(server);
+    const runs: Promise<unknown>[] = [];
+
+    return {
+      agentManager,
+      storage,
+      parentId: parent.id,
+      childId,
+      client,
+      releaseTurn: releaseGate,
+      async startChildTurn(prompt) {
+        runs.push(agentManager.runAgent(childId, prompt).catch(() => undefined));
+        await agentManager.waitForAgentRunStart(childId);
+      },
+      startChildRun(prompt) {
+        runs.push(agentManager.runAgent(childId, prompt).catch(() => undefined));
+      },
+      async callWait(args, callOptions) {
+        const result = await client.callTool(
+          { name: "wait_for_agent", arguments: args },
+          undefined,
+          callOptions?.signal ? { signal: callOptions.signal } : undefined,
+        );
+        const content = (result.content ?? []) as LooseContentBlock[];
+        return {
+          structured: (result.structuredContent ?? {}) as LooseStructuredContent,
+          isError: result.isError === true,
+          text: content.map((block) => block.text ?? "").join("\n"),
+        };
+      },
+      createAgent,
+      async subscribeParent() {
+        await serverSubscriptions
+          .get(server)!
+          .register({ childAgentId: childId, callerAgentId: parent.id });
+      },
+      parentNotifications(marker) {
+        // Notifications land in the caller's timeline as agent_message tool calls.
+        return agentManager
+          .getTimeline(parent.id)
+          .filter((item) => item.type === "tool_call" && item.name === "agent_message")
+          .map((item) => JSON.stringify(item))
+          .filter((text) => text.includes(marker));
+      },
+      async cleanup() {
+        releaseGate();
+        await Promise.all(runs);
+        await client.close();
+        await server.close();
+        await removeAgentStateDir(agentManager, storage, workdir);
+      },
+    };
+  }
+
+  it("returns the child's final message once its turn ends", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      await scenario.startChildTurn(`${GATED} task one`);
+      expect(scenario.agentManager.getAgent(scenario.childId)?.lifecycle).toBe("running");
+
+      const waiting = scenario.callWait({ agentId: scenario.childId, timeoutSeconds: 30 });
+      scenario.releaseTurn();
+      const { structured, isError } = await waiting;
+
+      expect(isError).toBe(false);
+      expect(structured).toMatchObject({
+        status: "finished",
+        agentId: scenario.childId,
+        agentStatus: "idle",
+        lastMessage: `final answer for ${GATED} task one`,
+        lastMessageTruncated: false,
+      });
+      expect(structured.permission).toBeUndefined();
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("returns at once when the child is not running a turn", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      const startedAt = Date.now();
+      const { structured } = await scenario.callWait({
+        agentId: scenario.childId,
+        timeoutSeconds: 30,
+      });
+
+      expect(structured).toMatchObject({ status: "finished", agentStatus: "idle" });
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("returns permission_requested immediately with the child and request ids", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      scenario.startChildRun("run `rm -f permission.txt`");
+      const { structured } = await scenario.callWait({
+        agentId: scenario.childId,
+        timeoutSeconds: 30,
+      });
+
+      const pending = [
+        ...(scenario.agentManager.getAgent(scenario.childId)?.pendingPermissions.keys() ?? []),
+      ];
+      expect(pending).toHaveLength(1);
+      expect(structured).toMatchObject({
+        status: "permission_requested",
+        agentId: scenario.childId,
+        agentStatus: "running",
+        permission: {
+          agentId: scenario.childId,
+          requestId: pending[0],
+          request: { id: pending[0], kind: "tool", name: "Bash" },
+        },
+      });
+      const permission = z.object({ request: z.unknown() }).parse(structured.permission);
+      expect(AgentPermissionRequestPayloadSchema.safeParse(permission.request).success).toBe(true);
+
+      await scenario.client.callTool({
+        name: "respond_to_permission",
+        arguments: {
+          agentId: scenario.childId,
+          requestId: pending[0],
+          response: { behavior: "deny", message: "not now" },
+        },
+      });
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("times out without stopping the child", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      await scenario.startChildTurn(`${GATED} long task`);
+
+      const { structured } = await scenario.callWait({
+        agentId: scenario.childId,
+        timeoutSeconds: 1,
+      });
+
+      expect(structured).toMatchObject({ status: "timeout", agentStatus: "running" });
+      expect(String(structured.guidance)).toContain("call wait_for_agent again");
+      expect(scenario.agentManager.getAgent(scenario.childId)?.lifecycle).toBe("running");
+
+      const again = scenario.callWait({ agentId: scenario.childId, timeoutSeconds: 30 });
+      scenario.releaseTurn();
+      expect((await again).structured).toMatchObject({
+        status: "finished",
+        lastMessage: `final answer for ${GATED} long task`,
+      });
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("refuses agents that are not the caller's own subagents", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      const otherParentId = await scenario.createAgent();
+      const othersChildId = await scenario.createAgent({ [PARENT_AGENT_ID_LABEL]: otherParentId });
+
+      for (const agentId of [othersChildId, otherParentId, scenario.parentId]) {
+        const result = await scenario.callWait({ agentId, timeoutSeconds: 1 });
+        expect(result.isError).toBe(true);
+        expect(result.text).toContain(`Agent ${agentId} is not a subagent of ${scenario.parentId}`);
+      }
+
+      const missing = await scenario.callWait({ agentId: randomUUID(), timeoutSeconds: 1 });
+      expect(missing.isError).toBe(true);
+      expect(missing.text).toContain("not found");
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("refuses callers that are not agents", async () => {
+    const scenario = await createWaitScenario({ callerAgentId: null });
+    try {
+      const result = await scenario.callWait({ agentId: scenario.childId });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain("wait_for_agent is only available to agents");
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("stops waiting and clears its timer and listener when the call is aborted", async () => {
+    const scenario = await createWaitScenario();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      await scenario.startChildTurn(`${GATED} aborted wait`);
+      const subscribers: Set<unknown> = Reflect.get(scenario.agentManager, "subscribers");
+      const baselineSubscribers = subscribers.size;
+
+      const controller = new AbortController();
+      const waiting = scenario.callWait(
+        { agentId: scenario.childId, timeoutSeconds: 1234 },
+        { signal: controller.signal },
+      );
+      await vi.waitFor(() => {
+        expect(findTimerCall(setTimeoutSpy, 1_234_000)).toBeGreaterThanOrEqual(0);
+      });
+      controller.abort();
+      await expect(waiting).rejects.toThrow();
+
+      const timerIndex = findTimerCall(setTimeoutSpy, 1_234_000);
+      const timer = setTimeoutSpy.mock.results[timerIndex]?.value;
+      await vi.waitFor(() => {
+        expect(clearTimeoutSpy).toHaveBeenCalledWith(timer);
+        expect(subscribers.size).toBe(baselineSubscribers);
+      });
+      expect(scenario.agentManager.getAgent(scenario.childId)?.lifecycle).toBe("running");
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      await scenario.cleanup();
+    }
+  });
+
+  it("returns closed when the child is archived during the wait", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      await scenario.startChildTurn(`${GATED} archived task`);
+
+      const waiting = scenario.callWait({ agentId: scenario.childId, timeoutSeconds: 30 });
+      await scenario.agentManager.archiveAgent(scenario.childId);
+
+      expect((await waiting).structured).toMatchObject({
+        status: "closed",
+        agentId: scenario.childId,
+        agentStatus: "closed",
+      });
+      expect(
+        (await scenario.callWait({ agentId: scenario.childId, timeoutSeconds: 1 })).structured,
+      ).toMatchObject({ status: "closed", agentStatus: "closed" });
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it.each([0, 1801, 1.5, -5])("rejects timeoutSeconds %s", async (timeoutSeconds) => {
+    const scenario = await createWaitScenario();
+    try {
+      const result = await scenario.callWait({ agentId: scenario.childId, timeoutSeconds });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain("timeoutSeconds");
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("suppresses the permission notification a wait already returned", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      await scenario.startChildTurn("run `rm -f permission.txt`");
+      const { structured } = await scenario.callWait({
+        agentId: scenario.childId,
+        timeoutSeconds: 30,
+      });
+      const { requestId } = z.object({ requestId: z.string() }).parse(structured.permission);
+      // The subscription observes the same pending request the wait already returned.
+      await scenario.subscribeParent();
+
+      await scenario.client.callTool({
+        name: "respond_to_permission",
+        arguments: { agentId: scenario.childId, requestId, response: { behavior: "allow" } },
+      });
+
+      // One observer sends notifications in order, so once "finished" arrives the
+      // permission notification has either been sent or dropped.
+      await vi.waitFor(
+        () => {
+          expect(scenario.parentNotifications("finished.")).not.toHaveLength(0);
+        },
+        { timeout: 10_000 },
+      );
+      expect(scenario.parentNotifications("needs permission.")).toEqual([]);
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+
+  it("suppresses the finish notification for a turn the wait already returned", async () => {
+    const scenario = await createWaitScenario();
+    try {
+      await scenario.startChildTurn(`${GATED} waited task`);
+      await scenario.subscribeParent();
+      const waiting = scenario.callWait({ agentId: scenario.childId, timeoutSeconds: 30 });
+      scenario.releaseTurn();
+      expect((await waiting).structured).toMatchObject({ status: "finished" });
+
+      // A later turn the caller does not wait on still notifies, and is the only one.
+      await scenario.startChildTurn("respond with exactly: unwaited answer");
+      await scenario.subscribeParent();
+      await vi.waitFor(
+        () => {
+          expect(scenario.parentNotifications("finished.")).toHaveLength(1);
+        },
+        { timeout: 10_000 },
+      );
+      const [notification] = scenario.parentNotifications("finished.");
+      expect(notification).toContain("unwaited answer");
+    } finally {
+      await scenario.cleanup();
+    }
+  });
+});
