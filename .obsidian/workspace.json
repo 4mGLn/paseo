@@ -1,0 +1,240 @@
+{
+  "main": {
+    "id": "c619d9f8420f6ae5",
+    "type": "split",
+    "children": [
+      {
+        "id": "8801b95e5ca105ad",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "fddd76c2502c3683",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "CLAUDE.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "CLAUDE"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "088d3ab75b4c9970",
+    "type": "split",
+    "children": [
+      {
+        "id": "a7f80312af2c8818",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4f90b16952d222e5",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "8de7da413c3b18ce",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "9d75bc6172012070",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "f484d920100a409a",
+    "type": "split",
+    "children": [
+      {
+        "id": "bff16c3a2a72a34a",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "54867730dc5db14b",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "CLAUDE.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks"
+            }
+          },
+          {
+            "id": "04b23441188dda44",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "CLAUDE.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links"
+            }
+          },
+          {
+            "id": "4a5f655589378d57",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "3bbc94afbd4b52e0",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "efc036591ba74488",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "CLAUDE.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "fddd76c2502c3683",
+  "lastOpenFiles": [
+    "packages/server/src/server/agent/providers/opencode/test-utils/v2-timeline.ts",
+    "packages/server/dist/server/server/plugins/compiler-worker.d.ts",
+    "packages/server/dist/server/server/plugins/compiler-worker.d.ts.map",
+    "packages/server/dist/server/server/plugins/compiler-worker.js",
+    "packages/server/dist/server/server/plugins/compiler-worker.js.map",
+    "packages/server/dist/server/server/plugins/preparation-build.d.ts",
+    "packages/server/dist/server/server/plugins/preparation-build.d.ts.map",
+    "packages/server/dist/server/server/plugins/preparation-build.js",
+    "packages/server/dist/server/server/plugins/preparation-build.js.map",
+    "packages/server/dist/server/server/plugins/compiler-build.d.ts",
+    "packages/server/dist/server/server/plugins/compiler-build.d.ts.map",
+    "plugin-examples/agent-tools/README.md",
+    "docs/qa-evidence/foreign-agent-tabs/before.png",
+    "docs/qa-evidence/foreign-agent-tabs/after.png",
+    "docs/agent-teams.md",
+    "docs/goals.md",
+    "docs/goal-orchestration-phase0.md",
+    "packages/server/dist/server/skills/paseo-plugin/SKILL.md",
+    "packages/server/dist/server/skills/paseo-help/SKILL.md",
+    "packages/server/dist/server/skills/paseo-handoff/SKILL.md",
+    "packages/server/dist/server/skills/paseo-committee/SKILL.md",
+    "packages/server/dist/server/skills/paseo-advisor/SKILL.md",
+    "packages/server/dist/server/builtin-plugins/zai-usage-source/icon.svg",
+    "packages/server/dist/server/skills/paseo/SKILL.md",
+    "packages/server/dist/server/builtin-plugins/opencode-go-usage-source/icon.svg",
+    "packages/server/dist/server/builtin-plugins/muse-provider/icon.svg",
+    "packages/server/dist/server/builtin-plugins/minimax-usage-source/icon.svg",
+    "packages/server/dist/server/builtin-plugins/kimi-usage-source/icon.svg",
+    "packages/server/dist/server/builtin-plugins/hoplite-provider/icon.svg",
+    "packages/server/dist/server/builtin-plugins/grok-usage-source/icon.svg",
+    "packages/server/dist/server/builtin-plugins/cursor-usage-source/icon.svg",
+    "docs/ad-hoc-daemon-testing.md",
+    "docs/agent-lifecycle.md",
+    "docs/agent-stream-performance.md",
+    "docs/android.md",
+    "docs/architecture.md",
+    "docs/browser-capture-harness.md",
+    "docs/connected-hosts.md",
+    "docs/design.md",
+    "docs/expo-router.md",
+    "node_modules/ms/license.md",
+    "CLAUDE.md",
+    "README.ko.md",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    "README.md"
+  ]
+}

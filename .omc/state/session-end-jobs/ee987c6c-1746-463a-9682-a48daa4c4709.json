@@ -1,0 +1,376 @@
+{
+  "version": 1,
+  "jobId": "6eb85595-f383-41d1-bc5c-63cb79c8c0d4",
+  "sessionId": "ee987c6c-1746-463a-9682-a48daa4c4709",
+  "scopeKey": "92c9248400f500c8fe34b3549be78d896950264221a68bf3b2070bcd1007e824",
+  "revision": 60,
+  "createdAt": "2026-11-02T05:51:20.798Z",
+  "updatedAt": "2026-11-02T05:51:51.498Z",
+  "producerGraceExpiresAt": "2026-11-02T05:51:50.799Z",
+  "bestEffortDeadlineAt": "2026-11-02T05:52:43.799Z",
+  "producers": {
+    "core": {
+      "state": "sealed",
+      "intentKey": "6bb6bc47f59219796f45f75e5e93842fe4f85f9d02b569c4e46bb50ecc14f69b",
+      "payloadDigest": "6bb6bc47f59219796f45f75e5e93842fe4f85f9d02b569c4e46bb50ecc14f69b",
+      "sealedAt": "2026-11-02T05:51:50.962Z",
+      "sealedBy": "recovery"
+    },
+    "wiki": {
+      "state": "no-op",
+      "sealedAt": "2026-11-02T05:51:20.804Z",
+      "sealedBy": "wiki-producer"
+    }
+  },
+  "actions": {
+    "foreground-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "d22f5b3b19d4c96ed3a27aee3e36df32a6d9b21b6675c431e93999dcfc0561ca",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "ended_at": "2026-11-02T05:51:50.902Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-11-02T05:51:50.840Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "abc8e603-eeea-4657-a003-9e1837e778f5",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:50.960Z"
+    },
+    "wiki-capture": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 0,
+      "idempotencyKey": "bbbd5cf1b4c505470edfc281bd47392d060c728be0866c4c81c6cf84c332c135",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000,
+      "completedAt": "2026-11-02T05:51:20.804Z"
+    },
+    "team-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "0f5e5f1bc0a8f780d6004d425cc8387f723e9ca33b36965a26de400f37eee8bf",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "ended_at": "2026-11-02T05:51:50.902Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-11-02T05:51:50.968Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "a3680373-20b3-44fb-8050-70cb56d291aa",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:51.040Z"
+    },
+    "python-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "ad6ccb4c3dec6c1015af323056c3160f74adb4542dbf861a840521479076635b",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "ended_at": "2026-11-02T05:51:50.902Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-11-02T05:51:51.045Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "6dfeaace-df6a-489e-8173-aaaff16ae5d9",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:51.116Z"
+    },
+    "reply-cleanup": {
+      "class": "required",
+      "phase": "deferred-required",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "07765f16cd2a28558ec4ca99e532f1c3bc2b7414c51bec470b18c8deadacbf22",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {}
+      },
+      "budgetMs": 9000,
+      "claimedAt": "2026-11-02T05:51:51.120Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "0ca9f36e-2eaa-4bb7-ba58-ec1fdfed4f12",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:51.196Z"
+    },
+    "callback": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "706cb525672d229821050f78c09aa5f8266ebfe84c0329a628750ca38ea0b24f",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "ended_at": "2026-11-02T05:51:50.902Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-11-02T05:51:51.201Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "b8ad8641-6d05-4eb4-9915-4444e141d6c4",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:51.274Z"
+    },
+    "notification": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "b6d42fe70686c9bc4963b4a97fdd38dd7f37a7dfd8e877af715a6a3d867b4047",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "ended_at": "2026-11-02T05:51:50.902Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-11-02T05:51:51.279Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "899a18f7-ce39-4859-8ec9-47d3e84106d0",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:51.346Z"
+    },
+    "openclaw": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "511c90d8fd43ca979e872848c240ffc10dbd40d4741f62dd77f2a0fbba33428a",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {},
+        "metrics": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "ended_at": "2026-11-02T05:51:50.902Z",
+          "reason": "prompt_input_exit",
+          "agents_spawned": 0,
+          "agents_completed": 0,
+          "modes_used": []
+        }
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-11-02T05:51:51.351Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "a307217d-6866-426d-b8f8-7816ac6edac7",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:51.417Z"
+    },
+    "spawn-next": {
+      "class": "best-effort",
+      "phase": "deferred-best-effort",
+      "status": "completed",
+      "attempts": 1,
+      "idempotencyKey": "8681bc646bc8a3f626d097d363042575c658b09bf607fbccf08cccc09a73afc2",
+      "payload": {
+        "transcriptPath": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+        "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+        "reason": "prompt_input_exit",
+        "input": {
+          "session_id": "ee987c6c-1746-463a-9682-a48daa4c4709",
+          "transcript_path": "/home/amgln/.claude/projects/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709.jsonl",
+          "cwd": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+          "scratchpad_dir": "/home/amgln/.cache/claude-tmp/claude-1000/-home-amgln-0-Workspace-02-coding-0-repo-paseo/ee987c6c-1746-463a-9682-a48daa4c4709/scratchpad",
+          "prompt_id": "09a56af5-f0bf-41e5-b2cc-5b518473a0ae",
+          "hook_event_name": "SessionEnd",
+          "reason": "prompt_input_exit"
+        },
+        "initialTeamNames": [],
+        "openClawRouting": {}
+      },
+      "budgetMs": 2000,
+      "claimedAt": "2026-11-02T05:51:51.421Z",
+      "runner": {
+        "attempt": 1,
+        "runnerNonce": "b335cdac-071b-433a-9fe7-f8098f05e643",
+        "phase": "terminal",
+        "deadlineAt": "2026-11-02T05:52:00.819Z"
+      },
+      "lastOutcomeCode": "completed",
+      "completedAt": "2026-11-02T05:51:51.490Z"
+    }
+  },
+  "owner": null,
+  "phase": "complete",
+  "recoverableFailure": {
+    "reason": "actions-settled",
+    "releasedAt": "2026-11-02T05:51:51.494Z",
+    "ownerNonce": "3a1b75df-be32-4280-ae1d-514505d344d2"
+  },
+  "completion": {
+    "completedAt": "2026-11-02T05:51:51.494Z",
+    "terminalDigest": "bc66e177ebb9f83a141faa9efe1fae6fb7fe82661efa270c9cee245647dc4865",
+    "terminalRevision": 59
+  }
+}
