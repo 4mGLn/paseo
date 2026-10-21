@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 import type { Goal, GoalEvent, TaskSpec } from "@getpaseo/protocol/goal/types";
-import { GoalTransitionError, applyGoalEvent, replayGoal } from "./goal-reducer.js";
+import {
+  GoalTransitionError,
+  MAX_NOTIFICATION_ATTEMPTS,
+  NOTIFICATION_BACKOFF_MS,
+  applyGoalEvent,
+  replayGoal,
+} from "./goal-reducer.js";
 import { TaskGraphError, blockedTasks, readyTasks, validateTaskGraph } from "./task-graph.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -536,18 +542,39 @@ describe("notifications", () => {
       attempts: 2,
       lastError: "unknown error",
     });
-    const afterThree = run([
+    const failures = (n: number) =>
+      Array.from({ length: n }, (_, i) => attempted(i + 1, "failed", `e${i + 1}`));
+    const afterFour = run([created, queued, ...failures(4)]);
+    expect(afterFour.notifications?.[0]).toMatchObject({
+      status: "pending",
+      attempts: 4,
+      lastError: "e4",
+    });
+    const afterFive = run([created, queued, ...failures(5)]);
+    expect(afterFive.notifications?.[0]).toMatchObject({
+      status: "failed",
+      attempts: 5,
+      lastError: "e5",
+    });
+  });
+
+  test("a notice with fewer attempts than the cap, as an older log recorded, still has attempts left", () => {
+    const events = [
       created,
       queued,
       attempted(1, "failed", "a"),
       attempted(2, "failed", "b"),
       attempted(3, "failed", "c"),
-    ]);
-    expect(afterThree.notifications?.[0]).toMatchObject({
-      status: "failed",
-      attempts: 3,
-      lastError: "c",
+    ];
+    expect(run(events).notifications?.[0]).toMatchObject({ status: "pending", attempts: 3 });
+    expect(run([...events, attempted(4, "delivered")]).notifications?.[0]).toMatchObject({
+      status: "delivered",
+      attempts: 4,
     });
+  });
+
+  test("the backoff has one wait between each pair of attempts", () => {
+    expect(NOTIFICATION_BACKOFF_MS).toHaveLength(MAX_NOTIFICATION_ATTEMPTS - 1);
   });
 
   test("rejects a duplicate queue, an unknown notice, a skipped or extra attempt", () => {
@@ -565,6 +592,8 @@ describe("notifications", () => {
         attempted(2, "failed"),
         attempted(3, "failed"),
         attempted(4, "failed"),
+        attempted(5, "failed"),
+        attempted(6, "failed"),
       ]),
     ).toThrow(/is failed/);
   });
