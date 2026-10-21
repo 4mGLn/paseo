@@ -5,6 +5,7 @@ import type {
   Goal,
   GoalEvent,
   GoalStatus,
+  Notification,
   Task,
 } from "@getpaseo/protocol/goal/types";
 import { resolveLimits } from "./goal-limits.js";
@@ -25,6 +26,9 @@ const TERMINAL_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set([
   "failed",
   "cancelled",
 ]);
+
+/** Delivery attempts per notification, the first included. */
+export const MAX_NOTIFICATION_ATTEMPTS = 3;
 
 export function isTerminalGoalStatus(status: GoalStatus): boolean {
   return TERMINAL_GOAL_STATUSES.has(status);
@@ -61,6 +65,7 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
         evidence: null,
       })),
       tasks: [],
+      notifications: [],
       lastSeq: event.seq,
       failureReason: null,
       createdAt: event.at,
@@ -74,7 +79,8 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
   if (event.seq !== goal.lastSeq + 1) {
     throw new GoalTransitionError(event.type, `expected seq ${goal.lastSeq + 1}, got ${event.seq}`);
   }
-  if (isTerminalGoalStatus(goal.status)) {
+  // A goal's outcome is sent as it ends, so its notifications outlive it. Nothing else does.
+  if (isTerminalGoalStatus(goal.status) && !event.type.startsWith("notification.")) {
     throw new GoalTransitionError(event.type, `goal is ${goal.status}`);
   }
 
@@ -129,6 +135,7 @@ const HANDLERS: Record<string, EventHandler> = {
   capture: (goal, event) => applyChangeSetEvent(goal, event),
   changeset: (goal, event) => applyChangeSetEvent(goal, event),
   integration: (goal, event) => applyChangeSetEvent(goal, event),
+  notification: (goal, event) => applyNotificationEvent(goal, event),
 };
 
 function applyToLiveGoal(goal: Goal, event: GoalEvent): Goal {
@@ -289,6 +296,8 @@ function applyRunEvent(goal: Goal, event: GoalEvent): Goal {
         leadWorkspaceId: event.workspaceId ?? goal.leadWorkspaceId,
       };
 
+    // Only in logs from before notifications were recorded. Its outcome was never
+    // written down, so it creates no entry and is never sent again.
     case "lead.notified":
       requireStatus(goal, event, "executing");
       return goal;
@@ -495,6 +504,68 @@ function transitionChangeSet(
         ? { ...goal.integration, headCommit: event.integratedCommit as string }
         : goal.integration,
   };
+}
+
+function applyNotificationEvent(goal: Goal, event: GoalEvent): Goal {
+  const notifications = goal.notifications ?? [];
+  switch (event.type) {
+    case "notification.queued": {
+      if (notifications.some((n) => n.target === event.target && n.key === event.key)) {
+        throw new GoalTransitionError(
+          event.type,
+          `notification ${event.target}:${event.key} already queued`,
+        );
+      }
+      const queued: Notification = {
+        key: event.key,
+        target: event.target,
+        text: event.text,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        updatedAt: event.at,
+      };
+      return { ...goal, notifications: [...notifications, queued] };
+    }
+
+    case "notification.attempted": {
+      const current = notifications.find((n) => n.target === event.target && n.key === event.key);
+      if (!current) {
+        throw new GoalTransitionError(
+          event.type,
+          `unknown notification ${event.target}:${event.key}`,
+        );
+      }
+      if (current.status !== "pending") {
+        throw new GoalTransitionError(
+          event.type,
+          `notification ${event.target}:${event.key} is ${current.status}`,
+        );
+      }
+      if (event.attempt !== current.attempts + 1 || event.attempt > MAX_NOTIFICATION_ATTEMPTS) {
+        throw new GoalTransitionError(
+          event.type,
+          `expected attempt ${current.attempts + 1} of at most ${MAX_NOTIFICATION_ATTEMPTS}, got ${event.attempt}`,
+        );
+      }
+      const delivered = event.outcome === "delivered";
+      // A failure is final only on the last attempt allowed.
+      let status: Notification["status"] = "pending";
+      if (delivered) status = "delivered";
+      else if (event.attempt >= MAX_NOTIFICATION_ATTEMPTS) status = "failed";
+      const next: Notification = {
+        ...current,
+        status,
+        attempts: event.attempt,
+        lastError: delivered ? current.lastError : (event.error ?? "unknown error"),
+        updatedAt: event.at,
+      };
+      return { ...goal, notifications: notifications.map((n) => (n === current ? next : n)) };
+    }
+
+    default:
+      throw new GoalTransitionError(event.type, "unexpected event for this handler");
+  }
 }
 
 function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {

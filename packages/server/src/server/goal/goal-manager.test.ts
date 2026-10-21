@@ -511,6 +511,168 @@ describe("originating chat", () => {
   });
 });
 
+describe("notification delivery", () => {
+  let env: GoalTestEnv;
+  beforeEach(async () => {
+    env = createGoalTestEnv();
+    await env.init();
+  });
+  afterEach(() => env.cleanup());
+
+  const leadNotice = (store: GoalStore) =>
+    env.goalOf(store).notifications?.find((n) => n.target === "lead" && n.key === "goal-completed");
+  const attemptEvents = async () =>
+    (await env.readEvents()).filter((e) => e.type === "notification.attempted");
+
+  test("a notice the agent layer accepts is recorded as delivered once", async () => {
+    env.script([task("a")]);
+    const { store, manager } = await env.boot();
+    await env.createGoal(store);
+    await env.settle(manager);
+
+    expect(leadNotice(store)).toMatchObject({ status: "delivered", attempts: 1, lastError: null });
+    expect(env.harness.notified).toHaveLength(1);
+    expect(env.harness.notified[0]?.text).toBe(leadNotice(store)?.text);
+    expect(await attemptEvents()).toHaveLength(1);
+  });
+
+  test("a failed attempt is retried after its backoff and then recorded as delivered", async () => {
+    env.script([task("a")]);
+    env.harness.notifyFailures = 1;
+    const { store, manager } = await env.boot();
+    await env.createGoal(store);
+    await env.settle(manager);
+    expect(leadNotice(store)).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      lastError: "agent agent-2 unavailable",
+    });
+
+    // Nothing is sent before the delay has passed.
+    env.clock.advance(4_999);
+    await env.settle(manager);
+    expect(env.harness.notifyAttempts).toBe(1);
+    expect(leadNotice(store)?.attempts).toBe(1);
+
+    env.clock.advance(1);
+    await env.settle(manager);
+    expect(leadNotice(store)).toMatchObject({ status: "delivered", attempts: 2 });
+    expect(env.harness.notified).toHaveLength(1);
+    expect(
+      (await attemptEvents()).map((e) => e.type === "notification.attempted" && e.outcome),
+    ).toEqual(["failed", "delivered"]);
+  });
+
+  test("three failed attempts leave the notice failed with the last error", async () => {
+    env.script([task("a")]);
+    env.harness.notifyFailures = 5;
+    const { store, manager } = await env.boot();
+    await env.createGoal(store);
+    await env.settle(manager);
+    env.clock.advance(5_000);
+    await env.settle(manager);
+    expect(leadNotice(store)).toMatchObject({ status: "pending", attempts: 2 });
+    env.clock.advance(29_999);
+    await env.settle(manager);
+    expect(env.harness.notifyAttempts).toBe(2);
+    env.clock.advance(1);
+    await env.settle(manager);
+
+    expect(leadNotice(store)).toMatchObject({
+      status: "failed",
+      attempts: 3,
+      lastError: "agent agent-2 unavailable",
+    });
+    // No fourth attempt, however long it waits.
+    env.clock.advance(600_000);
+    await env.settle(manager);
+    expect(env.harness.notifyAttempts).toBe(3);
+    expect(env.harness.notified).toHaveLength(0);
+  });
+
+  test("the originating chat's notice is recorded after the goal ended and retried", async () => {
+    env.script([task("a")], () => ({ outcome: "failed", error: "nope" }));
+    env.harness.notifyFailures = 1;
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, originAgentId: "chat-1", notifyLead: false });
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("failed");
+    const origin = () => env.goalOf(store).notifications?.find((n) => n.target === "origin");
+    expect(origin()).toMatchObject({ key: "goal-ended", status: "pending", attempts: 1 });
+    const text = origin()?.text;
+    expect(text).toContain("failed:");
+
+    env.clock.advance(5_000);
+    await env.settle(manager);
+    expect(origin()).toMatchObject({ status: "delivered", attempts: 2 });
+    // The retry sends exactly what was composed when the goal ended.
+    expect(env.harness.notified).toEqual([{ agentId: "chat-1", text }]);
+  });
+
+  test("a stop during the backoff is resumed by the next start", async () => {
+    env.script([task("a")]);
+    env.harness.notifyFailures = 1;
+    const first = await env.boot();
+    await env.createGoal(first.store);
+    await env.settle(first.manager);
+    expect(leadNotice(first.store)).toMatchObject({ status: "pending", attempts: 1 });
+
+    first.manager.stop();
+    env.clock.advance(5_000);
+    await env.settle(first.manager);
+    // The stopped Manager neither sent nor recorded anything.
+    expect(env.harness.notifyAttempts).toBe(1);
+    expect(leadNotice(first.store)?.attempts).toBe(1);
+
+    const second = await env.boot();
+    await env.settle(second.manager);
+    expect(leadNotice(second.store)).toMatchObject({ status: "delivered", attempts: 2 });
+    expect(env.harness.notified).toHaveLength(1);
+  });
+
+  test("a delivered notice is not sent again after a restart", async () => {
+    env.script([task("a")]);
+    const first = await env.boot();
+    await env.createGoal(first.store, { ...CONFIG, originAgentId: "chat-1" });
+    await env.settle(first.manager);
+    expect(env.goalOf(first.store).notifications?.map((n) => [n.target, n.status])).toEqual([
+      ["origin", "delivered"],
+      ["lead", "delivered"],
+    ]);
+    first.manager.stop();
+
+    const second = await env.boot();
+    await env.settle(second.manager);
+    env.clock.advance(600_000);
+    await env.settle(second.manager);
+    expect(env.harness.notifyAttempts).toBe(2);
+    expect(env.harness.notified).toHaveLength(2);
+  });
+
+  test("a notice queued just before a crash is sent by the next start", async () => {
+    const seed = await env.boot();
+    seed.manager.stop();
+    await env.createGoal(seed.store, { ...CONFIG, originAgentId: "chat-1" });
+    await seed.store.dispatch("g1", { id: "cancel", goalId: "g1", type: "goal.cancelled" });
+    await seed.store.dispatch("g1", {
+      id: "g1:notification:origin:goal-ended",
+      goalId: "g1",
+      type: "notification.queued",
+      target: "origin",
+      key: "goal-ended",
+      text: "the goal was cancelled",
+    });
+
+    const second = await env.boot();
+    await env.settle(second.manager);
+    expect(env.harness.notified).toEqual([{ agentId: "chat-1", text: "the goal was cancelled" }]);
+    expect(env.goalOf(second.store).notifications?.[0]).toMatchObject({
+      status: "delivered",
+      attempts: 1,
+    });
+  });
+});
+
 describe("extractPlan", () => {
   test("uses the last fenced block and accepts a bare array", () => {
     const text = `first\n\`\`\`json\n[{"id":"x","title":"X","description":"","kind":"read","dependsOn":[]}]\n\`\`\`\nrevised\n\`\`\`json\n[{"id":"y","title":"Y","description":"","kind":"read","dependsOn":[]}]\n\`\`\``;
