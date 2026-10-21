@@ -179,6 +179,27 @@ export const IntegrationSchema = z.object({
 });
 export type Integration = z.infer<typeof IntegrationSchema>;
 
+export const NotificationTargetSchema = z.enum(["lead", "origin"]);
+export type NotificationTarget = z.infer<typeof NotificationTargetSchema>;
+
+export const NotificationStatusSchema = z.enum(["pending", "delivered", "failed"]);
+export type NotificationStatus = z.infer<typeof NotificationStatusSchema>;
+
+// A message the Manager sends an agent: the Lead, or the chat the goal was started from.
+// `delivered` means the agent layer accepted the prompt, not that anyone read it.
+export const NotificationSchema = z.object({
+  // Unique per target within a goal.
+  key: z.string().min(1),
+  target: NotificationTargetSchema,
+  // The exact text sent on every attempt.
+  text: z.string(),
+  status: NotificationStatusSchema,
+  attempts: z.number().int().nonnegative(),
+  lastError: z.string().nullable(),
+  updatedAt: z.string(),
+});
+export type Notification = z.infer<typeof NotificationSchema>;
+
 export const GoalSchema = z.object({
   id: IdSchema,
   title: z.string().trim().min(1),
@@ -193,6 +214,8 @@ export const GoalSchema = z.object({
   runs: z.array(AgentRunSchema),
   changeSets: z.array(ChangeSetSchema),
   integration: IntegrationSchema.nullable(),
+  // Absent from daemons that predate recorded notifications.
+  notifications: z.array(NotificationSchema).optional(),
   // Sequence number of the last event folded into this state.
   lastSeq: z.number().int().nonnegative(),
   failureReason: z.string().nullable(),
@@ -225,8 +248,27 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     agentId: z.string().min(1),
     workspaceId: z.string().min(1).optional(),
   }),
-  // Records that the Lead was told something, so a restart does not tell it again.
+  // Written before notifications were recorded: the Lead was told something, outcome unknown.
+  // Current daemons write notification.queued instead, under the same event id.
   z.object({ ...eventEnvelope, type: z.literal("lead.notified"), key: z.string().min(1) }),
+  // A notification is due. Accepted after the goal has ended, so its outcome can be sent.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("notification.queued"),
+    key: z.string().min(1),
+    target: NotificationTargetSchema,
+    text: z.string(),
+  }),
+  // One delivery attempt and how it ended.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("notification.attempted"),
+    key: z.string().min(1),
+    target: NotificationTargetSchema,
+    attempt: z.number().int().min(1),
+    outcome: z.enum(["delivered", "failed"]),
+    error: z.string().optional(),
+  }),
   z.object({
     ...eventEnvelope,
     type: z.literal("plan.proposed"),
