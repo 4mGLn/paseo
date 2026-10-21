@@ -66,6 +66,8 @@ function assertSound(goal: Goal): void {
   for (const implemented of goal.tasks.filter((t) => t.kind === "implement")) {
     expect(implemented.captured).toBe(true);
   }
+  // A notice is never left half sent: it is delivered, or was never queued.
+  expect((goal.notifications ?? []).filter((n) => n.status !== "delivered")).toEqual([]);
 }
 
 describe("recovery after a crash at every point", () => {
@@ -82,6 +84,8 @@ describe("recovery after a crash at every point", () => {
       "integration.prepared",
       "criterion.verified",
       "goal.completed",
+      "notification.queued",
+      "notification.attempted",
     ]) {
       expect(types.has(expected as GoalEvent["type"])).toBe(true);
     }
@@ -95,7 +99,7 @@ describe("recovery after a crash at every point", () => {
 
   test("a daemon that restarts after any recorded event finishes the goal", async () => {
     const failures: string[] = [];
-    // The last event is goal.completed; restarting after it has nothing to resume.
+    // The last event records the Lead's completion notice; restarting after it has nothing to resume.
     for (let keep = 1; keep < events.length; keep += 1) {
       const env = createGoalTestEnv();
       await env.init();

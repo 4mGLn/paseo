@@ -164,7 +164,12 @@ export class Harness {
   workspaces: (CreateGoalWorkspaceInput & { workspaceId: string })[] = [];
   archived: string[] = [];
   canceled: string[] = [];
+  /** Notifications the agent layer accepted. */
   notified: { agentId: string; text: string }[] = [];
+  /** Reject the next N notifications, as an agent layer that cannot take them would. */
+  notifyFailures = 0;
+  /** Every notification attempt, accepted or not. */
+  notifyAttempts = 0;
   turns: Turn[] = [];
   active = 0;
   peakActive = 0;
@@ -213,6 +218,11 @@ export class Harness {
       }
     },
     notify: async (agentId, text) => {
+      this.notifyAttempts += 1;
+      if (this.notifyFailures > 0) {
+        this.notifyFailures -= 1;
+        throw new Error(`agent ${agentId} unavailable`);
+      }
       this.notified.push({ agentId, text });
     },
   };

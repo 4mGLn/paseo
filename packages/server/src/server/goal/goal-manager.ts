@@ -1,7 +1,17 @@
 import type pino from "pino";
-import type { Goal, GoalEvent, GoalEventInput, Task } from "@getpaseo/protocol/goal/types";
+import type {
+  Goal,
+  GoalEvent,
+  GoalEventInput,
+  NotificationTarget,
+  Task,
+} from "@getpaseo/protocol/goal/types";
 import { systemClock, resolveLimits, type Clock } from "./goal-limits.js";
-import { GoalTransitionError, isTerminalGoalStatus } from "./goal-reducer.js";
+import {
+  GoalTransitionError,
+  MAX_NOTIFICATION_ATTEMPTS,
+  isTerminalGoalStatus,
+} from "./goal-reducer.js";
 import type { GoalStore } from "./goal-store.js";
 import { ChangeSetPipeline } from "./change-set-pipeline.js";
 import type { GitPort } from "./git-ops.js";
@@ -44,7 +54,10 @@ export interface ManagerAgentPort {
     options?: { permission?: "fail" | "wait"; signal?: AbortSignal },
   ): Promise<TurnResult>;
   cancel(agentId: string): Promise<void>;
-  /** Tell an agent something without waiting for it to answer. */
+  /**
+   * Tell an agent something without waiting for it to answer. Resolves once the
+   * agent layer has accepted the prompt; rejects with the reason it did not.
+   */
   notify(agentId: string, text: string): Promise<void>;
   /** Provider ids a plan may name. */
   knownProviders(): string[];
@@ -85,6 +98,9 @@ export interface GoalManagerOptions {
 }
 
 const MAX_PLAN_ATTEMPTS = 3;
+
+/** Wait before the next delivery attempt of a notification, by attempts made so far. */
+const NOTIFICATION_BACKOFF_MS = [5_000, 30_000, 120_000];
 
 /** The longest delay a Node timer accepts. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -135,6 +151,10 @@ export class GoalManager {
   private readonly deadlines = new Map<string, () => void>();
   /** Retries waiting out their backoff, keyed `<goal>:<task>`. A restart re-creates them. */
   private readonly retries = new Map<string, () => void>();
+  /** Notifications waiting out their backoff, keyed `<goal>:<target>:<key>`. A restart re-creates them. */
+  private readonly notificationRetries = new Map<string, () => void>();
+  /** Notifications with an attempt in progress, so one is never sent twice at once. */
+  private readonly delivering = new Set<string>();
   private readonly cancelGraceMs: number;
   private unsubscribe: (() => void) | null = null;
   private stopped = false;
@@ -163,7 +183,7 @@ export class GoalManager {
         requestPump: (goalId) => this.track(this.pump(goalId)),
         discard: (agentId, workspaceId) => this.discard(agentId, workspaceId),
         runTurn: (goalId, agentId, prompt) => this.turn(goalId, agentId, prompt),
-        notifyLeadFinal: (goal, text) => this.notifyLeadFinal(goal, text),
+        notifyLeadFinal: (goal, text) => this.track(this.notifyLeadFinal(goal, text)),
       },
     });
   }
@@ -182,6 +202,8 @@ export class GoalManager {
         });
       }
     }
+    // Ended goals too: their outcome may still be on its way to the Lead or the chat.
+    for (const goal of this.store.list()) this.resumeNotifications(goal);
   }
 
   /**
@@ -197,6 +219,8 @@ export class GoalManager {
     // Retries still backing off are found again by the next start.
     for (const cancel of this.retries.values()) cancel();
     this.retries.clear();
+    for (const cancel of this.notificationRetries.values()) cancel();
+    this.notificationRetries.clear();
     this.pipeline.shutdown();
   }
 
@@ -366,16 +390,18 @@ export class GoalManager {
         break;
       case "goal.completed":
         this.clearDeadline(goal.id);
-        this.notifyOrigin(goal, "completed");
+        this.track(this.notifyOrigin(goal, "completed"));
         break;
       case "goal.cancelled":
       case "goal.failed":
         this.clearDeadline(goal.id);
-        this.notifyOrigin(
-          goal,
-          event.type === "goal.failed"
-            ? `failed: ${goal.failureReason ?? "unknown reason"}`
-            : "cancelled",
+        this.track(
+          this.notifyOrigin(
+            goal,
+            event.type === "goal.failed"
+              ? `failed: ${goal.failureReason ?? "unknown reason"}`
+              : "cancelled",
+          ),
         );
         this.track(this.abortGoalWork(goal.id));
         this.track(this.pipeline.abort(goal.id));
@@ -962,37 +988,122 @@ export class GoalManager {
     });
   }
 
-  /** Tell the chat the goal was started from how it ended. Best effort, once, as the goal ends. */
-  private notifyOrigin(goal: Goal, outcome: string): void {
-    const origin = goal.config?.originAgentId;
-    if (!origin) return;
-    this.agents.notify(origin, buildLeadNotification(goal, outcome)).catch((error) => {
-      this.logger.warn({ err: error, goalId: goal.id }, "Failed to notify the originating chat");
+  /** Tell the chat the goal was started from how it ended, once, as the goal ends. */
+  private async notifyOrigin(goal: Goal, outcome: string): Promise<void> {
+    if (!goal.config?.originAgentId) return;
+    await this.deliver(goal.id, {
+      id: `${goal.id}:notification:origin:goal-ended`,
+      target: "origin",
+      key: "goal-ended",
+      text: buildLeadNotification(goal, outcome),
     });
   }
 
-  /** Best-effort message after the goal ended; there is nothing left to deduplicate against. */
-  private notifyLeadFinal(goal: Goal, text: string): void {
-    if (!goal.config?.notifyLead || !goal.leadAgentId || this.stopped) return;
-    this.agents.notify(goal.leadAgentId, buildLeadNotification(goal, text)).catch((error) => {
-      this.logger.warn({ err: error, goalId: goal.id }, "Failed to notify Lead");
+  /** Tell the Lead the goal completed. */
+  private async notifyLeadFinal(goal: Goal, text: string): Promise<void> {
+    if (!goal.config?.notifyLead || !goal.leadAgentId) return;
+    await this.deliver(goal.id, {
+      id: `${goal.id}:notification:lead:goal-completed`,
+      target: "lead",
+      key: "goal-completed",
+      text: buildLeadNotification(goal, text),
     });
   }
 
   /** Tell the Lead once per key, however many times the situation is observed. */
   private async notifyLeadOnce(goal: Goal, key: string, reason: string): Promise<void> {
-    if (!goal.config?.notifyLead || !goal.leadAgentId || this.stopped) return;
-    const outcome = await this.dispatchOutcome(goal.id, {
+    if (!goal.config?.notifyLead || !goal.leadAgentId) return;
+    const latest = this.store.get(goal.id) ?? goal;
+    await this.deliver(goal.id, {
+      // The id lead.notified used, so a notice an older daemon already sent is not sent again.
       id: `${goal.id}:notified:${key}`,
-      goalId: goal.id,
-      type: "lead.notified",
+      target: "lead",
       key,
+      text: buildLeadNotification(latest, reason),
+    });
+  }
+
+  // ---- notifications ----------------------------------------------------
+
+  /**
+   * Record a notification as due, then send it. The text is stored with it, so a
+   * retry, even after a restart, sends exactly what was first composed.
+   */
+  private async deliver(
+    goalId: string,
+    input: { id: string; target: NotificationTarget; key: string; text: string },
+  ): Promise<void> {
+    if (this.stopped) return;
+    const outcome = await this.dispatchOutcome(goalId, {
+      id: input.id,
+      goalId,
+      type: "notification.queued",
+      target: input.target,
+      key: input.key,
+      text: input.text,
     });
     if (outcome !== "new") return;
-    const latest = this.store.get(goal.id) ?? goal;
-    this.agents.notify(goal.leadAgentId, buildLeadNotification(latest, reason)).catch((error) => {
-      this.logger.warn({ err: error, goalId: goal.id }, "Failed to notify Lead");
-    });
+    // Sending runs on its own, so a slow agent layer never holds up the caller.
+    this.track(this.attemptNotification(goalId, input.target, input.key));
+  }
+
+  /** Send every notification still pending, at once. A delivered one is never sent again. */
+  private resumeNotifications(goal: Goal): void {
+    for (const notification of goal.notifications ?? []) {
+      if (notification.status !== "pending") continue;
+      this.track(this.attemptNotification(goal.id, notification.target, notification.key));
+    }
+  }
+
+  /**
+   * One delivery attempt, recorded with its outcome. A failure is retried after a
+   * backoff until the attempts run out; waiting holds no run slot and blocks nothing.
+   */
+  private async attemptNotification(
+    goalId: string,
+    target: NotificationTarget,
+    key: string,
+  ): Promise<void> {
+    const slot = `${goalId}:${target}:${key}`;
+    if (this.stopped || this.delivering.has(slot)) return;
+    const goal = this.store.get(goalId);
+    const notification = goal?.notifications?.find((n) => n.target === target && n.key === key);
+    if (!goal || notification?.status !== "pending") return;
+    this.delivering.add(slot);
+    try {
+      const attempt = notification.attempts + 1;
+      const agentId = target === "lead" ? goal.leadAgentId : goal.config?.originAgentId;
+      let error: string | null = null;
+      try {
+        if (!agentId) throw new Error(`The goal has no ${target} agent to notify`);
+        await this.agents.notify(agentId, notification.text);
+      } catch (cause) {
+        error = errorMessage(cause);
+      }
+      // A stopped Manager records nothing; the next start sends it again.
+      if (this.stopped) return;
+      await this.dispatch(goalId, {
+        id: `${goalId}:notification:${target}:${key}:attempt-${attempt}`,
+        goalId,
+        type: "notification.attempted",
+        target,
+        key,
+        attempt,
+        outcome: error === null ? "delivered" : "failed",
+        ...(error === null ? {} : { error }),
+      });
+      if (error === null) return;
+      this.logger.warn({ goalId, target, key, attempt, error }, "Notification not delivered");
+      if (attempt >= MAX_NOTIFICATION_ATTEMPTS) return;
+      const delay = NOTIFICATION_BACKOFF_MS[attempt - 1] ?? 0;
+      const cancel = this.clock.setTimeout(() => {
+        this.notificationRetries.delete(slot);
+        if (!this.stopped) this.track(this.attemptNotification(goalId, target, key));
+      }, delay);
+      this.notificationRetries.set(slot, cancel);
+    } finally {
+      this.delivering.delete(slot);
+    }
   }
 }
 
