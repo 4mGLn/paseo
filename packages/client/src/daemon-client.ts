@@ -4,6 +4,7 @@ import {
   decodeHostRouteFrame,
   type HostRouteFrame,
 } from "@getpaseo/protocol/binary-frames/index";
+import type { GoalConfig, TaskSpec } from "@getpaseo/protocol/goal/types";
 import { messageTooLargeError } from "./daemon-client-transport-utils.js";
 import type { HostAdd, HostUpdate, HostDirectory } from "@getpaseo/protocol/hosts";
 import { legacyUsageIcon } from "./legacy-usage-icons.js";
@@ -637,6 +638,15 @@ type SubscribeTerminalPayload = SubscribeTerminalResponse["payload"];
 type CloseItemsPayload = CloseItemsResponse["payload"];
 type KillTerminalPayload = KillTerminalResponse["payload"];
 type CaptureTerminalPayload = CaptureTerminalResponse["payload"];
+type GoalMutationPayload = Extract<
+  SessionOutboundMessage,
+  { type: "goal.create.response" }
+>["payload"];
+type GoalListPayload = Extract<SessionOutboundMessage, { type: "goal.list.response" }>["payload"];
+type GoalInspectPayload = Extract<
+  SessionOutboundMessage,
+  { type: "goal.inspect.response" }
+>["payload"];
 type ScheduleCreatePayload = Extract<
   SessionOutboundMessage,
   { type: "schedule/create/response" }
@@ -6415,6 +6425,138 @@ export class DaemonClient {
       message,
       responseType: "capture_terminal_response",
       options: { skipQueue: true },
+    });
+  }
+
+  private requireGoals(): void {
+    if (this.lastServerInfoMessage?.features?.goals !== true) {
+      throw new Error("Update the host to use goals.");
+    }
+  }
+
+  async goalCreate(options: {
+    goalId?: string;
+    title: string;
+    objective: string;
+    criteria: string[];
+    config?: GoalConfig;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.create.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.create.request",
+        ...(options.goalId ? { goalId: options.goalId } : {}),
+        title: options.title,
+        objective: options.objective,
+        criteria: options.criteria,
+        ...(options.config ? { config: options.config } : {}),
+      },
+    });
+  }
+
+  async goalList(requestId?: string): Promise<GoalListPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.list.response">({
+      requestId,
+      message: { type: "goal.list.request" },
+    });
+  }
+
+  async goalInspect(goalId: string, requestId?: string): Promise<GoalInspectPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.inspect.response">({
+      requestId,
+      message: { type: "goal.inspect.request", goalId },
+    });
+  }
+
+  async goalProposePlan(options: {
+    goalId: string;
+    tasks: TaskSpec[];
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.propose_plan.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.propose_plan.request",
+        goalId: options.goalId,
+        tasks: options.tasks,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalApprovePlan(options: {
+    goalId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.approve_plan.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.approve_plan.request",
+        goalId: options.goalId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalApproveChangeSet(options: {
+    goalId: string;
+    changeSetId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.approve_changeset.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.approve_changeset.request",
+        goalId: options.goalId,
+        changeSetId: options.changeSetId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalRequestChanges(options: {
+    goalId: string;
+    changeSetId: string;
+    findings: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.request_changes.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.request_changes.request",
+        goalId: options.goalId,
+        changeSetId: options.changeSetId,
+        findings: options.findings,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalCancel(options: {
+    goalId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoals();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.cancel.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.cancel.request",
+        goalId: options.goalId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
     });
   }
 
