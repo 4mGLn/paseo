@@ -5,6 +5,7 @@ import { runCreateCommand } from "./create.js";
 import { runInspectCommand } from "./inspect.js";
 import { runLsCommand } from "./ls.js";
 import { runChangesCommand } from "./changes.js";
+import { runNotificationsCommand } from "./notifications.js";
 import {
   runApproveChangeSetCommand,
   runApproveCommand,
@@ -89,6 +90,15 @@ export function createGoalCommand(): Command {
       .description("List a goal's change sets and where each stands")
       .argument("<id>", "Goal ID"),
   ).action(withOutput(runChangesCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("notifications")
+      .description(
+        "List the messages sent to a goal's Lead and originating chat, and their outcome",
+      )
+      .argument("<id>", "Goal ID"),
+  ).action(withOutput(runNotificationsCommand));
 
   addJsonAndDaemonHostOptions(
     goal
