@@ -159,6 +159,13 @@ import {
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
+import { GoalEventLog } from "./goal/event-log.js";
+import { createGitPort } from "./goal/git-ops.js";
+import { createGoalConfigValidator } from "./goal/goal-config-validation.js";
+import { GoalManager } from "./goal/goal-manager.js";
+import { createGoalAgentPort, createGoalWorkspacePort } from "./goal/goal-ports.js";
+import { GoalService } from "./goal/goal-service.js";
+import { GoalStore } from "./goal/goal-store.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
@@ -1362,14 +1369,10 @@ export async function createPaseoDaemon(
     await emitWorkspaceUpdatesExternal([workspace.workspaceId]);
     return workspace;
   };
-  const createSchedulePaseoWorktreeExternal = async (input: {
-    cwd: string;
-    firstAgentContext: FirstAgentContext;
-  }) => {
-    const result = await createPaseoWorktreeForTools({
-      cwd: input.cwd,
-      firstAgentContext: input.firstAgentContext,
-    });
+  const createSchedulePaseoWorktreeExternal = async (
+    input: Parameters<typeof createPaseoWorktreeForTools>[0],
+  ) => {
+    const result = await createPaseoWorktreeForTools(input);
     await emitWorkspaceUpdatesExternal([result.workspace.workspaceId]);
     return result;
   };
@@ -1428,6 +1431,41 @@ export async function createPaseoDaemon(
     }
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  const goalEventLog = new GoalEventLog({ dir: path.join(config.paseoHome, "goals") });
+  const goalStore = new GoalStore(goalEventLog);
+  const goalGit = createGitPort();
+  const goalService = new GoalService(
+    goalStore,
+    goalEventLog,
+    createGoalConfigValidator({
+      git: goalGit,
+      knownProviders: () => agentManager.getRegisteredProviderIds(),
+    }),
+  );
+  await goalService.start();
+  for (const [goalId, error] of goalStore.unreadable) {
+    logger.error({ err: error, goalId }, "Goal log is unreadable; the goal is unavailable");
+  }
+  const goalPortDeps = {
+    logger,
+    agentManager,
+    agentStorage,
+    createAgent,
+    cancelAgentRun: (agentId: string) => cancelAgentRunCommand({ agentManager, logger }, agentId),
+    createDirectoryWorkspace: createScheduleLocalWorkspaceExternal,
+    createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
+    archiveWorkspace: archiveScheduleWorkspaceExternal,
+    waitForWorkspaceSetup: (workspaceId: string) => workspaceSetupRuntime.wait(workspaceId),
+  };
+  const goalManager = new GoalManager({
+    store: goalStore,
+    agents: createGoalAgentPort(goalPortDeps),
+    workspaces: createGoalWorkspacePort(goalPortDeps),
+    git: goalGit,
+    logger,
+  });
+  await goalManager.start();
+  logger.info({ elapsed: elapsed() }, "Goal service initialized");
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -1849,6 +1887,7 @@ export async function createPaseoDaemon(
               pluginRuntime,
               orchestrationSkills,
               workspaceLabelService,
+              goalService,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -1936,6 +1975,9 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
+    // Stop the goal manager first so closing agents is not read as run failure;
+    // the next start records those runs as interrupted and resumes them.
+    goalManager.stop();
     unsubscribeIdleRuntimeCleanup();
     await idleRuntimeCleanup.close();
     // Freeze both ingress and registration before taking the agent closure snapshot.

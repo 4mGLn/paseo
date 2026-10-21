@@ -60,6 +60,8 @@ interface FakeAgentSessionOptions {
   closeSession?: () => Promise<void>;
   onStartTurn?: (prompt: AgentPromptInput, config: AgentSessionConfig) => void;
   beforeTurnComplete?: (prompt: AgentPromptInput) => Promise<void>;
+  /** Script a reply, optionally doing work in `config.cwd` first. Return undefined to fall back to the default. */
+  respond?: (prompt: string, config: AgentSessionConfig) => string | undefined;
   historyEvents?: readonly AgentStreamEvent[];
 }
 
@@ -68,6 +70,8 @@ export interface TestAgentClientOptions {
   closeSession?: () => Promise<void>;
   onStartTurn?: (prompt: AgentPromptInput, config: AgentSessionConfig) => void;
   beforeTurnComplete?: (prompt: AgentPromptInput) => Promise<void>;
+  /** Script a reply, optionally doing work in `config.cwd` first. Return undefined to fall back to the default. */
+  respond?: (prompt: string, config: AgentSessionConfig) => string | undefined;
   supportsMcpServers?: boolean;
   historyEvents?: readonly AgentStreamEvent[];
 }
@@ -342,6 +346,7 @@ class FakeAgentSession implements AgentSession {
 
   private readonly closeSession: (() => Promise<void>) | undefined;
   private readonly onStartTurn: TestAgentClientOptions["onStartTurn"];
+  private readonly respond: TestAgentClientOptions["respond"];
   private readonly beforeTurnComplete: ((prompt: AgentPromptInput) => Promise<void>) | undefined;
   private readonly historyEvents: readonly AgentStreamEvent[] | undefined;
 
@@ -356,6 +361,7 @@ class FakeAgentSession implements AgentSession {
     this.memoryMarker = options.memoryMarker ?? null;
     this.closeSession = options.closeSession;
     this.onStartTurn = options.onStartTurn;
+    this.respond = options.respond;
     this.beforeTurnComplete = options.beforeTurnComplete;
     this.historyEvents = options.historyEvents;
     this.historyPath = path.join(
@@ -987,6 +993,10 @@ class FakeAgentSession implements AgentSession {
   }
 
   private buildAssistantText(prompt: string): string {
+    return this.respond?.(prompt, this.config) ?? this.buildDefaultAssistantText(prompt);
+  }
+
+  private buildDefaultAssistantText(prompt: string): string {
     const lower = prompt.toLowerCase();
 
     // Special-case for tests that ask the agent to run pwd but use a placeholder in the
@@ -1234,6 +1244,7 @@ class FakeAgentClient implements AgentClient {
       closeSession: this.options.closeSession,
       onStartTurn: this.options.onStartTurn,
       beforeTurnComplete: this.options.beforeTurnComplete,
+      respond: this.options.respond,
       historyEvents: this.options.historyEvents,
     });
   }
@@ -1261,6 +1272,7 @@ class FakeAgentClient implements AgentClient {
       closeSession: this.options.closeSession,
       onStartTurn: this.options.onStartTurn,
       beforeTurnComplete: this.options.beforeTurnComplete,
+      respond: this.options.respond,
       historyEvents: this.options.historyEvents,
     });
   }
