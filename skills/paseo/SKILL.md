@@ -135,6 +135,8 @@ If you want an explicit reply with `send_agent_prompt`, have the sender check `l
 
 **`wait_for_agent`** — `{ agentId, timeoutSeconds? }`. Blocks until one of your own subagents ends its current turn and returns `{ status, agentStatus, lastMessage, lastMessageTruncated, permission?, guidance }`. `status` is `finished`, `error`, `closed`, `permission_requested`, or `timeout`. `timeoutSeconds` defaults to 600, minimum 1, maximum 1800. It returns at once when the agent needs permission or is not running a turn, and it refuses agents you did not create. On `timeout` the agent keeps running; call it again. A result the wait returned is not repeated as a notification. Use it when you need the result before you can continue; otherwise let the notification arrive.
 
+**`list_team_members`** / **`send_team_message`** — only inside a team run whose team sets `peerMessaging`. `list_team_members {}` shows your teammates (`role`, `isParent`, `isSelf`). `send_team_message { agentId, message }` messages one of them directly and returns `{ outcome: "delivered" | "queued" | "failed", detail }`; `delivered` means accepted, not read. Limits: 8000 characters, 20 messages per minute per sender, 200 per team run. Message a teammate for coordination; report final results to your parent.
+
 Delegate to a different provider and wait inline:
 
 ```text
