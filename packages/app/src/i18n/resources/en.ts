@@ -223,6 +223,12 @@ export const en = {
       searchPlaceholder: "Search modes...",
       selectWithValue: "Select agent mode ({{value}})",
     },
+    team: {
+      title: "Team",
+      none: "None",
+      selectWithValue: "Select team ({{value}})",
+      tabLabel: "Team {{name}}",
+    },
     hints: {
       thinking: "Thinking mode",
       model: "Change model",

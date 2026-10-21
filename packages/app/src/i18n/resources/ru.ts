@@ -229,6 +229,12 @@ export const ru: TranslationResources = {
       searchPlaceholder: "Поиск режимов...",
       selectWithValue: "Выбрать режим агента ({{value}})",
     },
+    team: {
+      title: "Команда",
+      none: "Нет",
+      selectWithValue: "Выбрать команду ({{value}})",
+      tabLabel: "Команда {{name}}",
+    },
     hints: {
       thinking: "Режим рассуждений",
       model: "Изменить модель",

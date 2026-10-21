@@ -229,6 +229,12 @@ export const es: TranslationResources = {
       searchPlaceholder: "Modos de búsqueda...",
       selectWithValue: "Seleccione el modo de agente ({{value}})",
     },
+    team: {
+      title: "Equipo",
+      none: "Ninguno",
+      selectWithValue: "Seleccionar equipo ({{value}})",
+      tabLabel: "Equipo {{name}}",
+    },
     hints: {
       thinking: "Modo de pensamiento",
       model: "Cambiar modelo",

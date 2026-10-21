@@ -10,6 +10,7 @@ import {
 } from "./agent/provider-launch-config.js";
 import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-config.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
+import { AgentTeamsConfigSchema } from "./agent/agent-teams.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protocol/agent-profile";
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
@@ -271,6 +272,9 @@ export const PersistedConfigSchema = z
         appendSystemPrompt: z.string().optional(),
         terminalProfiles: z.array(TerminalProfileSchema).optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
+        teams: AgentTeamsConfigSchema.optional().describe(
+          "Named teams of roles. Each role maps to an agent profile or a provider and model. A chat started with a team is told its roster.",
+        ),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),

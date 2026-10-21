@@ -65,6 +65,7 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | [docs/browser-capture-harness.md](docs/browser-capture-harness.md)   | Real-Electron browser screenshot harness and compositor-surface gotcha                                                         |
 | [docs/android.md](docs/android.md)                                   | App variants, local/cloud builds, EAS workflows, version codes, F-Droid source builds and store metadata                       |
 | [docs/goals.md](docs/goals.md)                                         | Fork-only: Goals — roles, lifecycle, guarantees, configuration, limits, security model, operations                             |
+| [docs/agent-teams.md](docs/agent-teams.md)                             | Fork-only: Teams — named roles mapped to providers, how a chat gets its roster, limits                                         |
 | [docs/goal-orchestration-phase0.md](docs/goal-orchestration-phase0.md) | Fork-only: reconnaissance and decisions behind Goals — existing pieces, gaps, extension points                                 |
 | [docs/docker.md](docs/docker.md)                                     | Running the daemon and bundled web UI in Docker, volumes, agent images, security                                               |
 | [docs/release.md](docs/release.md)                                   | Release playbook, draft releases, completion checklist                                                                         |

@@ -227,6 +227,12 @@ export const ar: TranslationResources = {
       searchPlaceholder: "أوضاع البحث...",
       selectWithValue: "حدد وضع الوكيل ({{value}})",
     },
+    team: {
+      title: "الفريق",
+      none: "بلا",
+      selectWithValue: "حدد الفريق ({{value}})",
+      tabLabel: "الفريق {{name}}",
+    },
     hints: {
       thinking: "وضع التفكير",
       model: "تغيير النموذج",

@@ -12,10 +12,12 @@ import type { ManagedAgent } from "../../agent/agent-manager.js";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../../workspace-registry.js";
 import type { HubRelationshipManagement } from "../../hub/relationship-controller.js";
 import type { DaemonConfigReloadResult } from "../../daemon-config-store.js";
+import type { AgentTeamsConfig } from "../../agent/agent-teams.js";
 
 export interface DaemonRuntimeConfig {
   listen: string | null;
   worktreesRoot?: string;
+  teams?: AgentTeamsConfig;
   appBaseUrl?: string;
   desktopManaged?: boolean;
   getRelayConfig(): {

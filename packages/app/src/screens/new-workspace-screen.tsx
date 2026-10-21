@@ -457,6 +457,7 @@ async function createWorkspaceChatAgent(input: CreateChatAgentInput): Promise<Su
       featureValues: composerState.featureValues,
     },
     initialPrompt: text,
+    ...(composerState.team ? { team: composerState.team } : {}),
     clientMessageId: `${input.draftId}:initial-message`,
     images: images?.length ? images : undefined,
     attachments: wirePayload.attachments?.length ? wirePayload.attachments : undefined,

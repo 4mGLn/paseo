@@ -229,6 +229,12 @@ export const ja: TranslationResources = {
       searchPlaceholder: "モードを検索...",
       selectWithValue: "エージェントモードを選択（{{value}}）",
     },
+    team: {
+      title: "チーム",
+      none: "なし",
+      selectWithValue: "チームを選択（{{value}}）",
+      tabLabel: "チーム {{name}}",
+    },
     hints: {
       thinking: "思考モード",
       model: "モデルを変更",

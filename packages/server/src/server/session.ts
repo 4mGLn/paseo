@@ -86,6 +86,9 @@ import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-regist
 import { getErrorMessage, getErrorMessageOr } from "@getpaseo/protocol/error-utils";
 import { getAgentStatusPriority } from "@getpaseo/protocol/agent-state-bucket";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { AGENT_TEAM_LABEL, listResolvedAgentTeams, resolveAgentTeam } from "./agent/agent-teams.js";
+import { buildAgentTeamRosterPrompt } from "./agent/agent-team-roster.js";
+import { composeSystemPromptParts } from "./agent/system-prompt.js";
 import type { WorkspaceGitRuntimeSnapshot, WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import {
@@ -763,6 +766,7 @@ export class Session {
   private readonly workspaceProvisioning: WorkspaceProvisioningService;
   private readonly workspaceRecovery: WorkspaceRecoveryService;
   private readonly daemonConfigStore: DaemonConfigStore;
+  private readonly daemonRuntimeConfig: DaemonRuntimeConfig | undefined;
   private readonly pushNotifications: PushNotifications;
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
@@ -1131,6 +1135,7 @@ export class Session {
         })
       : null;
     this.daemonConfigStore = daemonConfigStore;
+    this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.terminalManager = terminalManager;
     this.terminalController = new TerminalSessionController({
       terminalManager,
@@ -3170,6 +3175,8 @@ export class Session {
         return this.providerCatalogSession.handleProviderDiagnosticRequest(msg);
       case "provider.usage.list.request":
         return this.usageSession.handleLegacyList(msg);
+      case "agent.teams.list.request":
+        return this.handleAgentTeamsListRequest(msg);
       case "usage.list_reports.request":
         return this.usageSession.handleListReports(msg);
       default:
@@ -4315,6 +4322,56 @@ export class Session {
     }
   }
 
+  private async handleAgentTeamsListRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.teams.list.request" }>,
+  ): Promise<void> {
+    const { teams, error } = listResolvedAgentTeams({
+      teams: this.daemonRuntimeConfig?.teams,
+      agentProfiles: this.daemonConfigStore.get().agentProfiles,
+    });
+    this.emit({
+      type: "agent.teams.list.response",
+      payload: {
+        requestId: msg.requestId,
+        teams: teams.map((team) => ({
+          name: team.name,
+          description: team.description,
+          roles: team.roles.map((role) => ({
+            name: role.name,
+            description: role.description,
+            provider: role.provider,
+            model: role.model,
+            profile: role.profile,
+          })),
+        })),
+        error,
+      },
+    });
+  }
+
+  /**
+   * Gives a team chat its roster through the creation-only system prompt, which
+   * is persisted and restored on resume, and labels it with the team name. The
+   * roster is frozen at creation; helpers it creates do not inherit it.
+   */
+  private applyRequestedAgentTeam(msg: CreateAgentRequestMessage): CreateAgentRequestMessage {
+    if (msg.team === undefined) return msg;
+    const team = resolveAgentTeam({
+      teams: this.daemonRuntimeConfig?.teams,
+      agentProfiles: this.daemonConfigStore.get().agentProfiles,
+      name: msg.team,
+    });
+    const systemPrompt = composeSystemPromptParts(
+      msg.config.systemPrompt,
+      buildAgentTeamRosterPrompt(team),
+    );
+    return {
+      ...msg,
+      config: { ...msg.config, ...(systemPrompt ? { systemPrompt } : {}) },
+      labels: { ...msg.labels, [AGENT_TEAM_LABEL]: team.name },
+    };
+  }
+
   private async handleCreateAgentRequest(msg: CreateAgentRequestMessage): Promise<void> {
     try {
       let agent: AgentSnapshotPayload;
@@ -4388,10 +4445,11 @@ export class Session {
   }
 
   private async createSessionAgent(
-    msg: CreateAgentRequestMessage,
+    requested: CreateAgentRequestMessage,
     agentId?: string,
     onAgentReady?: (agent: AgentSnapshotPayload) => Promise<void>,
   ): Promise<CreatedAgent> {
+    const msg = this.applyRequestedAgentTeam(requested);
     const {
       config,
       worktreeName,

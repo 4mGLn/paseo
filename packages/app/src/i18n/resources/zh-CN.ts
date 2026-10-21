@@ -227,6 +227,12 @@ export const zhCN: TranslationResources = {
       searchPlaceholder: "搜索 modes...",
       selectWithValue: "选择 Agent mode（{{value}}）",
     },
+    team: {
+      title: "团队",
+      none: "无",
+      selectWithValue: "选择团队（{{value}}）",
+      tabLabel: "团队 {{name}}",
+    },
     hints: {
       thinking: "Thinking mode",
       model: "切换 Model",

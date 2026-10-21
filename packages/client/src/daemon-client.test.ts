@@ -8216,3 +8216,68 @@ test("closes before admission when a protected-capable daemon is reached in lega
   expect(daemonReceived).toHaveLength(1);
   expect(JSON.parse(daemonReceived[0] as string)).toMatchObject({ type: "hello" });
 });
+
+test("rejects team listing and team creation before sending when the host predates teams", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen({ features: {} });
+  await connectPromise;
+
+  expect(client.supportsAgentTeams()).toBe(false);
+  await expect(client.listAgentTeams()).rejects.toThrow("Update the host to use teams.");
+  await expect(
+    client.createAgent({ provider: "claude", cwd: "/tmp/project", team: "full-stack" }),
+  ).rejects.toThrow("Update the host to use teams.");
+  expect(mock.sent).toHaveLength(0);
+});
+
+test("sends agent.teams.list.request and sends the team on agent creation", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen({ features: { agentTeams: true } });
+  await connectPromise;
+
+  const listPromise = client.listAgentTeams({ requestId: "teams-1" });
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: { type: "agent.teams.list.request", requestId: "teams-1" },
+  });
+  const teams = [
+    {
+      name: "full-stack",
+      roles: [{ name: "reviewer", description: "Reviews.", provider: "claude" }],
+    },
+  ];
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.teams.list.response",
+      payload: { requestId: "teams-1", teams, error: null },
+    }),
+  );
+  await expect(listPromise).resolves.toEqual({ requestId: "teams-1", teams, error: null });
+
+  void client
+    .createAgent({ provider: "claude", cwd: "/tmp/project", team: "full-stack" })
+    .catch(() => undefined);
+  const created = mock.sent.map((frame) => parseSentFrame(frame)).at(-1);
+  expect(created).toMatchObject({ team: "full-stack", config: { provider: "claude" } });
+  expect(created).not.toHaveProperty("config.team");
+});

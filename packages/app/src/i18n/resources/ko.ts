@@ -227,6 +227,12 @@ export const ko: TranslationResources = {
       searchPlaceholder: "모드 검색...",
       selectWithValue: "에이전트 모드 선택 ({{value}})",
     },
+    team: {
+      title: "팀",
+      none: "없음",
+      selectWithValue: "팀 선택 ({{value}})",
+      tabLabel: "팀 {{name}}",
+    },
     hints: {
       thinking: "사고 모드",
       model: "모델 변경",
