@@ -1,7 +1,32 @@
 import { z } from "zod";
 import type { AgentProfile } from "@getpaseo/protocol/agent-profile";
 
-export { AGENT_TEAM_LABEL } from "@getpaseo/protocol/agent-labels";
+import { AGENT_TEAM_LABEL } from "@getpaseo/protocol/agent-labels";
+
+export { AGENT_TEAM_LABEL };
+
+/**
+ * Stamped by the daemon on every helper a team chat (or one of its helpers)
+ * creates; the value is the team chat's agent id. Agents cannot set it.
+ */
+export const AGENT_TEAM_RUN_LABEL = "paseo.team-run";
+/** Free-form role a team chat sets on a helper through create_agent labels. */
+export const AGENT_TEAM_ROLE_LABEL = "paseo.team-role";
+/** Labels only the daemon may set; agent-facing tools strip or refuse them. */
+export const DAEMON_OWNED_TEAM_LABELS: readonly string[] = [AGENT_TEAM_LABEL, AGENT_TEAM_RUN_LABEL];
+
+/**
+ * The team run an agent belongs to: its `paseo.team-run` label, or its own id
+ * when it is the team chat (carries `paseo.team`). Null outside a team run.
+ */
+export function resolveTeamRunId(agent: {
+  id: string;
+  labels?: Record<string, string> | null;
+}): string | null {
+  const run = agent.labels?.[AGENT_TEAM_RUN_LABEL]?.trim();
+  if (run) return run;
+  return agent.labels?.[AGENT_TEAM_LABEL]?.trim() ? agent.id : null;
+}
 
 const TeamNameSchema = z.string().trim().min(1);
 
@@ -35,6 +60,8 @@ export const AgentTeamRoleConfigSchema = z
 export const AgentTeamConfigSchema = z
   .object({
     description: z.string().optional(),
+    /** Lets members of one team run message each other with send_team_message. */
+    peerMessaging: z.boolean().optional(),
     roles: z
       .record(TeamNameSchema, AgentTeamRoleConfigSchema)
       .refine((roles) => Object.keys(roles).length > 0, "A team needs at least one role"),
@@ -63,6 +90,7 @@ export interface ResolvedAgentTeamRole {
 export interface ResolvedAgentTeam {
   name: string;
   description?: string;
+  peerMessaging?: boolean;
   roles: ResolvedAgentTeamRole[];
 }
 
@@ -136,6 +164,7 @@ function resolveTeam(input: {
   return {
     name: input.name,
     ...(input.team.description ? { description: input.team.description } : {}),
+    ...(input.team.peerMessaging ? { peerMessaging: true } : {}),
     roles: Object.entries(input.team.roles).map(([roleName, role]) =>
       resolveRole({ teamName: input.name, roleName, role, agentProfiles: input.agentProfiles }),
     ),
