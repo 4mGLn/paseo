@@ -114,7 +114,11 @@ Not protected: network access, files outside the worktrees that the provider's u
 - Mixed providers: a planner on one, implementers on others, an independent reviewer on a third.
 - Unattended runs bounded by time and run limits, and runs gated by your approval of the plan, each change, or both.
 
-Not supported: goals without a git repository, merging into your branch or opening a pull request, re-planning around a failed criterion (the goal fails), multi-repository goals, and app support for managed goals. The app's `/goals` screen lists goals, creates manual ones, approves plans and cancels, but it cannot create a managed goal or show change sets and runs.
+Not supported: goals without a git repository, merging into your branch or opening a pull request, re-planning around a failed criterion (the goal fails), and multi-repository goals. The app's Goals screen lists goals, creates manual and managed ones, approves plans and cancels; it does not show change sets and runs.
+
+### From a chat
+
+In an agent chat, `/goal <objective>` or **Start goal from this chat** in the tab's menu opens the create form with the goal run by agents, the chat's working directory, and the chat's provider for the Lead and tasks. Without text after `/goal`, the objective is the chat's last message. The goal gets its own Lead; the chat stays as it is and receives the outcome, because the form sets `originAgentId` to the chat.
 
 ## Known limits
 
