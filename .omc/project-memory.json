@@ -1,0 +1,295 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1793169935755,
+  "projectRoot": "/home/amgln/0.Workspace/02.coding/0.repo/paseo",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "playwright",
+        "version": "1.56.1",
+        "category": "testing"
+      },
+      {
+        "name": "react-dom",
+        "version": "19.2.3",
+        "category": "frontend"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "npm test",
+    "lintCommand": "npm run lint",
+    "devCommand": "npm run dev",
+    "scripts": {
+      "dev": "npm run dev:server",
+      "dev:win": "powershell ./scripts/dev.ps1",
+      "dev:server": "cross-env PASEO_LISTEN=127.0.0.1:6768 ./scripts/dev-daemon.sh",
+      "dev:server:watch": "concurrently --kill-others --names protocol,client,server --prefix-colors yellow,blue,cyan \"npm run watch:protocol\" \"npm run watch:client\" \"npm run dev:server:raw\"",
+      "dev:server:raw": "npm run dev --workspace=@getpaseo/server",
+      "dev:app": "cross-env PASEO_LISTEN=127.0.0.1:6768 EXPO_PORT=8081 ./scripts/dev-app.sh",
+      "dev:android": "npm run dev:android --workspace=@getpaseo/app",
+      "dev:ios": "npm run dev:ios --workspace=@getpaseo/app",
+      "test:e2e:mobile": "./scripts/test-mobile-agent-device.sh",
+      "test:e2e:composer-keyboard:android": "./packages/app/e2e/mobile/composer-keyboard/android.sh",
+      "dev:website": "npm run dev --workspace=@getpaseo/website",
+      "postinstall": "node scripts/postinstall-patches.mjs",
+      "prepare": "lefthook install --force",
+      "build": "npm run build --workspaces --if-present",
+      "build:apk": "node scripts/build-apk.mjs",
+      "build:apk:arm64": "node scripts/build-apk.mjs arm64",
+      "build:highlight": "npm run build --workspace=@getpaseo/highlight",
+      "build:highlight:clean": "npm run build:clean --workspace=@getpaseo/highlight",
+      "build:plugin": "npm run build --workspace=@getpaseo/plugin",
+      "build:plugin:clean": "npm run build:clean --workspace=@getpaseo/plugin",
+      "build:relay": "npm run build --workspace=@getpaseo/relay",
+      "build:relay:clean": "npm run build:clean --workspace=@getpaseo/relay",
+      "build:protocol": "npm run build --workspace=@getpaseo/protocol",
+      "build:protocol:clean": "npm run build:clean --workspace=@getpaseo/protocol",
+      "build:client": "npm run build --workspace=@getpaseo/client",
+      "build:client:clean": "npm run build:protocol:clean && npm run build:clean --workspace=@getpaseo/client",
+      "build:server-deps": "npm run build:client && concurrently --kill-others-on-fail --names highlight,plugin,relay --prefix-colors yellow,green,blue \"npm run build:highlight\" \"npm run build:plugin\" \"npm run build:relay\"",
+      "build:server-deps:clean": "npm run build:client:clean && npm run build:highlight:clean && npm run build:plugin:clean && npm run build:relay:clean",
+      "build:server": "npm run build:server-deps && npm run build --workspace=@getpaseo/server && npm run build --workspace=@getpaseo/cli",
+      "build:server:clean": "npm run build:server-deps:clean && npm run build:clean --workspace=@getpaseo/server && npm run build:clean --workspace=@getpaseo/cli",
+      "build:daemon-web-ui": "node scripts/build-daemon-web-ui.mjs",
+      "build:app-deps": "npm run build:highlight && npm run build:client && npm run build:plugin && npm run build --workspace=@getpaseo/expo-two-way-audio",
+      "build:app-deps:clean": "npm run build:highlight:clean && npm run build:client:clean && npm run build:plugin:clean && npm run build --workspace=@getpaseo/expo-two-way-audio",
+      "watch:protocol": "npm run watch --workspace=@getpaseo/protocol",
+      "watch:client": "tsc -p packages/client/tsconfig.json --watch --preserveWatchOutput",
+      "typecheck": "npm run typecheck --workspaces --if-present",
+      "typecheck:server": "npm run typecheck --workspace=@getpaseo/relay && npm run typecheck --workspace=@getpaseo/protocol && npm run typecheck --workspace=@getpaseo/client && npm run typecheck --workspace=@getpaseo/builtin-plugins && npm run typecheck --workspace=@getpaseo/server && npm run typecheck --workspace=@getpaseo/cli",
+      "test": "npm run test --workspaces --if-present",
+      "format": "oxfmt .",
+      "format:files": "oxfmt",
+      "format:check": "oxfmt --check .",
+      "format:check:files": "oxfmt --check",
+      "lint": "oxlint",
+      "lint:fix": "oxlint --fix",
+      "knip": "knip",
+      "acp:version-drift": "node scripts/check-acp-catalog-version-drift.mjs",
+      "acp:version-drift:check": "node scripts/check-acp-catalog-version-drift.mjs --fail-on-drift",
+      "acp:version-drift:update": "node scripts/check-acp-catalog-version-drift.mjs --update",
+      "start": "npm run start --workspace=@getpaseo/server",
+      "android": "npm run dev:android",
+      "android:development": "npm run android:development --workspace=@getpaseo/app",
+      "android:production": "npm run android:production --workspace=@getpaseo/app",
+      "android:release": "npm run android:production --workspace=@getpaseo/app",
+      "android:clear": "npm run android:clear --workspace=@getpaseo/app",
+      "fdroid:changelogs": "node scripts/sync-fdroid-changelogs.mjs",
+      "fdroid:changelogs:check": "node scripts/sync-fdroid-changelogs.mjs --check",
+      "ios": "npm run dev:ios",
+      "web": "npm run web --workspace=@getpaseo/app",
+      "dev:desktop": "cross-env PASEO_LISTEN=127.0.0.1:6768 npm run dev --workspace=@getpaseo/desktop",
+      "dev:win:desktop": "npm run dev:win --workspace=@getpaseo/desktop",
+      "build:desktop": "npm run build:app-deps:clean && cd packages/app && cross-env PASEO_WEB_PLATFORM=electron npx expo export --platform web && cd ../.. && npm run build --workspace=@getpaseo/desktop --",
+      "db:query": "npm run db:query --workspace=@getpaseo/server --",
+      "cli": "./scripts/dev-home.sh npx tsx packages/cli/src/index.js",
+      "version": "npm run version:sync-internal && npm run fdroid:changelogs && npm run release:prepare && git add -A",
+      "version:sync-internal": "node scripts/sync-workspace-versions.mjs",
+      "release:prepare": "npm install --workspaces --include-workspace-root",
+      "version:all:patch": "node scripts/set-release-version.mjs --mode patch",
+      "version:all:minor": "node scripts/set-release-version.mjs --mode minor",
+      "version:all:major": "node scripts/set-release-version.mjs --mode major",
+      "version:all:beta:patch": "node scripts/set-release-version.mjs --mode beta-patch",
+      "version:all:beta:minor": "node scripts/set-release-version.mjs --mode beta-minor",
+      "version:all:beta:major": "node scripts/set-release-version.mjs --mode beta-major",
+      "version:all:beta:next": "node scripts/set-release-version.mjs --mode beta-next",
+      "version:all:promote": "node scripts/set-release-version.mjs --mode promote",
+      "release:check": "npm run release:prepare && npm run typecheck --workspace=@getpaseo/highlight && npm run typecheck --workspace=@getpaseo/relay && npm run typecheck --workspace=@getpaseo/protocol && npm run build:client:clean && npm run typecheck --workspace=@getpaseo/client && npm run typecheck --workspace=@getpaseo/plugin && npm run build:server:clean && npm run typecheck --workspace=@getpaseo/server && npm run typecheck --workspace=@getpaseo/cli && npm pack --dry-run --workspace=@getpaseo/highlight && npm pack --dry-run --workspace=@getpaseo/relay && npm pack --dry-run --workspace=@getpaseo/protocol && npm pack --dry-run --workspace=@getpaseo/client && npm pack --dry-run --workspace=@getpaseo/plugin && npm pack --dry-run --workspace=@getpaseo/server && npm pack --dry-run --workspace=@getpaseo/cli",
+      "release:publish:dry-run": "npm publish --dry-run --workspace=@getpaseo/highlight --access public && npm publish --dry-run --workspace=@getpaseo/relay --access public && npm publish --dry-run --workspace=@getpaseo/protocol --access public && npm publish --dry-run --workspace=@getpaseo/client --access public && npm publish --dry-run --workspace=@getpaseo/plugin --access public && npm publish --dry-run --workspace=@getpaseo/server --access public && npm publish --dry-run --workspace=@getpaseo/cli --access public",
+      "release:publish:beta:dry-run": "npm publish --dry-run --workspace=@getpaseo/highlight --access public --tag beta && npm publish --dry-run --workspace=@getpaseo/relay --access public --tag beta && npm publish --dry-run --workspace=@getpaseo/protocol --access public --tag beta && npm publish --dry-run --workspace=@getpaseo/client --access public --tag beta && npm publish --dry-run --workspace=@getpaseo/plugin --access public --tag beta && npm publish --dry-run --workspace=@getpaseo/server --access public --tag beta && npm publish --dry-run --workspace=@getpaseo/cli --access public --tag beta",
+      "release:publish": "npm publish --workspace=@getpaseo/highlight --access public && npm publish --workspace=@getpaseo/relay --access public && npm publish --workspace=@getpaseo/protocol --access public && npm publish --workspace=@getpaseo/client --access public && npm publish --workspace=@getpaseo/plugin --access public && npm publish --workspace=@getpaseo/server --access public && npm publish --workspace=@getpaseo/cli --access public",
+      "release:publish:beta": "npm publish --workspace=@getpaseo/highlight --access public --tag beta && npm publish --workspace=@getpaseo/relay --access public --tag beta && npm publish --workspace=@getpaseo/protocol --access public --tag beta && npm publish --workspace=@getpaseo/client --access public --tag beta && npm publish --workspace=@getpaseo/plugin --access public --tag beta && npm publish --workspace=@getpaseo/server --access public --tag beta && npm publish --workspace=@getpaseo/cli --access public --tag beta",
+      "release:push": "node scripts/push-current-release-tag.mjs",
+      "release:beta:patch": "npm run release:check && npm run version:all:beta:patch && npm run release:publish:beta && npm run release:push",
+      "release:beta:minor": "npm run release:check && npm run version:all:beta:minor && npm run release:publish:beta && npm run release:push",
+      "release:beta:major": "npm run release:check && npm run version:all:beta:major && npm run release:publish:beta && npm run release:push",
+      "release:beta:next": "npm run release:check && npm run version:all:beta:next && npm run release:publish:beta && npm run release:push",
+      "release:promote": "npm run release:check && npm run version:all:promote && npm run release:publish && npm run release:push",
+      "release:patch": "npm run release:check && npm run version:all:patch && npm run release:publish && npm run release:push",
+      "release:minor": "npm run release:check && npm run version:all:minor && npm run release:publish && npm run release:push",
+      "release:major": "npm run release:check && npm run version:all:major && npm run release:publish && npm run release:push"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": true,
+    "workspaces": [
+      "plugins",
+      "packages/expo-two-way-audio",
+      "packages/highlight",
+      "packages/plugin",
+      "packages/protocol",
+      "packages/client",
+      "packages/server",
+      "packages/app",
+      "packages/relay",
+      "packages/website",
+      "packages/desktop",
+      "packages/cli"
+    ],
+    "mainDirectories": [
+      "docs",
+      "scripts"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "docker": {
+      "path": "docker",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1793169935698,
+      "keyFiles": [
+        "Dockerfile.agents.example",
+        "README.md",
+        "docker-compose.example.yml"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 51,
+      "lastAccessed": 1793169935702,
+      "keyFiles": [
+        "ad-hoc-daemon-testing.md",
+        "agent-lifecycle.md",
+        "agent-stream-performance.md",
+        "agent-teams.md",
+        "android.md"
+      ]
+    },
+    "fastlane": {
+      "path": "fastlane",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1793169935721,
+      "keyFiles": []
+    },
+    "nix": {
+      "path": "nix",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1793169935726,
+      "keyFiles": [
+        "desktop-package.nix",
+        "module.nix",
+        "npm-deps.hash",
+        "package.nix"
+      ]
+    },
+    "packages": {
+      "path": "packages",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1793169935733,
+      "keyFiles": []
+    },
+    "patches": {
+      "path": "patches",
+      "purpose": null,
+      "fileCount": 10,
+      "lastAccessed": 1793169935734,
+      "keyFiles": [
+        "@gorhom+bottom-sheet+5.2.14.patch",
+        "@mattermost+react-native-paste-input+2.0.1.patch",
+        "@opencode-ai+sdk+1.14.46.patch",
+        "expo-modules-core+57.0.23.patch",
+        "react-native-draggable-flatlist+4.0.3.patch"
+      ]
+    },
+    "plugin-examples": {
+      "path": "plugin-examples",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1793169935734,
+      "keyFiles": []
+    },
+    "plugins": {
+      "path": "plugins",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1793169935735,
+      "keyFiles": [
+        "package.json",
+        "tsconfig.json"
+      ]
+    },
+    "public-docs": {
+      "path": "public-docs",
+      "purpose": null,
+      "fileCount": 66,
+      "lastAccessed": 1793169935736,
+      "keyFiles": [
+        "agent-profiles.md",
+        "agent-profiles.zh-CN.md",
+        "browser-tools.md",
+        "browser-tools.zh-CN.md",
+        "browser-when.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 49,
+      "lastAccessed": 1793169935737,
+      "keyFiles": [
+        "benchmark-terminal-latency.ts",
+        "build-apk.mjs",
+        "build-daemon-web-ui.mjs",
+        "builtin-plugins-dist.test.mjs",
+        "changelog-utils.mjs"
+      ]
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1793169935743,
+      "keyFiles": []
+    },
+    "packages/app": {
+      "path": "packages/app",
+      "purpose": "Application code",
+      "fileCount": 23,
+      "lastAccessed": 1793169935748,
+      "keyFiles": [
+        "Gemfile",
+        "Gemfile.lock",
+        "README.md"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
