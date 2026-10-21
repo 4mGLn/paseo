@@ -118,6 +118,7 @@ import type {
   RefreshProvidersSnapshotResponseMessage,
   ProviderDiagnosticResponseMessage,
   ProviderUsageListResponseMessage,
+  AgentTeamsListResponse,
   UsageReportEntry,
   DaemonGetStatusResponse,
   DaemonGetPairingOfferResponse,
@@ -526,6 +527,8 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   labels?: Record<string, string>;
   /** Plugin-owned data stored on the agent. Needs a host with `entityMetadata`. */
   metadata?: CreateAgentRequestMessage["metadata"];
+  /** A team from the host's daemon.teams. Requires server_info.features.agentTeams. */
+  team?: string;
 }
 
 export interface CreateWorkspaceRequestOptions {
@@ -630,6 +633,7 @@ type GetProvidersSnapshotPayload = GetProvidersSnapshotResponseMessage["payload"
 type RefreshProvidersSnapshotPayload = RefreshProvidersSnapshotResponseMessage["payload"];
 type ProviderDiagnosticPayload = ProviderDiagnosticResponseMessage["payload"];
 type ProviderUsageListPayload = ProviderUsageListResponseMessage["payload"];
+type AgentTeamsListPayload = AgentTeamsListResponse["payload"];
 interface UsageListReportsPayload {
   requestId: string;
   reports: UsageReportEntry[];
@@ -3489,6 +3493,7 @@ export class DaemonClient {
     if (options.background !== undefined) this.requireBackgroundCreation(options);
     if (options.metadata !== undefined) this.requireEntityMetadata();
     const config = resolveAgentConfig(options);
+    if (options.team !== undefined) this.requireAgentTeams();
     const result = await this.creations.createAgent({
       ...options,
       config: this.carriesLegacyOptions(config)
@@ -3555,6 +3560,7 @@ export class DaemonClient {
       ...(options.labels && Object.keys(options.labels).length > 0
         ? { labels: options.labels }
         : {}),
+      ...(options.team !== undefined ? { team: options.team } : {}),
     });
 
     const status = await this.sendRequest({
@@ -7128,6 +7134,24 @@ export class DaemonClient {
     });
   }
 
+  private requireAgentTeams(): void {
+    if (this.lastServerInfoMessage?.features?.agentTeams !== true) {
+      throw new Error("Update the host to use teams.");
+    }
+  }
+
+  supportsAgentTeams(): boolean {
+    return this.lastServerInfoMessage?.features?.agentTeams === true;
+  }
+
+  async listAgentTeams(options?: { requestId?: string }): Promise<AgentTeamsListPayload> {
+    this.requireAgentTeams();
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.teams.list.response">({
+      requestId: options?.requestId,
+      message: { type: "agent.teams.list.request" },
+    });
+  }
+
   private requireGoals(): void {
     if (this.lastServerInfoMessage?.features?.goals !== true) {
       throw new Error("Update the host to use goals.");
@@ -8311,6 +8335,7 @@ function resolveAgentConfig(options: CreateAgentRequestOptions): AgentSessionCon
     requestId: _requestId,
     labels: _labels,
     metadata: _metadata,
+    team: _team,
     ...overrides
   } = options;
 

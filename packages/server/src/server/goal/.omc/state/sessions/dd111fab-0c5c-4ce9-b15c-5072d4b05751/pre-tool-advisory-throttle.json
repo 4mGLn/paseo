@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "entries": {
+    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
+      "last_emitted_at_ms": 1793156951694,
+      "message": "Verify changes work after editing. Test functionality before marking complete."
+    },
+    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
+      "last_emitted_at_ms": 1793156947638,
+      "message": "Read multiple files in parallel when possible for faster analysis."
+    },
+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
+      "last_emitted_at_ms": 1793156941063,
+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "16205a702c82bb6ea27328bcd97298377ea12f4304518882aae68a55117fe487": {
+      "last_emitted_at_ms": 1793155274527,
+      "message": "Spawning agent: oh-my-claudecode:executor (opus) | Task: Implement D1 recovery protocol/reducer"
+    },
+    "5f42f370683ddff37b2c03bcde2255d615cdaae05e2ea37eb4da3cb88e9001e8": {
+      "last_emitted_at_ms": 1793154844564,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (opus) | Task: Review C1 RunWatcher"
+    },
+    "f4ae06af56d873f9945214bafffb6b118de8f0990b0f5671af91e8fa0a4c22f2": {
+      "last_emitted_at_ms": 1793153802505,
+      "message": "Spawning agent: oh-my-claudecode:executor (opus) | Task: Implement C1 RunWatcher"
+    },
+    "0dd91e479593a145ef6214f5e0ff9bdebc8e634b7d91f139cab7133a8df8199b": {
+      "last_emitted_at_ms": 1793153734917,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (opus) | Task: Review T time-base feature"
+    }
+  },
+  "updated_at": "2026-10-28T03:09:11.694Z"
+}

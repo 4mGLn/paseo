@@ -1906,6 +1906,9 @@ export const CreateAgentRequestMessageSchema = z.object({
   background: z.boolean().optional(),
   labels: z.record(z.string(), z.string()).default({}),
   metadata: EntityMetadataSchema.optional(),
+  // A team name from daemon.teams. The created agent is told the team's roster.
+  // Gate on server_info.features.agentTeams: older daemons drop the field.
+  team: z.string().min(1).optional(),
   requestId: z.string(),
 });
 
@@ -1973,6 +1976,11 @@ export const RefreshProvidersSnapshotRequestMessageSchema = z.object({
 export const ProviderDiagnosticRequestMessageSchema = z.object({
   type: z.literal("provider_diagnostic_request"),
   provider: AgentProviderSchema,
+  requestId: z.string(),
+});
+
+export const AgentTeamsListRequestSchema = z.object({
+  type: z.literal("agent.teams.list.request"),
   requestId: z.string(),
 });
 
@@ -3611,6 +3619,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotRequestMessageSchema,
   ProviderDiagnosticRequestMessageSchema,
   ProviderUsageListRequestMessageSchema,
+  AgentTeamsListRequestSchema,
   UsageListReportsRequestMessageSchema,
   ResumeAgentRequestMessageSchema,
   ImportAgentRequestMessageSchema,
@@ -4150,6 +4159,9 @@ export const ServerInfoStatusPayloadSchema = z
         agentProfiles: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
+        // COMPAT(agentTeams): added in v0.12.0, remove gate after 2027-10-21.
+        // Covers agent.teams.list and the create-agent `team` field.
+        agentTeams: z.boolean().optional(),
       })
       .optional(),
   })
@@ -6804,6 +6816,29 @@ export const ProviderUsageSchema = z.object({
   error: z.string().nullable().optional(),
 });
 
+export const AgentTeamRoleSummarySchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  provider: z.string(),
+  model: z.string().optional(),
+  profile: z.string().optional(),
+});
+
+export const AgentTeamSummarySchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  roles: z.array(AgentTeamRoleSummarySchema),
+});
+
+export const AgentTeamsListResponseSchema = z.object({
+  type: z.literal("agent.teams.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    teams: z.array(AgentTeamSummarySchema),
+    error: z.string().nullable(),
+  }),
+});
+
 export const ProviderUsageListResponseMessageSchema = z.object({
   type: z.literal("provider.usage.list.response"),
   payload: z.object({
@@ -7605,6 +7640,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotResponseMessageSchema,
   ProviderDiagnosticResponseMessageSchema,
   ProviderUsageListResponseMessageSchema,
+  AgentTeamsListResponseSchema,
   UsageListReportsUpdateMessageSchema,
   UsageListReportsResponseMessageSchema,
   ListCommandsResponseSchema,
@@ -7806,6 +7842,8 @@ export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
 export type ProviderUsageWindow = z.infer<typeof ProviderUsageWindowSchema>;
 export type ProviderUsageBalance = z.infer<typeof ProviderUsageBalanceSchema>;
 export type ProviderUsageDetail = z.infer<typeof ProviderUsageDetailSchema>;
+export type AgentTeamsListResponse = z.infer<typeof AgentTeamsListResponseSchema>;
+export type AgentTeamSummary = z.infer<typeof AgentTeamSummarySchema>;
 export type ProviderUsageListResponseMessage = z.infer<
   typeof ProviderUsageListResponseMessageSchema
 >;
