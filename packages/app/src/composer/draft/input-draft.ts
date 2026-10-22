@@ -60,6 +60,8 @@ type DraftComposerState = UseAgentFormStateResult & {
   metadata: Record<string, JsonValue>;
   /** The team chosen for the new chat, or null for none. */
   team: string | null;
+  /** Role name -> model overrides for the chosen team; undefined when none. */
+  teamModelOverrides: Record<string, string> | undefined;
   agentControls: DraftAgentControlsProps;
   commandDraft: DraftCommandTarget;
 };
@@ -348,6 +350,10 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       providerOptions: draftOptions,
       metadata,
       team: teamControl?.selectedTeam ?? null,
+      teamModelOverrides:
+        teamControl?.roleModelOverrides && Object.keys(teamControl.roleModelOverrides).length > 0
+          ? teamControl.roleModelOverrides
+          : undefined,
       agentControls: buildDraftAgentControls({
         formState,
         optionControls: draftOptionControls,

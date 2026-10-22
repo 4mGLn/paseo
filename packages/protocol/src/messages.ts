@@ -1925,6 +1925,9 @@ export const CreateAgentRequestMessageSchema = z.object({
   // A team name from daemon.teams. The created agent is told the team's roster.
   // Gate on server_info.features.agentTeams: older daemons drop the field.
   team: z.string().min(1).optional(),
+  // Role name -> model id, replacing that role's configured model in the roster for this chat
+  // only. Requires `team`. Gated on features.agentTeams like `team`.
+  teamModelOverrides: z.record(z.string(), z.string().min(1)).optional(),
   requestId: z.string(),
 });
 
@@ -4180,7 +4183,7 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
         // COMPAT(agentTeams): added in v0.12.0, remove gate after 2027-10-21.
-        // Covers agent.teams.list and the create-agent `team` field.
+        // Covers agent.teams.list and the create-agent `team` and `teamModelOverrides` fields.
         agentTeams: z.boolean().optional(),
       })
       .optional(),

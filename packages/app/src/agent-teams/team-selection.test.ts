@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { FormPreferencesSchema } from "@/create-agent-preferences/preferences";
-import { rememberSelectedTeam, resolveSelectedTeam } from "./team-selection";
+import {
+  describeTeamRoles,
+  rememberSelectedTeam,
+  resolveSelectedTeam,
+  setRoleModelOverride,
+} from "./team-selection";
 
 describe("team selection preferences", () => {
   it("remembers a team per host and resolves it while the host still defines it", () => {
@@ -42,5 +47,42 @@ describe("team selection preferences", () => {
         team: null,
       }),
     ).toEqual({});
+  });
+});
+
+describe("team role models", () => {
+  it("describes each role with its provider and model, or the bare provider", () => {
+    expect(
+      describeTeamRoles([
+        { name: "implementer", provider: "codex", model: "impl-model" },
+        { name: "reviewer", provider: "claude" },
+      ]),
+    ).toBe("implementer (codex/impl-model), reviewer (claude)");
+  });
+
+  it("keeps only overrides that differ from the role's configured model", () => {
+    const overrides = setRoleModelOverride({
+      overrides: {},
+      role: "implementer",
+      model: "fast-model",
+      configuredModel: "impl-model",
+    });
+    expect(overrides).toEqual({ implementer: "fast-model" });
+    expect(
+      setRoleModelOverride({
+        overrides,
+        role: "implementer",
+        model: "impl-model",
+        configuredModel: "impl-model",
+      }),
+    ).toEqual({});
+    expect(
+      setRoleModelOverride({
+        overrides: { ...overrides, reviewer: "m" },
+        role: "reviewer",
+        model: null,
+        configuredModel: undefined,
+      }),
+    ).toEqual({ implementer: "fast-model" });
   });
 });

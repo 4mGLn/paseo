@@ -242,6 +242,15 @@ function ManagedGoalFields({
     (value: string) => model.setValue("reviewProvider", value),
     [model],
   );
+  const setLeadModel = useCallback((value: string) => model.setValue("leadModel", value), [model]);
+  const setDefaultModel = useCallback(
+    (value: string) => model.setValue("defaultModel", value),
+    [model],
+  );
+  const setReviewModel = useCallback(
+    (value: string) => model.setValue("reviewModel", value),
+    [model],
+  );
   const setTestCommand = useCallback(
     (value: string) => model.setValue("testCommand", value),
     [model],
@@ -288,6 +297,15 @@ function ManagedGoalFields({
         size={size}
         testID="goal-lead-provider"
       />
+      <ModelSelect
+        label={t("goals.form.leadModelLabel")}
+        provider={values.leadProvider}
+        value={values.leadModel}
+        onChange={setLeadModel}
+        options={state.providerOptions}
+        size={size}
+        testID="goal-lead-model"
+      />
       <ProviderSelect
         label={t("goals.form.defaultProviderLabel")}
         value={values.defaultProvider}
@@ -297,6 +315,15 @@ function ManagedGoalFields({
         loading={providersLoading}
         size={size}
         testID="goal-default-provider"
+      />
+      <ModelSelect
+        label={t("goals.form.defaultModelLabel")}
+        provider={values.defaultProvider}
+        value={values.defaultModel}
+        onChange={setDefaultModel}
+        options={state.providerOptions}
+        size={size}
+        testID="goal-default-model"
       />
       <ProviderSelect
         label={t("goals.form.reviewProviderLabel")}
@@ -308,6 +335,15 @@ function ManagedGoalFields({
         size={size}
         emptyLabel={t("goals.form.sameAsLead")}
         testID="goal-review-provider"
+      />
+      <ModelSelect
+        label={t("goals.form.reviewModelLabel")}
+        provider={values.reviewProvider}
+        value={values.reviewModel}
+        onChange={setReviewModel}
+        options={state.providerOptions}
+        size={size}
+        testID="goal-review-model"
       />
       <Field label={t("goals.form.testCommandLabel")}>
         <FormTextInput
@@ -541,6 +577,77 @@ function ProviderSelect({
       size={size}
       renderOption={renderOption}
       triggerLeading={triggerLeading}
+      testID={testID}
+      triggerTestID={`${testID}-trigger`}
+    />
+  );
+}
+
+/**
+ * The model for one provider picker. Hidden until a provider is chosen and lists models; the
+ * empty option leaves the model to the provider's default.
+ */
+function ModelSelect({
+  label,
+  provider,
+  value,
+  onChange,
+  options,
+  size,
+  testID,
+}: {
+  label: string;
+  provider: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: GoalFormState["providerOptions"];
+  size: FieldControlSize;
+  testID: string;
+}): ReactElement | null {
+  const { t } = useTranslation();
+  const models = useMemo(
+    () => options.find((option) => option.id === provider)?.models ?? [],
+    [options, provider],
+  );
+  const defaultLabel = t("goals.form.modelDefault");
+  const selectOptions = useMemo<SelectFieldOption<string>[]>(
+    () => [
+      { id: "", value: "", label: defaultLabel, testID: `${testID}-option-default` },
+      ...models.map((entry) => ({
+        id: entry.id,
+        value: entry.id,
+        label: entry.label,
+        ...(entry.description ? { description: entry.description } : {}),
+        testID: `${testID}-option-${entry.id}`,
+      })),
+    ],
+    [defaultLabel, models, testID],
+  );
+  // A prefilled model stands in for its label until the providers snapshot arrives.
+  const selectedDisplay = useMemo<SelectFieldDisplay>(
+    () =>
+      value
+        ? { label: models.find((entry) => entry.id === value)?.label ?? value }
+        : { label: defaultLabel },
+    [defaultLabel, models, value],
+  );
+  const handleChange = useCallback((next: string) => onChange(next), [onChange]);
+
+  if (!provider || (models.length === 0 && !value)) {
+    return null;
+  }
+  return (
+    <SelectField
+      label={label}
+      value={value}
+      selectedDisplay={selectedDisplay}
+      options={selectOptions}
+      onChange={handleChange}
+      placeholder={defaultLabel}
+      emptyText={t("goals.form.modelEmpty")}
+      searchable={models.length > 8}
+      title={label}
+      size={size}
       testID={testID}
       triggerTestID={`${testID}-trigger`}
     />

@@ -5,6 +5,8 @@ import { PersistedConfigSchema } from "../persisted-config.js";
 import {
   AgentTeamNotFoundError,
   AgentTeamProfileNotFoundError,
+  AgentTeamRoleNotFoundError,
+  applyAgentTeamModelOverrides,
   listResolvedAgentTeams,
   resolveAgentTeam,
   resolveTeamRunId,
@@ -183,5 +185,48 @@ describe("listResolvedAgentTeams", () => {
       teams: [],
       error: null,
     });
+  });
+});
+
+describe("applyAgentTeamModelOverrides", () => {
+  const team = resolveAgentTeam({
+    teams: {
+      duo: {
+        roles: {
+          planner: {
+            description: "Plans.",
+            provider: "claude",
+            model: "plan-model",
+            thinkingOptionId: "high",
+          },
+          coder: { description: "Codes.", provider: "codex" },
+        },
+      },
+    },
+    agentProfiles: [],
+    name: "duo",
+  });
+
+  test("replaces the named roles' models and drops a thinking option tied to the old model", () => {
+    const overridden = applyAgentTeamModelOverrides(team, {
+      planner: "other-model",
+      coder: " code-model ",
+    });
+    expect(overridden.roles).toEqual([
+      { name: "planner", description: "Plans.", provider: "claude", model: "other-model" },
+      { name: "coder", description: "Codes.", provider: "codex", model: "code-model" },
+    ]);
+  });
+
+  test("keeps a role whose override names its configured model unchanged", () => {
+    expect(applyAgentTeamModelOverrides(team, { planner: "plan-model" })).toEqual(team);
+    expect(applyAgentTeamModelOverrides(team, undefined)).toBe(team);
+  });
+
+  test("rejects an unknown role and an empty model", () => {
+    expect(() => applyAgentTeamModelOverrides(team, { tester: "m" })).toThrow(
+      new AgentTeamRoleNotFoundError("duo", "tester").message,
+    );
+    expect(() => applyAgentTeamModelOverrides(team, { coder: "  " })).toThrow(/is empty/);
   });
 });

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 import pino from "pino";
-import { createGoalWorkspacePort, settleTurn, type GoalPortDeps } from "./goal-ports.js";
+import {
+  createGoalAgentPort,
+  createGoalWorkspacePort,
+  settleTurn,
+  type GoalPortDeps,
+} from "./goal-ports.js";
 
 const done = (lastMessage: string) => ({ status: "idle", permission: null, lastMessage });
 const asking = { status: "running", permission: { id: "p1" }, lastMessage: null };
@@ -136,5 +141,37 @@ describe("workspace port", () => {
     });
     expect(worktreeCalls[0]).toMatchObject({ branchName: "paseo-goal/g1" });
     expect(worktreeCalls[0]).not.toHaveProperty("firstAgentContext");
+  });
+});
+
+describe("agent port", () => {
+  function setup() {
+    const calls: Record<string, unknown>[] = [];
+    const deps = {
+      logger: pino({ level: "silent" }),
+      createAgent: async (input: Record<string, unknown>) => {
+        calls.push(input);
+        return { snapshot: { id: "agent-1" } };
+      },
+    } as unknown as GoalPortDeps;
+    return { port: createGoalAgentPort(deps), calls };
+  }
+
+  const base = { cwd: "/repo", workspaceId: "ws-1", title: "Lead", labels: {} };
+
+  test("a provider/model value starts the provider with that model", async () => {
+    const { port, calls } = setup();
+    await port.createAgent({ ...base, provider: "codex/some-model" });
+    expect(calls[0]).toMatchObject({
+      provider: "codex/some-model",
+      config: { provider: "codex", model: "some-model", cwd: "/repo" },
+    });
+  });
+
+  test("a bare provider id leaves the model to the provider default", async () => {
+    const { port, calls } = setup();
+    await port.createAgent({ ...base, provider: "claude" });
+    expect(calls[0]).toMatchObject({ provider: "claude", config: { provider: "claude" } });
+    expect(calls[0]?.config).not.toHaveProperty("model");
   });
 });
