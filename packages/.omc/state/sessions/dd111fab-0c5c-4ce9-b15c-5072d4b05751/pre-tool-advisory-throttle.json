@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "entries": {
+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
+      "last_emitted_at_ms": 1792997762771,
+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
+      "last_emitted_at_ms": 1792997657421,
+      "message": "Verify changes work after editing. Test functionality before marking complete."
+    },
+    "4ef3e87b5392965df64f5592049c2c172e9608eacd7189dcd37bc75849620e36": {
+      "last_emitted_at_ms": 1792996586090,
+      "message": "Spawning agent: general-purpose (inherit) | Task: Translate goals locale block"
+    },
+    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
+      "last_emitted_at_ms": 1792996485023,
+      "message": "Read multiple files in parallel when possible for faster analysis."
+    },
+    "64c13211d0096ffa8f6779fbecd0c6260118d318569177533f55033a06de14ed": {
+      "last_emitted_at_ms": 1792995563007,
+      "message": "Spawning agent: unknown (opus) | Task: Teams GUI evaluation and build"
+    },
+    "064ef89bbeb73c3fe314ef0cba588381008ce0e9e14277e7c5ab25a452a5cef5": {
+      "last_emitted_at_ms": 1792995553345,
+      "message": "Spawning agent: unknown (opus) | Task: Goal server extras"
+    },
+    "ef3133567cd17f6607501fa964063cbea61516f48328ed283560ad903eec5a17": {
+      "last_emitted_at_ms": 1792995543074,
+      "message": "Spawning agent: unknown (opus) | Task: Goals GUI overhaul"
+    }
+  },
+  "updated_at": "2026-10-26T06:56:02.771Z"
+}
