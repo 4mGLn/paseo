@@ -117,6 +117,35 @@ test("an unknown team fails creation and creates no agent", async () => {
   expect(daemon.daemon.agentManager.listAgents()).toHaveLength(0);
 });
 
+test("a role model override replaces that role's model in this chat's roster only", async () => {
+  await client.createAgent({
+    ...getFullAccessConfig("claude"),
+    cwd,
+    title: "Overridden team chat",
+    team: "full-stack",
+    teamModelOverrides: { implementer: "fast-model" },
+  });
+
+  const systemPrompt = sessionConfigs.at(-1)?.systemPrompt ?? "";
+  expect(systemPrompt).toContain('create_agent provider: "codex/fast-model"');
+  expect(systemPrompt).not.toContain("codex/impl-model");
+  expect(systemPrompt).toContain('create_agent provider: "claude/research-model"');
+  expect((await client.listAgentTeams()).teams[0]?.roles[0]?.model).toBe("impl-model");
+});
+
+test("an override for a role the team lacks fails creation", async () => {
+  await expect(
+    client.createAgent({
+      ...getFullAccessConfig("claude"),
+      cwd,
+      title: "Bad override",
+      team: "full-stack",
+      teamModelOverrides: { tester: "fast-model" },
+    }),
+  ).rejects.toThrow('Team "full-stack" has no role "tester"');
+  expect(sessionConfigs).toHaveLength(0);
+});
+
 test("helpers the team chat creates do not inherit the team", async () => {
   const chat = await client.createAgent({
     ...getFullAccessConfig("claude"),

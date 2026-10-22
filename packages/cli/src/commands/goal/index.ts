@@ -29,15 +29,21 @@ export function createGoalCommand(): Command {
         (value: string, previous: string[] = []) => [...previous, value],
       )
       .option("--cwd <path>", "Repository to plan and work in; makes the Manager run this goal")
-      .option("--lead <provider>", "Provider for the Lead agent (required with --cwd)")
-      .option("--provider <provider>", "Default provider for tasks (required with --cwd)")
+      .option(
+        "--lead <provider[/model]>",
+        "Provider for the Lead agent, optionally with a model (required with --cwd)",
+      )
+      .option(
+        "--provider <provider[/model]>",
+        "Default provider for tasks, optionally with a model (required with --cwd)",
+      )
       .option("--max-parallel <n>", "Tasks to run at once (1-8, default 2)")
       .option("--max-attempts <n>", "Attempts per task before it fails for good (1-5, default 2)")
       .option("--auto-approve", "Run the Lead's plan without waiting for approval")
       .option("--no-notify-lead", "Do not message the Lead about failures or completion")
       .option(
-        "--review-provider <provider>",
-        "Provider for the reviewer and verifier (default: the Lead's)",
+        "--review-provider <provider[/model]>",
+        "Provider, optionally with a model, for the reviewer and verifier (default: the Lead's)",
       )
       .option(
         "--test-command <cmd>",

@@ -86,7 +86,12 @@ import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-regist
 import { getErrorMessage, getErrorMessageOr } from "@getpaseo/protocol/error-utils";
 import { getAgentStatusPriority } from "@getpaseo/protocol/agent-state-bucket";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
-import { AGENT_TEAM_LABEL, listResolvedAgentTeams, resolveAgentTeam } from "./agent/agent-teams.js";
+import {
+  AGENT_TEAM_LABEL,
+  applyAgentTeamModelOverrides,
+  listResolvedAgentTeams,
+  resolveAgentTeam,
+} from "./agent/agent-teams.js";
 import { buildAgentTeamRosterPrompt } from "./agent/agent-team-roster.js";
 import { composeSystemPromptParts } from "./agent/system-prompt.js";
 import type { WorkspaceGitRuntimeSnapshot, WorkspaceGitService } from "./workspace-git-service.js";
@@ -4352,15 +4357,24 @@ export class Session {
   /**
    * Gives a team chat its roster through the creation-only system prompt, which
    * is persisted and restored on resume, and labels it with the team name. The
-   * roster is frozen at creation; helpers it creates do not inherit it.
+   * roster is frozen at creation, with the request's per-role model overrides applied; helpers it
+   * creates do not inherit it.
    */
   private applyRequestedAgentTeam(msg: CreateAgentRequestMessage): CreateAgentRequestMessage {
-    if (msg.team === undefined) return msg;
-    const team = resolveAgentTeam({
-      teams: this.daemonRuntimeConfig?.teams,
-      agentProfiles: this.daemonConfigStore.get().agentProfiles,
-      name: msg.team,
-    });
+    if (msg.team === undefined) {
+      if (msg.teamModelOverrides !== undefined) {
+        throw new Error("teamModelOverrides requires team");
+      }
+      return msg;
+    }
+    const team = applyAgentTeamModelOverrides(
+      resolveAgentTeam({
+        teams: this.daemonRuntimeConfig?.teams,
+        agentProfiles: this.daemonConfigStore.get().agentProfiles,
+        name: msg.team,
+      }),
+      msg.teamModelOverrides,
+    );
     const systemPrompt = composeSystemPromptParts(
       msg.config.systemPrompt,
       buildAgentTeamRosterPrompt(team),

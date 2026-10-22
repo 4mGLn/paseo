@@ -112,6 +112,16 @@ export class AgentTeamProfileNotFoundError extends Error {
   }
 }
 
+export class AgentTeamRoleNotFoundError extends Error {
+  constructor(
+    public readonly teamName: string,
+    public readonly roleName: string,
+  ) {
+    super(`Team "${teamName}" has no role "${roleName}"`);
+    this.name = "AgentTeamRoleNotFoundError";
+  }
+}
+
 function findProfile(profiles: readonly AgentProfile[], reference: string): AgentProfile | null {
   return (
     profiles.find((profile) => profile.id === reference) ??
@@ -180,6 +190,34 @@ export function resolveAgentTeam(input: {
   const team = input.teams?.[input.name];
   if (!team) throw new AgentTeamNotFoundError(input.name);
   return resolveTeam({ name: input.name, team, agentProfiles: input.agentProfiles ?? [] });
+}
+
+/**
+ * Replaces the models of the named roles for one chat. A thinking option belongs to a model, so
+ * a role whose model changes drops its configured one. Throws on an unknown role or empty model.
+ */
+export function applyAgentTeamModelOverrides(
+  team: ResolvedAgentTeam,
+  overrides: Readonly<Record<string, string>> | undefined,
+): ResolvedAgentTeam {
+  if (!overrides) return team;
+  const roleNames = new Set(team.roles.map((role) => role.name));
+  const models = new Map<string, string>();
+  for (const [roleName, model] of Object.entries(overrides)) {
+    if (!roleNames.has(roleName)) throw new AgentTeamRoleNotFoundError(team.name, roleName);
+    const trimmed = model.trim();
+    if (!trimmed) throw new Error(`Team "${team.name}" role "${roleName}" model override is empty`);
+    models.set(roleName, trimmed);
+  }
+  return {
+    ...team,
+    roles: team.roles.map((role) => {
+      const model = models.get(role.name);
+      if (model === undefined || model === role.model) return role;
+      const { thinkingOptionId: _dropped, ...rest } = role;
+      return { ...rest, model };
+    }),
+  };
 }
 
 /**

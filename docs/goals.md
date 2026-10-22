@@ -82,6 +82,8 @@ Set on `paseo goal create`. Defaults apply when a flag is omitted.
 | `limits.goalTimeoutMinutes`  | `--goal-timeout`     | 1440       | Time from creation until the goal must be finished                                                                                      |
 | `limits.retryBackoffSeconds` | `--retry-backoff`    | 5          | Pause before a retry, times the attempt number                                                                                          |
 
+Every provider field, and a task's `provider` in a plan, takes `<provider>/<model>` (`--lead codex/<model>`) as well as a bare provider id. The daemon splits at the first `/`; a bare id starts the provider's default model. `allowedProviders` lists bare provider ids and is matched against the part before the `/`.
+
 Creation fails at once if a provider is not registered, is outside the allow-list, or `cwd` is not a git repository.
 
 When a limit is reached the goal fails, its agents are cancelled, and the reason is recorded. `paseo goal approve-changeset` and `paseo goal request-changes --message ...` act on changes held by `--require-approval`.
@@ -116,7 +118,7 @@ Not protected: network access, files outside the worktrees that the provider's u
 - Mixed providers: a planner on one, implementers on others, an independent reviewer on a third.
 - Unattended runs bounded by time and run limits, and runs gated by your approval of the plan, each change, or both.
 
-Not supported: goals without a git repository, merging into your branch or opening a pull request, re-planning around a failed criterion (the goal fails), and multi-repository goals. The app's Goals screen lists goals, creates manual and managed ones, approves plans and cancels; it does not show change sets and runs.
+Not supported: goals without a git repository, merging into your branch or opening a pull request, re-planning around a failed criterion (the goal fails), and multi-repository goals. The app's Goals screen lists goals, creates manual and managed ones, approves plans and cancels; it does not show change sets and runs. The create form has a model picker under each provider picker (Lead, default, review), listing the provider's selectable models from the providers snapshot; it sends the choice as `<provider>/<model>`, leaves the model out for "Provider default", and resets the model when you change that provider. The review model is hidden while the reviewer uses the Lead's provider and model. The form does not set `allowedProviders` or per-task providers.
 
 ### From a chat
 

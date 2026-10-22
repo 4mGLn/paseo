@@ -26,3 +26,30 @@ export function rememberSelectedTeam(input: {
   if (Object.keys(teamByServer).length === 0) delete next.teamByServer;
   return next;
 }
+
+/** What a role starts helpers on: "provider/model", or the bare provider when it sets no model. */
+export function formatTeamRoleModel(role: { provider: string; model?: string }): string {
+  return role.model ? `${role.provider}/${role.model}` : role.provider;
+}
+
+/** One line per team for the picker: each role with the provider and model it runs on. */
+export function describeTeamRoles(
+  roles: readonly { name: string; provider: string; model?: string }[],
+): string {
+  return roles.map((role) => `${role.name} (${formatTeamRoleModel(role)})`).join(", ");
+}
+
+/**
+ * Sets or clears one role's model override for the chat being created. Choosing the role's
+ * configured model, or null, clears it, so only real overrides reach the daemon.
+ */
+export function setRoleModelOverride(input: {
+  overrides: Readonly<Record<string, string>>;
+  role: string;
+  model: string | null;
+  configuredModel: string | undefined;
+}): Record<string, string> {
+  const { [input.role]: _previous, ...others } = input.overrides;
+  if (!input.model || input.model === input.configuredModel) return others;
+  return { ...others, [input.role]: input.model };
+}

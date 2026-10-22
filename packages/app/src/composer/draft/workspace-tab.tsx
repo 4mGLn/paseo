@@ -133,6 +133,7 @@ async function submitDraftCreateRequest(input: {
     effectiveThinkingOptionId: string | null;
     featureValues: Record<string, unknown> | undefined;
     team: string | null;
+    teamModelOverrides: Record<string, string> | undefined;
   };
   hostDisconnectedMessage: string;
   selectModelMessage: string;
@@ -182,7 +183,9 @@ async function submitDraftCreateRequest(input: {
     workspaceId,
     initialPrompt: text,
     clientMessageId: attempt.clientMessageId,
-    ...(composerState.team ? { team: composerState.team } : {}),
+    ...(composerState.team
+      ? { team: composerState.team, teamModelOverrides: composerState.teamModelOverrides }
+      : {}),
     ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
     ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
   };
