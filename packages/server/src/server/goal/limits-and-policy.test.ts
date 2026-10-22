@@ -254,6 +254,14 @@ describe("limits and policies", () => {
     await expect(
       validate({ ...CONFIG, defaultProvider: "codex/some-model" }),
     ).resolves.toBeDefined();
+    await expect(
+      validate({
+        ...CONFIG,
+        leadProvider: "claude/opus",
+        reviewProvider: "codex/some-model",
+        allowedProviders: ["claude", "codex"],
+      }),
+    ).resolves.toBeDefined();
   });
 
   // ---- read-only roles --------------------------------------------------

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
 import { openGoalForm, type GoalFormModel, type GoalFormPrefill } from "./goal-form-model";
 
@@ -16,7 +17,7 @@ export function useGoalFormModel(prefill: GoalFormPrefill | undefined): GoalForm
   return model;
 }
 
-/** Pipes the host's registered providers into the model once the goal runs with agents. */
+/** Pipes the host's registered providers and their models into the model once the goal runs with agents. */
 export function useGoalFormProviderOptions(input: {
   model: GoalFormModel;
   serverId: string;
@@ -29,10 +30,19 @@ export function useGoalFormProviderOptions(input: {
     if (!enabled || !snapshot.entries) {
       return;
     }
+    const entries = snapshot.entries;
     model.applyProviderOptions(
-      buildSelectableProviderSelectorProviders(snapshot.entries).map(({ id, label }) => ({
+      buildSelectableProviderSelectorProviders(entries).map(({ id, label }) => ({
         id,
         label,
+        models: (
+          filterSelectableModels(entries.find((entry) => entry.provider === id)?.models ?? null) ??
+          []
+        ).map((definition) => ({
+          id: definition.id,
+          label: definition.label,
+          description: definition.description,
+        })),
       })),
     );
   }, [enabled, model, snapshot.entries]);

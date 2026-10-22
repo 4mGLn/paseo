@@ -157,6 +157,7 @@ async function submitDraftCreateRequest(input: {
     providerOptions: Record<string, unknown> | undefined;
     metadata: Record<string, JsonValue>;
     team: string | null;
+    teamModelOverrides: Record<string, string> | undefined;
   };
   hostDisconnectedMessage: string;
   selectModelMessage: string;
@@ -199,7 +200,9 @@ async function submitDraftCreateRequest(input: {
     initialPrompt: text,
     clientMessageId: attempt.clientMessageId,
     ...(Object.keys(composerState.metadata).length > 0 ? { metadata: composerState.metadata } : {}),
-    ...(composerState.team ? { team: composerState.team } : {}),
+    ...(composerState.team
+      ? { team: composerState.team, teamModelOverrides: composerState.teamModelOverrides }
+      : {}),
     ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
     ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
   };
