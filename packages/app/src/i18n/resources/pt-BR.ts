@@ -1192,6 +1192,12 @@ export const ptBR: TranslationResources = {
       showBackground: "Mostrar espaços em segundo plano",
       trigger: "Preferências de exibição",
       heading: "Exibição",
+      sort: {
+        label: "Ordenação",
+        created: "Criação",
+        lastPrompt: "Último prompt",
+        updateHost: "Atualize os hosts para ordenar os espaços de trabalho",
+      },
       grouping: {
         label: "Agrupamento",
         project: "Projeto",

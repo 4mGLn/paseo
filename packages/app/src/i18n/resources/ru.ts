@@ -1183,6 +1183,12 @@ export const ru: TranslationResources = {
       showBackground: "Показать фоновые пространства",
       trigger: "Настройки отображения",
       heading: "Отображение",
+      sort: {
+        label: "Сортировка",
+        created: "Дата создания",
+        lastPrompt: "Последний запрос",
+        updateHost: "Обновите хосты для сортировки рабочих пространств",
+      },
       grouping: {
         label: "Группировка",
         project: "Проект",

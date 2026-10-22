@@ -1228,6 +1228,7 @@ export class Session {
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
       listAgentPayloads: () => this.listAgentPayloads({ includeBackground: true }),
+      workspaceLastUserMessageTimes: () => this.agentDirectory.workspaceLastUserMessageTimes(),
       listProviderSubagentActivity: async () => this.agentManager.listProviderSubagentActivity(),
       listTerminalActivityContributions: () => this.listTerminalActivityContributions(),
       isProviderVisibleToClient: (provider) => this.isProviderVisibleToClient(provider),
@@ -5649,6 +5650,7 @@ export class Session {
       status: "done",
       statusEnteredAt: null,
       activityAt: null,
+      createdAt: workspace.createdAt,
       diffStat,
       scripts: this.buildWorkspaceScriptPayloadSnapshot(workspace, resolvedProjectRecord),
       ...(resolvedProjectRecord
@@ -5745,6 +5747,8 @@ export class Session {
       status: "done",
       statusEnteredAt: result.workspace.createdAt,
       activityAt: null,
+      createdAt: result.workspace.createdAt,
+      lastUserMessageAt: null,
       diffStat: { additions: 0, deletions: 0 },
       scripts: [],
       gitRuntime: {
