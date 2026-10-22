@@ -10,9 +10,13 @@ export interface GoalFormValues {
   managed: boolean;
   cwd: string;
   leadProvider: string;
+  /** Empty means the provider's default model. Sent as "provider/model". */
+  leadModel: string;
   defaultProvider: string;
-  /** Empty means the reviewer uses the Lead's provider. */
+  defaultModel: string;
+  /** Empty means the reviewer uses the Lead's provider and model. */
   reviewProvider: string;
+  reviewModel: string;
   testCommand: string;
   autoApprovePlan: boolean;
   requireHumanApproval: boolean;
@@ -37,7 +41,9 @@ export interface GoalFormPrefill {
   objective?: string;
   managed?: boolean;
   cwd?: string;
+  /** A provider id, or "provider/model". */
   leadProvider?: string;
+  /** A provider id, or "provider/model". */
   defaultProvider?: string;
   /** The chat the goal is started from; the daemon posts the outcome back there. */
   originAgentId?: string;
@@ -91,8 +97,11 @@ export const EMPTY_GOAL_FORM_VALUES: GoalFormValues = {
   managed: false,
   cwd: "",
   leadProvider: "",
+  leadModel: "",
   defaultProvider: "",
+  defaultModel: "",
   reviewProvider: "",
+  reviewModel: "",
   testCommand: "",
   autoApprovePlan: false,
   requireHumanApproval: false,
@@ -156,6 +165,21 @@ export function validateGoalForm(values: GoalFormValues): GoalFormIssue[] {
   return issues;
 }
 
+/** The daemon takes "provider/model" wherever it takes a provider id; no model means its default. */
+function composeProvider(provider: string, model: string): string {
+  const trimmedProvider = provider.trim();
+  const trimmedModel = model.trim();
+  return trimmedModel ? `${trimmedProvider}/${trimmedModel}` : trimmedProvider;
+}
+
+/** Splits at the first slash, the way the daemon does (packages/server/src/server/goal/goal-ports.ts). */
+function splitProvider(value: string): { provider: string; model: string } {
+  const slash = value.indexOf("/");
+  return slash < 0
+    ? { provider: value, model: "" }
+    : { provider: value.slice(0, slash), model: value.slice(slash + 1) };
+}
+
 function buildLimits(values: GoalFormValues): GoalConfig["limits"] {
   const limits: NonNullable<GoalConfig["limits"]> = {};
   for (const field of OPTIONAL_LIMIT_FIELDS) {
@@ -172,13 +196,15 @@ function buildLimits(values: GoalFormValues): GoalConfig["limits"] {
  * user did not set so the daemon applies its own default. Call only on values that validate.
  */
 function buildGoalConfig(values: GoalFormValues, originAgentId: string | null): GoalConfig {
-  const reviewProvider = values.reviewProvider.trim();
+  const reviewProvider = values.reviewProvider.trim()
+    ? composeProvider(values.reviewProvider, values.reviewModel)
+    : "";
   const testCommand = values.testCommand.trim();
   const limits = buildLimits(values);
   return {
     cwd: values.cwd.trim(),
-    leadProvider: values.leadProvider.trim(),
-    defaultProvider: values.defaultProvider.trim(),
+    leadProvider: composeProvider(values.leadProvider, values.leadModel),
+    defaultProvider: composeProvider(values.defaultProvider, values.defaultModel),
     maxParallel: parseWholeNumber(values.maxParallel) ?? Number(DEFAULT_MAX_PARALLEL),
     maxAttempts: DEFAULT_MAX_ATTEMPTS,
     autoApprovePlan: values.autoApprovePlan,
@@ -208,9 +234,17 @@ export function buildGoalCreateInput(
   };
 }
 
+export interface GoalModelOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 export interface GoalProviderOption {
   id: string;
   label: string;
+  /** Selectable models; absent or empty while the provider has not listed any. */
+  models?: GoalModelOption[];
 }
 
 export interface GoalFormState {
@@ -230,12 +264,53 @@ export interface GoalFormModel {
   close: () => void;
   setValue: <Key extends keyof GoalFormValues>(key: Key, value: GoalFormValues[Key]) => void;
   setLimitsExpanded: (expanded: boolean) => void;
-  /** Late data: the host's registered providers. Drops a selected provider the host lacks. */
+  /**
+   * Late data: the host's registered providers. Drops a selected provider the host lacks, and a
+   * selected model its provider does not list.
+   */
   applyProviderOptions: (options: readonly GoalProviderOption[]) => void;
   setSubmitError: (message: string | null) => void;
 }
 
-const PROVIDER_FIELDS = ["leadProvider", "defaultProvider", "reviewProvider"] as const;
+/** Each provider field and the model chosen for it. Changing the provider resets the model. */
+const MODEL_FIELD_BY_PROVIDER = {
+  leadProvider: "leadModel",
+  defaultProvider: "defaultModel",
+  reviewProvider: "reviewModel",
+} as const satisfies Partial<Record<keyof GoalFormValues, keyof GoalFormValues>>;
+
+const PROVIDER_FIELDS = Object.keys(
+  MODEL_FIELD_BY_PROVIDER,
+) as (keyof typeof MODEL_FIELD_BY_PROVIDER)[];
+
+function isProviderField(key: keyof GoalFormValues): key is keyof typeof MODEL_FIELD_BY_PROVIDER {
+  return key in MODEL_FIELD_BY_PROVIDER;
+}
+
+/** Drops selections the host's provider list rules out; an empty list rules nothing out. */
+function reconcileWithOptions(
+  values: GoalFormValues,
+  options: readonly GoalProviderOption[],
+): GoalFormValues {
+  if (options.length === 0) {
+    return values;
+  }
+  const next = { ...values };
+  for (const field of PROVIDER_FIELDS) {
+    const modelField = MODEL_FIELD_BY_PROVIDER[field];
+    const option = options.find((candidate) => candidate.id === next[field]);
+    if (next[field] && !option) {
+      next[field] = "";
+      next[modelField] = "";
+      continue;
+    }
+    const models = option?.models ?? [];
+    if (next[modelField] && models.length > 0 && !models.some((m) => m.id === next[modelField])) {
+      next[modelField] = "";
+    }
+  }
+  return next;
+}
 
 function withDerived(state: Omit<GoalFormState, "issues" | "createInput">): GoalFormState {
   return {
@@ -249,6 +324,8 @@ export function openGoalForm(snapshot: { prefill?: GoalFormPrefill }): GoalFormM
   const prefill = snapshot.prefill ?? {};
   const listeners = new Set<() => void>();
   let closed = false;
+  const lead = splitProvider(prefill.leadProvider ?? "");
+  const fallback = splitProvider(prefill.defaultProvider ?? "");
   let state = withDerived({
     values: {
       ...EMPTY_GOAL_FORM_VALUES,
@@ -256,8 +333,10 @@ export function openGoalForm(snapshot: { prefill?: GoalFormPrefill }): GoalFormM
       objective: prefill.objective ?? "",
       managed: prefill.managed ?? false,
       cwd: prefill.cwd ?? "",
-      leadProvider: prefill.leadProvider ?? "",
-      defaultProvider: prefill.defaultProvider ?? "",
+      leadProvider: lead.provider,
+      leadModel: lead.model,
+      defaultProvider: fallback.provider,
+      defaultModel: fallback.model,
     },
     originAgentId: prefill.originAgentId ?? null,
     providerOptions: [],
@@ -291,22 +370,21 @@ export function openGoalForm(snapshot: { prefill?: GoalFormPrefill }): GoalFormM
       listeners.clear();
     },
     setValue(key, value) {
-      publish({ ...state, values: { ...state.values, [key]: value }, submitError: null });
+      const values = { ...state.values, [key]: value };
+      if (isProviderField(key) && value !== state.values[key]) {
+        values[MODEL_FIELD_BY_PROVIDER[key]] = "";
+      }
+      publish({ ...state, values, submitError: null });
     },
     setLimitsExpanded(expanded) {
       publish({ ...state, limitsExpanded: expanded });
     },
     applyProviderOptions(options) {
-      const known = new Set(options.map((option) => option.id));
-      const values = { ...state.values };
-      if (options.length > 0) {
-        for (const field of PROVIDER_FIELDS) {
-          if (values[field] && !known.has(values[field])) {
-            values[field] = "";
-          }
-        }
-      }
-      publish({ ...state, values, providerOptions: [...options] });
+      publish({
+        ...state,
+        values: reconcileWithOptions(state.values, options),
+        providerOptions: [...options],
+      });
     },
     setSubmitError(message) {
       publish({ ...state, submitError: message });

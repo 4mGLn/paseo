@@ -58,17 +58,17 @@ The config schema rejects a team without roles and a role with both or neither o
 
 ## Use
 
-- App: the **Team** selector next to the agent controls in a new chat. It shows only when the host advertises `server_info.features.agentTeams` and defines at least one team.
+- App: the **Team** selector next to the agent controls in a new chat. It shows only when the host advertises `server_info.features.agentTeams` and defines at least one team. Each team lists its roles as `role (provider/model)`. With a team selected, the list adds a model row per role whose provider lists models; it opens that provider's models, and **Team default** keeps the configured one. The override applies to the chat being created only and is not remembered; switching teams or hosts clears it.
 - CLI: `paseo agent teams` lists teams and roles; `paseo run --team <name> "<prompt>"` starts a team chat.
-- Client: `DaemonClient.listAgentTeams()` and `createAgent({ team })`.
+- Client: `DaemonClient.listAgentTeams()` and `createAgent({ team, teamModelOverrides })`. `teamModelOverrides` maps a role name to a model id.
 
-An unknown team fails creation and no agent is created.
+An unknown team, a model override for a role the team does not have, an empty override model, or `teamModelOverrides` without `team` fails creation and no agent is created. The daemon does not check an override against the provider's model list.
 
 ## How the roster reaches the agent
 
 The daemon resolves the team when the chat is created, appends the roster to the agent's creation-time system prompt (`AgentSessionConfig.systemPrompt`), and labels the agent `paseo.team=<name>`. The system prompt is persisted with the agent, so the roster survives resume and daemon restarts, and the user's first message is unchanged. The roster builder is `packages/server/src/server/agent/agent-team-roster.ts`.
 
-The roster is frozen at creation. Editing the team later does not change chats that already exist.
+The roster is frozen at creation, with the request's model overrides applied. A role whose model is overridden loses its configured `thinkingOptionId`, because thinking options belong to a model. Editing the team later does not change chats that already exist.
 
 The roster gives each role's `create_agent` call a `labels: {"paseo.team-role": "<role>"}` entry. The role label is informational: the chat sets it, and teammates see it in `list_team_members`.
 
