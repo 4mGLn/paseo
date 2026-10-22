@@ -112,6 +112,18 @@ describe("buildGoalCreateInput", () => {
     });
   });
 
+  it("sends a chosen model as provider/model and leaves the review model out without a reviewer", () => {
+    expect(
+      buildGoalCreateInput(
+        values({ ...MANAGED, leadModel: "opus", defaultModel: " ", reviewModel: "stale" }),
+      )?.config,
+    ).toMatchObject({ leadProvider: "claude/opus", defaultProvider: "codex" });
+    const config = buildGoalCreateInput(
+      values({ ...MANAGED, reviewProvider: "opencode", reviewModel: "big-model" }),
+    )?.config;
+    expect(config?.reviewProvider).toBe("opencode/big-model");
+  });
+
   it("does not send managed fields for a manual goal", () => {
     expect(
       buildGoalCreateInput(values({ ...MANAGED, managed: false }), "agent-1")?.config,
@@ -225,6 +237,47 @@ describe("openGoalForm", () => {
       "codex",
       "claude",
     ]);
+  });
+
+  it("splits a prefilled provider/model into the provider and model pickers", () => {
+    const model = openGoalForm({
+      prefill: { managed: true, leadProvider: "codex/some-model", defaultProvider: "claude" },
+    });
+    expect(model.getState().values).toMatchObject({
+      leadProvider: "codex",
+      leadModel: "some-model",
+      defaultProvider: "claude",
+      defaultModel: "",
+    });
+  });
+
+  it("resets a role's model when its provider changes", () => {
+    const model = openGoalForm({ prefill: { managed: true, leadProvider: "claude/opus" } });
+    model.setValue("leadProvider", "claude");
+    expect(model.getState().values.leadModel).toBe("opus");
+    model.setValue("reviewModel", "kept");
+    model.setValue("leadProvider", "codex");
+    expect(model.getState().values).toMatchObject({ leadModel: "", reviewModel: "kept" });
+  });
+
+  it("drops a model its provider does not list once providers arrive, and keeps listed ones", () => {
+    const model = openGoalForm({
+      prefill: { managed: true, leadProvider: "claude/retired", defaultProvider: "codex/fast" },
+    });
+    model.applyProviderOptions([
+      { id: "claude", label: "Claude", models: [{ id: "opus", label: "Opus" }] },
+      { id: "codex", label: "Codex", models: [{ id: "fast", label: "Fast" }] },
+    ]);
+    expect(model.getState().values).toMatchObject({
+      leadProvider: "claude",
+      leadModel: "",
+      defaultProvider: "codex",
+      defaultModel: "fast",
+    });
+
+    const unlisted = openGoalForm({ prefill: { managed: true, leadProvider: "claude/custom" } });
+    unlisted.applyProviderOptions([{ id: "claude", label: "Claude", models: [] }]);
+    expect(unlisted.getState().values.leadModel).toBe("custom");
   });
 
   it("clears the submit error on the next edit and stops publishing after close", () => {

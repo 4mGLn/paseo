@@ -508,6 +508,8 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   labels?: Record<string, string>;
   /** A team from the host's daemon.teams. Requires server_info.features.agentTeams. */
   team?: string;
+  /** Role name -> model for this chat's roster. Requires `team`. */
+  teamModelOverrides?: Record<string, string>;
 }
 
 export interface CreateWorkspaceRequestOptions {
@@ -7763,6 +7765,7 @@ function resolveAgentConfig(options: CreateAgentRequestOptions): AgentSessionCon
     requestId: _requestId,
     labels: _labels,
     team: _team,
+    teamModelOverrides: _teamModelOverrides,
     ...overrides
   } = options;
 
