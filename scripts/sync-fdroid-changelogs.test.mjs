@@ -33,6 +33,7 @@ function readChangelogFile(dir, versionCode, locale = "en-US") {
 // ship with, so the filenames have to track them exactly.
 test("derives one version code per published ABI", () => {
   assert.equal(getNativeReleaseVersion("0.2.2").androidVersionCode, 2002);
+  assert.deepEqual(getNativeReleaseVersion("0.2.2-mgln-dev"), getNativeReleaseVersion("0.2.2"));
   assert.deepEqual(getFdroidVersionCodes("0.2.2"), [
     { abi: "armeabi-v7a", versionCode: 20021 },
     { abi: "arm64-v8a", versionCode: 20022 },
