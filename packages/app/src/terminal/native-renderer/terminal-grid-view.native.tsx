@@ -44,8 +44,9 @@ const MEASURE_TEXT = "mmmmmmmmmm";
 const DEFAULT_FONT_SIZE = 12;
 const INITIAL_CELL_WIDTH_RATIO = 0.62;
 const INITIAL_CELL_HEIGHT_RATIO = 1.35;
-// Room a fallback glyph (emoji, symbols) gets to spill past its cells instead of being clipped.
-const ISOLATED_GLYPH_OVERFLOW_CELLS = 2;
+// Keep native line layout clear of the cell boundary: rounding and trailing letter spacing can
+// otherwise wrap a short run. The run box clips ordinary text; isolated fallback glyphs can spill.
+const TEXT_LAYOUT_OVERFLOW_CELLS = 2;
 
 interface CellMetrics {
   cellWidth: number;
@@ -152,16 +153,13 @@ function TerminalGridRun({
     [cellHeight, cellWidth, isolated, run.cellCount, run.style.backgroundColor],
   );
   const runTextStyle = useMemo<StyleProp<TextStyle>>(
-    () =>
-      isolated
-        ? [
-            textStyle,
-            run.style,
-            styles.isolatedText,
-            { width: (run.cellCount + ISOLATED_GLYPH_OVERFLOW_CELLS) * cellWidth },
-          ]
-        : [textStyle, run.style],
-    [cellWidth, isolated, run.cellCount, run.style, textStyle],
+    () => [
+      textStyle,
+      run.style,
+      styles.runText,
+      { width: (run.cellCount + TEXT_LAYOUT_OVERFLOW_CELLS) * cellWidth },
+    ],
+    [cellWidth, run.cellCount, run.style, textStyle],
   );
 
   return (
@@ -169,7 +167,7 @@ function TerminalGridRun({
       {run.renderKind === "custom-glyph" ? (
         <TerminalGridCustomGlyphRun run={run} cellWidth={cellWidth} cellHeight={cellHeight} />
       ) : (
-        <Text numberOfLines={1} style={runTextStyle}>
+        <Text numberOfLines={1} ellipsizeMode="clip" style={runTextStyle}>
           {renderTerminalTextSegments(run, wideGlyphStyles)}
         </Text>
       )}
@@ -577,9 +575,9 @@ const styles = StyleSheet.create({
   isolatedRun: {
     overflow: "visible",
   },
-  // The run box keeps the cell width and paints the background; the wider text only draws the
-  // glyph, so a fallback glyph wider than its cells spills over the next cell like in a terminal.
-  isolatedText: {
+  // The run box owns cell dimensions and background. Text gets extra layout room without
+  // changing those dimensions; only isolated fallback glyphs paint beyond the run box.
+  runText: {
     backgroundColor: "transparent",
     left: 0,
     position: "absolute",
