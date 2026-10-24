@@ -115,8 +115,15 @@ function TerminalGridRun({ run, cellWidth, cellHeight, textStyle }: TerminalGrid
     [cellHeight, cellWidth, run.cellCount, run.style.backgroundColor],
   );
   const runTextStyle = useMemo<StyleProp<TextStyle>>(
-    () => [textStyle, run.style],
-    [run.style, textStyle],
+    () => [
+      textStyle,
+      run.style,
+      styles.runText,
+      // Native text layout rounds independently of the cell box. One extra cell
+      // prevents rounding from truncating a run that otherwise fits its cells.
+      { minWidth: (run.cellCount + 1) * cellWidth },
+    ],
+    [cellWidth, run.cellCount, run.style, textStyle],
   );
 
   return (
@@ -124,7 +131,7 @@ function TerminalGridRun({ run, cellWidth, cellHeight, textStyle }: TerminalGrid
       {run.renderKind === "custom-glyph" ? (
         <TerminalGridCustomGlyphRun run={run} cellWidth={cellWidth} cellHeight={cellHeight} />
       ) : (
-        <Text numberOfLines={1} style={runTextStyle}>
+        <Text numberOfLines={1} ellipsizeMode="clip" style={runTextStyle}>
           {run.text}
         </Text>
       )}
@@ -457,6 +464,12 @@ const styles = StyleSheet.create({
   },
   run: {
     overflow: "hidden",
+  },
+  runText: {
+    backgroundColor: "transparent",
+    position: "absolute",
+    left: 0,
+    top: 0,
   },
   customGlyphRun: {
     flex: 1,
