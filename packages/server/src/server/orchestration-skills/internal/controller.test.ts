@@ -1224,6 +1224,24 @@ describe("skills controller", () => {
     });
   });
 
+  it.skipIf(process.platform === "win32")(
+    "startup maintenance preserves user-owned skills linked from agent homes",
+    async () => {
+      const userSkill = path.join(harness.root, "user-checkout", "paseo");
+      await mkdir(userSkill, { recursive: true });
+      await writeFile(path.join(userSkill, "SKILL.md"), "locally edited skill");
+      for (const root of [harness.targets.agentsDir, harness.targets.claudeDir]) {
+        await mkdir(root, { recursive: true });
+        await symlink(userSkill, path.join(root, "paseo"), "dir");
+      }
+
+      await harness.controller.autoUpdate();
+
+      expect(await readFile(path.join(userSkill, "SKILL.md"), "utf8")).toBe("locally edited skill");
+      expect(await readdir(userSkill)).toEqual(["SKILL.md"]);
+    },
+  );
+
   it("updates a drifted install without touching the saved selection", async () => {
     await harness.controller.save({ mode: "custom", skills: ["paseo"] });
     await writeFile(path.join(harness.targets.agentsDir, "paseo", "SKILL.md"), "stale");
