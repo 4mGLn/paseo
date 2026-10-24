@@ -107,7 +107,7 @@ function createScreenRestorer(
 
   return {
     async restore(snapshot: Awaited<ReturnType<typeof benchmarkSnapshot>>) {
-      drain.restoreSnapshot(snapshot);
+      drain.restoreText(renderTerminalSnapshotToAnsi(snapshot));
       await drain.flush();
       frameRecorder.frames[0]?.();
       return screen;
@@ -116,6 +116,38 @@ function createScreenRestorer(
 }
 
 describe("native terminal output drain", () => {
+  test.each([41, 35])(
+    "keeps a restored shell cursor beside its prompt after replay at %i rows",
+    async (rows) => {
+      const source = createNativeHeadlessTerminal({ rows: 41, cols: 49 });
+      await source.write(Array.from({ length: 16 }, (_, i) => `probe ${i}\r\n`).join("") + "$ ");
+      const snapshot = source.getState();
+      const terminal = createNativeHeadlessTerminal({ rows, cols: 49 });
+      const frameRecorder = createFrameRecorder();
+      const drain = createNativeTerminalOutputDrain({
+        write: (chunk) => terminal.write(chunk),
+        reset: () => terminal.reset(),
+        getViewportState: () => terminal.getViewportState(),
+        onPaint: () => {},
+        scheduleFrame: frameRecorder.scheduleFrame,
+        cancelFrame: frameRecorder.cancelFrame,
+      });
+      try {
+        drain.restoreText(renderTerminalSnapshotToAnsi(snapshot));
+        await drain.flush();
+        terminal.resize({ rows: 41, cols: 49 });
+        const restored = terminal.getState();
+        const promptRow = restored.grid.findIndex((row) => rowText(row) === "$ ".trimEnd());
+        expect(promptRow).toBeGreaterThanOrEqual(0);
+        expect(restored.cursor).toEqual({ row: promptRow, col: 2 });
+      } finally {
+        drain.dispose();
+        terminal.dispose();
+        source.dispose();
+      }
+    },
+  );
+
   test("drains large bursts without waiting one frame per 2KB parse slice", async () => {
     const writes: string[] = [];
     const parseSamples: Array<{ parsedChars: number; queuedChars: number }> = [];
