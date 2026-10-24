@@ -44,6 +44,7 @@ const INITIAL_CELL_HEIGHT_RATIO = 1.35;
 interface CellMetrics {
   cellWidth: number;
   cellHeight: number;
+  letterSpacing: number;
 }
 
 interface TerminalGridViewport {
@@ -57,6 +58,7 @@ interface TerminalGridRowProps {
   cellHeight: number;
   fontFamily?: string;
   fontSize: number;
+  letterSpacing: number;
   styleEpoch: string;
 }
 
@@ -81,6 +83,7 @@ function estimateCellMetrics(fontSize: number): CellMetrics {
   return {
     cellWidth: snapPixel(fontSize * INITIAL_CELL_WIDTH_RATIO),
     cellHeight: snapPixel(fontSize * INITIAL_CELL_HEIGHT_RATIO),
+    letterSpacing: 0,
   };
 }
 
@@ -235,6 +238,7 @@ function TerminalGridRow({
   cellHeight,
   fontFamily,
   fontSize,
+  letterSpacing,
 }: TerminalGridRowProps) {
   const rowStyle = useMemo<StyleProp<ViewStyle>>(
     () => [styles.row, { height: cellHeight }],
@@ -248,9 +252,10 @@ function TerminalGridRow({
         lineHeight: cellHeight,
         fontFamily,
         fontSize,
+        letterSpacing,
       },
     ],
-    [cellHeight, fontFamily, fontSize],
+    [cellHeight, fontFamily, fontSize, letterSpacing],
   );
   const accessibilityLabel = useMemo(
     () =>
@@ -288,6 +293,7 @@ const MemoTerminalGridRow = memo(TerminalGridRow, (previous, next) => {
     previous.cellHeight === next.cellHeight &&
     previous.fontFamily === next.fontFamily &&
     previous.fontSize === next.fontSize &&
+    previous.letterSpacing === next.letterSpacing &&
     previous.styleEpoch === next.styleEpoch
   );
 });
@@ -381,6 +387,17 @@ export function TerminalGridView({
         measureTextLength: MEASURE_TEXT.length,
         roundToNearestPixel: (value) => PixelRatio.roundToNearestPixel(value),
       });
+      // Grid cells are snapped to physical pixels. Match the font's natural advance to that
+      // cell width so a full row still fits instead of triggering native Text truncation.
+      const letterSpacing =
+        nextMetrics.cellWidth - event.nativeEvent.layout.width / MEASURE_TEXT.length;
+      setMetrics((current) =>
+        current.cellWidth === nextMetrics.cellWidth &&
+        current.cellHeight === nextMetrics.cellHeight &&
+        current.letterSpacing === letterSpacing
+          ? current
+          : { ...nextMetrics, letterSpacing },
+      );
       const changedMetrics = resolveTerminalGridMetricsMeasurement(
         measuredMetricsRef.current,
         nextMetrics,
@@ -389,7 +406,6 @@ export function TerminalGridView({
         return;
       }
       measuredMetricsRef.current = changedMetrics;
-      setMetrics(changedMetrics);
       onCellMetricsChange?.(changedMetrics);
     },
     [onCellMetricsChange],
@@ -419,6 +435,7 @@ export function TerminalGridView({
             cellHeight={metrics.cellHeight}
             fontFamily={resolvedFontFamily}
             fontSize={fontSize}
+            letterSpacing={metrics.letterSpacing}
             styleEpoch={resolver.themeKey}
           />
         ))}
