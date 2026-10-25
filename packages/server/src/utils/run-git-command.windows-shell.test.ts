@@ -8,6 +8,10 @@ import { runGitCommand } from "./run-git-command.js";
 
 const tempDirs: string[] = [];
 
+function allowConnectionReset(error: NodeJS.ErrnoException): void {
+  if (error.code !== "ECONNRESET") throw error;
+}
+
 function makeTempRepo(): string {
   const repo = mkdtempSync(path.join(tmpdir(), "paseo-git-shell-"));
   tempDirs.push(repo);
@@ -29,6 +33,8 @@ describe("runGitCommand shell behavior", () => {
       const sockets: Socket[] = [];
       const server = createServer((socket) => {
         sockets.push(socket);
+        // Force-killing a Windows peer resets the connection instead of sending EOF.
+        socket.on("error", allowConnectionReset);
         // Consume the request but never answer, keeping the real transport helper busy.
         socket.resume();
       });
