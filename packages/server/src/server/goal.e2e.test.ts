@@ -117,7 +117,12 @@ test("an illegal transition is reported to the client and changes nothing", asyn
 test("a subscribed client is pushed goal changes, and an ended goal can be acknowledged", async () => {
   const client = await boot();
   const features = client.getLastServerInfoMessage()?.features;
-  expect(features).toMatchObject({ goalBudgets: true, goalUpdates: true, goalAcknowledge: true });
+  expect(features).toMatchObject({
+    goalBudgets: true,
+    goalUpdates: true,
+    goalAcknowledge: true,
+    goalThinking: true,
+  });
   const pushed: { status: string; lastSeq: number; acknowledgedAt?: string | null }[] = [];
   const owner = client.observeGoalUpdates();
   owner.subscribe({
@@ -570,6 +575,24 @@ test("creating a goal fails at once for a directory that is not a git repository
       config: managedConfig(root),
     }),
   ).rejects.toThrow(/is not a git repository/);
+}, 30_000);
+
+test("creating a goal checks a role's thinking option against the provider's model catalog", async () => {
+  const repo = createGitRepo(root);
+  const client = await boot();
+  // The fake codex catalog's default model lists no thinking options.
+  await expect(
+    client.goalCreate({
+      goalId: "g1",
+      title: "Thinking",
+      objective: "",
+      criteria: ["x"],
+      config: managedConfig(repo, { workerThinking: "max" }),
+    }),
+  ).rejects.toThrow(
+    /workerThinking "max" is not a thinking option of codex\/.+ Available: \(none\)/,
+  );
+  expect((await client.goalList()).goals).toEqual([]);
 }, 30_000);
 
 test("goal controls: a rejected plan is redone with the feedback, and a paused goal starts nothing until resumed", async () => {

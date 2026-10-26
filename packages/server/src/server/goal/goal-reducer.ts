@@ -432,6 +432,7 @@ function applyRunEvent(goal: Goal, event: GoalEvent): Goal {
         agentId: event.agentId,
         workspaceId: event.workspaceId,
         cwd: event.cwd ?? null,
+        ...(event.thinking ? { thinking: event.thinking } : {}),
       }));
 
     case "run.finished":

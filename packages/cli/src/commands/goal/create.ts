@@ -24,6 +24,10 @@ export interface GoalCreateOptions extends GoalCommandOptions {
   notifyLead?: boolean;
   reviewProvider?: string;
   verifyProvider?: string;
+  leadThinking?: string;
+  workerThinking?: string;
+  reviewThinking?: string;
+  verifyThinking?: string;
   branchPrefix?: string;
   maxTokens?: string;
   maxCost?: string;
@@ -88,6 +92,10 @@ function buildConfig(options: GoalCreateOptions): GoalConfig | undefined {
     notifyLead: options.notifyLead !== false,
     ...(options.reviewProvider ? { reviewProvider: options.reviewProvider } : {}),
     ...(options.verifyProvider ? { verifyProvider: options.verifyProvider } : {}),
+    ...(options.leadThinking ? { leadThinking: options.leadThinking } : {}),
+    ...(options.workerThinking ? { workerThinking: options.workerThinking } : {}),
+    ...(options.reviewThinking ? { reviewThinking: options.reviewThinking } : {}),
+    ...(options.verifyThinking ? { verifyThinking: options.verifyThinking } : {}),
     ...(options.branchPrefix ? { branchPrefix: options.branchPrefix } : {}),
     ...(options.testCommand ? { testCommand: options.testCommand } : {}),
     ...(options.requireApproval ? { requireHumanApproval: true } : {}),
