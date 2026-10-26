@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { GoalSchema } from "@getpaseo/protocol/goal/types";
 import { GoalEventLog } from "./event-log.js";
 import { GoalManager } from "./goal-manager.js";
+import { GoalService } from "./goal-service.js";
 import { GoalStore } from "./goal-store.js";
 import { FakeClock, Harness } from "./goal-test-env.js";
 
@@ -133,6 +134,23 @@ describe("goal logs written by earlier phases", () => {
     expect(goal?.runs[0]).not.toHaveProperty("thinking");
     expect(goal?.config).not.toHaveProperty("leadThinking");
     expect(goal?.config).not.toHaveProperty("workerThinking");
+  });
+
+  test("a log from before goal management reads as normal priority, not archived, and takes management events", async () => {
+    await writeFile(join(dir, "m1.jsonl"), phase1Log("m1"));
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    const service = new GoalService(store, log);
+    expect(store.get("m1")).not.toHaveProperty("priority");
+    expect(store.get("m1")).not.toHaveProperty("archivedAt");
+    expect(service.list().map((g) => g.id)).toEqual(["m1"]);
+    expect(service.list({ priority: ["normal"] }).map((g) => g.id)).toEqual(["m1"]);
+    await service.archive("m1");
+    expect(service.list()).toEqual([]);
+    const reloaded = await load();
+    expect(reloaded.get("m1")?.archivedAt).toBeTruthy();
+    expect(GoalSchema.safeParse(reloaded.get("m1")).success).toBe(true);
   });
 
   test("a log from before notifications were recorded replays with none and sends nothing", async () => {

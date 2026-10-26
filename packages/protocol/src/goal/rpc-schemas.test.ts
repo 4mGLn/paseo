@@ -255,4 +255,82 @@ describe("goal RPC schemas", () => {
       }).type,
     ).toBe("session.events.set_subscription.request");
   });
+
+  test("goal management requests, responses and events parse; old shapes still do", () => {
+    const inbound = [
+      { type: "goal.rename.request", requestId: "r", goalId: "g", title: " New ", eventId: "e" },
+      { type: "goal.set_priority.request", requestId: "r", goalId: "g", priority: "high" },
+      { type: "goal.archive.request", requestId: "r", goalId: "g" },
+      { type: "goal.unarchive.request", requestId: "r", goalId: "g" },
+      { type: "goal.delete.request", requestId: "r", goalId: "g" },
+      {
+        type: "goal.list.request",
+        requestId: "r",
+        query: "ship",
+        status: ["failed", "cancelled"],
+        priority: ["high"],
+        cwd: "/repo",
+        archived: "only",
+        includeArchived: true,
+      },
+      // An old client's list request carries no filter.
+      { type: "goal.list.request", requestId: "r" },
+      {
+        type: "goal.create.request",
+        requestId: "r",
+        title: "T",
+        objective: "",
+        criteria: [],
+        priority: "low",
+      },
+    ];
+    for (const message of inbound) {
+      expect(SessionInboundMessageSchema.parse(message).type).toBe(message.type);
+    }
+    const rename = SessionInboundMessageSchema.parse(inbound[0]);
+    expect(rename.type === "goal.rename.request" && rename.title).toBe("New");
+    for (const bad of [
+      { type: "goal.rename.request", requestId: "r", goalId: "g", title: "   " },
+      { type: "goal.set_priority.request", requestId: "r", goalId: "g", priority: "urgent" },
+      { type: "goal.list.request", requestId: "r", archived: "all" },
+    ]) {
+      expect(SessionInboundMessageSchema.safeParse(bad).success).toBe(false);
+    }
+
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "goal.delete.response",
+        payload: {
+          requestId: "r",
+          goalId: "g",
+          deleted: true,
+          retained: [
+            { kind: "branch", name: "paseo-goal/g", reason: "Branches are never deleted" },
+          ],
+          error: null,
+        },
+      }).type,
+    ).toBe("goal.delete.response");
+    for (const type of ["goal.rename", "goal.set_priority", "goal.archive", "goal.unarchive"]) {
+      expect(
+        SessionOutboundMessageSchema.parse({
+          type: `${type}.response`,
+          payload: { requestId: "r", goal: null, error: "nope" },
+        }).type,
+      ).toBe(`${type}.response`);
+    }
+
+    const events = [
+      { type: "goal.renamed", title: "T" },
+      { type: "goal.priority_set", priority: "low" },
+      { type: "goal.archived" },
+      { type: "goal.unarchived" },
+      { type: "goal.created", title: "T", objective: "", criteria: [], priority: "high" },
+    ];
+    for (const event of events) {
+      expect(GoalEventSchema.parse({ id: "e", goalId: "g", seq: 1, at: "x", ...event }).type).toBe(
+        event.type,
+      );
+    }
+  });
 });

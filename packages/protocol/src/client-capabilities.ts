@@ -63,6 +63,10 @@ export const CLIENT_CAPS = {
   // from goal.inspect events for older clients whose strict event union rejects it.
   // Remove after 2027-04-26.
   goalAcknowledgeEvents: "goal_acknowledge_events",
+  // COMPAT(goalManagementEvents): added in v0.13.1. The daemon omits goal.renamed,
+  // goal.priority_set, goal.archived and goal.unarchived from goal.inspect events for
+  // older clients whose strict event union rejects them. Remove after 2027-04-26.
+  goalManagementEvents: "goal_management_events",
   browserHost: "browser_host",
   // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove after 2027-05-22 once client floor >= v0.17.2.
   // An agent sender's steer means wait-for-turn-end from clients without it, because older

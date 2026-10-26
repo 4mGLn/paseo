@@ -96,6 +96,7 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
       })),
       tasks: [],
       notifications: [],
+      ...(event.priority ? { priority: event.priority } : {}),
       lastSeq: event.seq,
       failureReason: null,
       createdAt: event.at,
@@ -112,6 +113,8 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
   if (event.type === "goal.acknowledged") {
     return { ...acknowledge(goal, event), lastSeq: event.seq, updatedAt: event.at };
   }
+  const managed = applyManagementEvent(goal, event);
+  if (managed) return { ...managed, lastSeq: event.seq, updatedAt: event.at };
   // A goal's outcome is sent as it ends, so its notifications outlive it, and a
   // failed goal can be reopened by a retry. Nothing else reaches an ended goal
   // except an acknowledgement, handled above.
@@ -136,6 +139,33 @@ function acknowledge(goal: Goal, event: GoalEvent): Goal {
     throw new GoalTransitionError(event.type, "goal is already acknowledged");
   }
   return { ...goal, acknowledgedAt: event.at };
+}
+
+/**
+ * A person renames, reprioritises, archives or unarchives a goal. These touch only
+ * the goal's labels, so they are accepted after it ended. Returns null for any other event.
+ */
+function applyManagementEvent(goal: Goal, event: GoalEvent): Goal | null {
+  switch (event.type) {
+    case "goal.renamed":
+      return { ...goal, title: event.title };
+    case "goal.priority_set":
+      return { ...goal, priority: event.priority };
+    case "goal.archived":
+      if (!isTerminalGoalStatus(goal.status)) {
+        throw new GoalTransitionError(
+          event.type,
+          `goal is ${goal.status}; only an ended goal can be archived`,
+        );
+      }
+      if (goal.archivedAt) throw new GoalTransitionError(event.type, "goal is already archived");
+      return { ...goal, archivedAt: event.at };
+    case "goal.unarchived":
+      if (!goal.archivedAt) throw new GoalTransitionError(event.type, "goal is not archived");
+      return { ...goal, archivedAt: null };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -838,6 +868,9 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
     throw new GoalTransitionError(event.type, "a manual goal runs nothing to retry");
   }
   requireStatus(goal, event, "executing", "failed");
+  if (goal.archivedAt) {
+    throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
+  }
   const reopen = goal.status === "failed";
   if (event.reopen !== reopen) {
     throw new GoalTransitionError(

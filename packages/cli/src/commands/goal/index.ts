@@ -7,6 +7,13 @@ import { runLsCommand } from "./ls.js";
 import { runChangesCommand } from "./changes.js";
 import { runNotificationsCommand } from "./notifications.js";
 import {
+  runArchiveCommand,
+  runDeleteCommand,
+  runPriorityCommand,
+  runRenameCommand,
+  runUnarchiveCommand,
+} from "./manage.js";
+import {
   runAckCommand,
   runApproveChangeSetCommand,
   runApproveCommand,
@@ -90,12 +97,68 @@ export function createGoalCommand(): Command {
         "--allow-provider <provider>",
         "Restrict the goal to this provider (repeatable)",
         (value: string, previous: string[] = []) => [...previous, value],
+      )
+      .option(
+        "--priority <priority>",
+        "low, normal or high: list order, and first claim on a free run slot (default normal)",
       ),
   ).action(withOutput(runCreateCommand));
 
-  addJsonAndDaemonHostOptions(goal.command("ls").description("List goals")).action(
-    withOutput(runLsCommand),
-  );
+  const repeatable = (value: string, previous: string[] = []) => [...previous, value];
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("ls")
+      .description("List goals, higher priority first; archived goals are hidden")
+      .option("--search <text>", "Only goals whose title, objective or ID contains this text")
+      .option(
+        "--status <status>",
+        "Only goals in this status (repeatable): planning, awaiting_plan_approval, executing, completed, failed, cancelled",
+        repeatable,
+      )
+      .option("--priority <priority>", "Only goals with this priority (repeatable)", repeatable)
+      .option("--archived <which>", "exclude (default), only, or include archived goals")
+      .option("--project <path>", "Only goals working in this repository"),
+  ).action(withOutput(runLsCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("rename")
+      .description("Rename a goal")
+      .argument("<id>", "Goal ID")
+      .argument("<title>", "New title"),
+  ).action(withOutput(runRenameCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("priority")
+      .description("Set a goal's priority: low, normal or high")
+      .argument("<id>", "Goal ID")
+      .argument("<priority>", "low, normal or high"),
+  ).action(withOutput(runPriorityCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("archive")
+      .description("Hide an ended goal from goal ls; cancel a live goal first")
+      .argument("<id>", "Goal ID"),
+  ).action(withOutput(runArchiveCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("unarchive")
+      .description("Show an archived goal again")
+      .argument("<id>", "Goal ID"),
+  ).action(withOutput(runUnarchiveCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("delete")
+      .description(
+        "Delete an ended goal and its history for good, and remove its worktrees; branches are kept",
+      )
+      .argument("<id>", "Goal ID")
+      .option("-y, --yes", "Do not ask for confirmation"),
+  ).action(withOutput(runDeleteCommand));
 
   addJsonAndDaemonHostOptions(
     goal

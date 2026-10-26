@@ -3,6 +3,8 @@ import type { GoalEventLog } from "./event-log.js";
 import { applyGoalEvent, replayGoal } from "./goal-reducer.js";
 
 export type GoalStoreListener = (goal: Goal, event: GoalEvent) => void;
+/** Called with the goal's last state once its log has been tombstoned. */
+export type GoalRemovedListener = (goal: Goal) => void;
 
 export interface DispatchResult {
   goal: Goal;
@@ -20,6 +22,12 @@ export class GoalStore {
   private readonly queues = new Map<string, Promise<unknown>>();
 
   private readonly listeners = new Set<GoalStoreListener>();
+  private readonly removedListeners = new Set<GoalRemovedListener>();
+  /**
+   * Goals found tombstoned at the last recover(): deletion started but may not have
+   * finished. The value is the goal's last state, or null when its log was unreadable.
+   */
+  readonly pendingDeletions = new Map<string, Goal | null>();
   /** Goals whose log could not be replayed at the last recover(). */
   readonly unreadable = new Map<string, Error>();
 
@@ -31,10 +39,24 @@ export class GoalStore {
     return () => this.listeners.delete(listener);
   }
 
+  subscribeRemoved(listener: GoalRemovedListener): () => void {
+    this.removedListeners.add(listener);
+    return () => this.removedListeners.delete(listener);
+  }
+
   /** Rebuild every goal from its log. Call once at daemon start. */
   async recover(): Promise<void> {
     this.goals.clear();
     this.unreadable.clear();
+    this.pendingDeletions.clear();
+    for (const goalId of await this.log.listTombstones()) {
+      try {
+        const events = await this.log.readTombstone(goalId);
+        this.pendingDeletions.set(goalId, events ? replayGoal(events) : null);
+      } catch {
+        this.pendingDeletions.set(goalId, null);
+      }
+    }
     for (const goalId of await this.log.listGoalIds()) {
       try {
         const goal = replayGoal(await this.log.read(goalId));
@@ -57,12 +79,43 @@ export class GoalStore {
     return [...this.goals.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  /**
+   * Tombstone the goal's log and forget the goal, after any event already queued for
+   * it. `guard` may throw to refuse. Returns the goal's last state, or null when there
+   * was no such goal. What else
+   * the goal owns is the caller's to release; see GoalService.delete.
+   */
+  remove(goalId: string, guard?: (goal: Goal) => void): Promise<Goal | null> {
+    return this.serialized(goalId, async () => {
+      const goal = this.goals.get(goalId) ?? null;
+      // Checked here, after every event queued before the removal has been applied.
+      if (goal) guard?.(goal);
+      if (!goal) return null;
+      await this.log.tombstone(goalId);
+      this.goals.delete(goalId);
+      for (const listener of this.removedListeners) {
+        try {
+          listener(goal);
+        } catch {
+          // A faulty observer must not fail a committed deletion.
+        }
+      }
+      return goal;
+    });
+  }
+
+  /** Last step of a deletion, once what the goal owned has been released. */
+  removeTombstone(goalId: string): Promise<void> {
+    return this.log.removeTombstone(goalId);
+  }
+
   dispatch(goalId: string, input: GoalEventInput): Promise<DispatchResult> {
+    return this.serialized(goalId, () => this.dispatchNow(goalId, input));
+  }
+
+  private serialized<T>(goalId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(goalId) ?? Promise.resolve();
-    const run = previous.then(
-      () => this.dispatchNow(goalId, input),
-      () => this.dispatchNow(goalId, input),
-    );
+    const run = previous.then(task, task);
     this.queues.set(
       goalId,
       run.catch(() => undefined),
