@@ -1,5 +1,6 @@
 import type { TFunction } from "i18next";
-import type { Goal, GoalStatus } from "@getpaseo/protocol/goal/types";
+import type { GoalRetainedResource } from "@getpaseo/protocol/goal/rpc-schemas";
+import type { Goal, GoalPriority, GoalStatus } from "@getpaseo/protocol/goal/types";
 import type { StatusBadgeVariant } from "@/components/ui/status-badge";
 import { formatDuration } from "@/utils/time";
 import { goalAttention } from "./goal-attention";
@@ -28,6 +29,12 @@ export function settingsSummaryText(
       case "runLimit":
       case "deadline":
         return t(`goals.form.summary.${part.key}`, { duration: durationLabel(t, part.duration) });
+      case "thinking":
+        // Mid-sentence, so the level reads as a word rather than a label.
+        return t("goals.form.summary.thinking", {
+          level: part.label.toLocaleLowerCase(),
+          role: t(`goals.form.thinkingRoles.${part.role}`),
+        });
       default:
         return t(`goals.form.summary.${part.key}`);
     }
@@ -116,4 +123,25 @@ export function rowUsageLabel(t: TFunction, goal: Pick<Goal, "usage" | "config">
     return t("goals.row.tokensOnly", { tokens });
   }
   return t("goals.row.usage", { tokens, cost: compactBudgetLabel(t, usage.cost, formatUsd) });
+}
+
+const MAX_RETAINED_LINES = 4;
+
+/** What delete kept, one line per branch or worktree and at most a few, for the toast. */
+export function retainedSummary(t: TFunction, retained: readonly GoalRetainedResource[]): string {
+  const lines = retained.slice(0, MAX_RETAINED_LINES).map((resource) =>
+    t(resource.kind === "branch" ? "goals.actions.keptBranch" : "goals.actions.keptWorktree", {
+      name: resource.name,
+      reason: resource.reason,
+    }),
+  );
+  if (retained.length > MAX_RETAINED_LINES) {
+    lines.push(t("goals.actions.keptMore", { n: retained.length - MAX_RETAINED_LINES }));
+  }
+  return [t("goals.actions.deletedKept"), ...lines].join("\n");
+}
+
+/** The row's priority mark; none for normal, which is every goal's default. */
+export function priorityBadgeLabel(t: TFunction, priority: GoalPriority): string | null {
+  return priority === "normal" ? null : t(`goals.priority.badge.${priority}`);
 }

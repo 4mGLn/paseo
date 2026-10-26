@@ -28,6 +28,15 @@ const GoalFormMemorySchema = z.strictObject({
   testCommand: z.string().nullable(),
   allowedProviders: z.array(z.string()),
   settings: GoalSettingsSchema,
+  // Absent from memory written before goal thinking.
+  thinking: z
+    .strictObject({
+      lead: z.string().optional(),
+      worker: z.string().optional(),
+      reviewer: z.string().optional(),
+      verifier: z.string().optional(),
+    })
+    .optional(),
 }) satisfies z.ZodType<GoalFormMemory>;
 
 const GoalFormMemoryPersistedSchema = z.strictObject({

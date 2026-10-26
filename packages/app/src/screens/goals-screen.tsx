@@ -9,17 +9,28 @@ import { GoalDetail } from "@/components/goals/goal-detail";
 import { GoalEmptyState } from "@/components/goals/goal-empty-state";
 import { GoalFormSheet } from "@/components/goals/goal-form-sheet";
 import {
+  GoalArchivedToggle,
   GoalList,
   GoalListFilters,
+  GoalPriorityFilterMenu,
   GoalProjectFilter,
+  GoalSortMenu,
   type GoalListDismiss,
 } from "@/components/goals/goal-list";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HostFilter } from "@/components/hosts/host-filter";
 import { Button } from "@/components/ui/button";
+import { SearchField } from "@/components/ui/search-field";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { GoalListFilter } from "@/goals/goal-attention";
 import type { GoalFormPrefill } from "@/goals/goal-form-model";
+import {
+  GOAL_PRIORITY_FILTER_ALL,
+  compareGoals,
+  filterGoalsForView,
+  hasNarrowingGoalFilters,
+  type GoalPriorityFilter,
+} from "@/goals/goal-management";
 import {
   GOAL_PROJECT_FILTER_ALL,
   buildGoalProjectFilterOptions,
@@ -28,16 +39,20 @@ import {
 import { buildTemplatePrefill, type GoalTemplate } from "@/goals/goal-templates";
 import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGoalList } from "@/hooks/use-goals";
 import { useHostFeature, useHostFeatureAvailabilityMap } from "@/runtime/host-features";
 import { useHosts } from "@/runtime/host-runtime";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
+import { useGoalListPreferencesStore } from "@/stores/goal-list-preferences-store";
 import { useLastWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspaceFields } from "@/stores/session-store-hooks";
 import { resolveGoalsScreenBodyState } from "./goals-screen-state";
 
 const EMPTY_GOALS: GoalSummary[] = [];
+/** Long enough that a typed word filters once, short enough to feel live. */
+const SEARCH_DEBOUNCE_MS = 200;
 
 interface GoalsScreenProps {
   /** Opens on this host and goal, such as one just started from a chat. */
@@ -66,8 +81,11 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
   const [form, setForm] = useState<{ key: number; prefill: GoalFormPrefill | undefined } | null>(
     null,
   );
-  const [filter, setFilter] = useState<GoalListFilter>("all");
-  const [projectFilter, setProjectFilter] = useState<string>(GOAL_PROJECT_FILTER_ALL);
+  const [searchInput, setSearchInput] = useState("");
+  // The field owns its text; clearing it from "Clear filters" remounts it empty.
+  const [searchFieldKey, setSearchFieldKey] = useState(0);
+  const search = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS);
+  const [showArchived, setShowArchived] = useState(false);
 
   // A picked host that was removed falls back to the first host that supports goals.
   const pickedHostExists = hosts.some((host) => host.serverId === pickedServerId);
@@ -75,10 +93,14 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
     serverIds.find((serverId) => goalsSupport.get(serverId) === true) ?? serverIds[0] ?? "";
   const serverId = pickedHostExists && pickedServerId ? pickedServerId : defaultServerId;
   const supportsGoals = goalsSupport.get(serverId) ?? null;
+  // Archived goals exist only on hosts with goal management; older hosts list every goal.
+  const supportsManagement = useHostFeature(serverId, "goalManagement");
+  const includeArchived = supportsManagement && showArchived;
 
   const { loadState, isError, refetch } = useGoalList({
     serverId,
     enabled: supportsGoals === true,
+    archived: includeArchived ? "include" : "exclude",
   });
   const bodyState = resolveGoalsScreenBodyState({
     hasHost: serverId !== "",
@@ -87,22 +109,16 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
     isError,
   });
   const allGoals = loadState.status === "loaded" ? loadState.data : EMPTY_GOALS;
-  const projects = useGoalProjectOptions(serverId || null);
-  const projectFilterOptions = useMemo(
-    () => buildGoalProjectFilterOptions(allGoals, projects, t("goals.projectFilter.none")),
-    [allGoals, projects, t],
-  );
-  const goals = useMemo(
-    () => filterGoalsByProject(allGoals, projects, projectFilter),
-    [allGoals, projectFilter, projects],
-  );
+  const clearSearch = useCallback(() => {
+    setSearchInput("");
+    setSearchFieldKey((key) => key + 1);
+  }, []);
   const canCreate = bodyState.kind === "empty" || bodyState.kind === "content";
-  const dismiss = useGoalListDismiss(serverId);
 
   const selectHost = useCallback((nextServerId: string) => {
     setPickedServerId(nextServerId);
     setSelectedGoalId(null);
-    setProjectFilter(GOAL_PROJECT_FILTER_ALL);
+    setShowArchived(false);
   }, []);
   const formPrefill = useLastWorkspacePrefill(serverId);
   const openForm = useCallback(
@@ -135,31 +151,39 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
   const detailGoalId = canCreate ? selectedGoalId : null;
   let body: ReactElement;
   if (detailGoalId) {
-    body = <GoalDetail serverId={serverId} goalId={detailGoalId} onBack={closeDetail} />;
+    body = (
+      <GoalDetail
+        serverId={serverId}
+        goalId={detailGoalId}
+        onBack={closeDetail}
+        onDeleted={closeDetail}
+      />
+    );
   } else if (bodyState.kind === "content") {
     body = (
-      <>
-        <View style={styles.filters}>
-          <GoalListFilters goals={goals} filter={filter} onChange={setFilter} />
-          {projectFilterOptions.length > 1 ? (
-            <GoalProjectFilter
-              options={projectFilterOptions}
-              value={projectFilter}
-              onChange={setProjectFilter}
-            />
-          ) : null}
-        </View>
-        <GoalList
-          goals={goals}
-          projects={projects}
-          filter={filter}
-          onSelect={setSelectedGoalId}
-          dismiss={dismiss}
-        />
-      </>
+      <GoalsListContent
+        // Filters belong to one host's goals; another host starts unfiltered.
+        key={serverId}
+        serverId={serverId}
+        goals={allGoals}
+        search={search}
+        onClearSearch={clearSearch}
+        supportsManagement={supportsManagement}
+        showArchived={showArchived}
+        onShowArchivedChange={setShowArchived}
+        onSelect={setSelectedGoalId}
+      />
     );
   } else if (bodyState.kind === "empty") {
-    body = <GoalEmptyState onCreate={openForm} onTemplate={openTemplate} />;
+    body = (
+      <GoalsEmptyBody
+        onCreate={openForm}
+        onTemplate={openTemplate}
+        canShowArchived={supportsManagement}
+        showArchived={showArchived}
+        onShowArchivedChange={setShowArchived}
+      />
+    );
   } else if (bodyState.kind === "loading") {
     body = <LoadingSpinner size="large" color={styles.spinner.color} />;
   } else {
@@ -171,21 +195,20 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
       <MenuHeader title={t("goals.title")} />
       <View style={styles.toolbar}>
         <View style={styles.toolbarStart}>
-          {hosts.length > 1 ? (
-            <HostFilter
-              hosts={hosts}
-              selectedHost={serverId}
-              onSelectHost={selectHost}
-              includeAllHost={false}
-              triggerTestID="goals-host-filter-trigger"
+          {bodyState.kind === "content" && !detailGoalId ? (
+            <SearchField
+              key={searchFieldKey}
+              value={searchInput}
+              onChangeText={setSearchInput}
+              placeholder={t("goals.search.placeholder")}
+              clearAccessibilityLabel={t("goals.search.clear")}
+              testID="goals-search-input"
+              clearTestID="goals-search-clear"
             />
           ) : null}
+          <GoalsHostFilter hosts={hosts} serverId={serverId} onSelectHost={selectHost} />
         </View>
-        {canCreate ? (
-          <Button variant="outline" size="sm" leftIcon={Plus} onPress={openForm} testID="goals-new">
-            {t("goals.newGoal")}
-          </Button>
-        ) : null}
+        <GoalsNewButton visible={canCreate} onPress={openForm} />
       </View>
       <ScrollView
         style={styles.scroll}
@@ -205,6 +228,170 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
         />
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The filter rail and the list. Search comes from the toolbar; the status, project and priority
+ * filters live here, and the sort is remembered on this device.
+ */
+function GoalsListContent({
+  serverId,
+  goals: allGoals,
+  search,
+  onClearSearch,
+  supportsManagement,
+  showArchived,
+  onShowArchivedChange,
+  onSelect,
+}: {
+  serverId: string;
+  goals: readonly GoalSummary[];
+  search: string;
+  onClearSearch: () => void;
+  supportsManagement: boolean;
+  showArchived: boolean;
+  onShowArchivedChange: (value: boolean) => void;
+  onSelect: (goalId: string) => void;
+}): ReactElement {
+  const { t } = useTranslation();
+  const [filter, setFilter] = useState<GoalListFilter>("all");
+  const [projectFilter, setProjectFilter] = useState<string>(GOAL_PROJECT_FILTER_ALL);
+  const [priorityFilter, setPriorityFilter] =
+    useState<GoalPriorityFilter>(GOAL_PRIORITY_FILTER_ALL);
+  const sort = useGoalListPreferencesStore((state) => state.sort);
+  const setSort = useGoalListPreferencesStore((state) => state.setSort);
+  const compare = useMemo(() => compareGoals(sort), [sort]);
+  const projects = useGoalProjectOptions(serverId);
+  const dismiss = useGoalListDismiss(serverId);
+  // The list is never paged, so search runs here on the host's full list and also matches
+  // project names, which the host does not know.
+  const viewGoals = useMemo(
+    () =>
+      filterGoalsForView(
+        allGoals,
+        { search, priority: priorityFilter, showArchived: supportsManagement && showArchived },
+        projects,
+      ),
+    [allGoals, priorityFilter, projects, search, showArchived, supportsManagement],
+  );
+  const projectFilterOptions = useMemo(
+    () => buildGoalProjectFilterOptions(allGoals, projects, t("goals.projectFilter.none")),
+    [allGoals, projects, t],
+  );
+  const goals = useMemo(
+    () => filterGoalsByProject(viewGoals, projects, projectFilter),
+    [viewGoals, projectFilter, projects],
+  );
+  const isNarrowed = hasNarrowingGoalFilters({
+    search,
+    priority: priorityFilter,
+    projectFiltered: projectFilter !== GOAL_PROJECT_FILTER_ALL,
+  });
+  const clearFilters = useCallback(() => {
+    onClearSearch();
+    setPriorityFilter(GOAL_PRIORITY_FILTER_ALL);
+    setProjectFilter(GOAL_PROJECT_FILTER_ALL);
+    setFilter("all");
+  }, [onClearSearch]);
+
+  return (
+    <>
+      <View style={styles.filters}>
+        <GoalListFilters goals={goals} filter={filter} onChange={setFilter} />
+        {projectFilterOptions.length > 1 ? (
+          <GoalProjectFilter
+            options={projectFilterOptions}
+            value={projectFilter}
+            onChange={setProjectFilter}
+          />
+        ) : null}
+        {supportsManagement ? (
+          <GoalPriorityFilterMenu value={priorityFilter} onChange={setPriorityFilter} />
+        ) : null}
+        <GoalSortMenu value={sort} onChange={setSort} />
+        {supportsManagement ? (
+          <GoalArchivedToggle value={showArchived} onChange={onShowArchivedChange} />
+        ) : null}
+      </View>
+      <GoalList
+        serverId={serverId}
+        goals={goals}
+        projects={projects}
+        filter={filter}
+        compare={compare}
+        onSelect={onSelect}
+        dismiss={dismiss}
+        onClearFilters={isNarrowed ? clearFilters : null}
+      />
+    </>
+  );
+}
+
+function GoalsEmptyBody({
+  onCreate,
+  onTemplate,
+  canShowArchived,
+  showArchived,
+  onShowArchivedChange,
+}: {
+  onCreate: () => void;
+  onTemplate: (template: GoalTemplate) => void;
+  /** Every goal may be archived; on hosts that archive, the toggle is the way back to them. */
+  canShowArchived: boolean;
+  showArchived: boolean;
+  onShowArchivedChange: (value: boolean) => void;
+}): ReactElement {
+  return (
+    <>
+      <GoalEmptyState onCreate={onCreate} onTemplate={onTemplate} />
+      {canShowArchived ? (
+        <View style={styles.emptyArchived}>
+          <GoalArchivedToggle value={showArchived} onChange={onShowArchivedChange} />
+        </View>
+      ) : null}
+    </>
+  );
+}
+
+function GoalsHostFilter({
+  hosts,
+  serverId,
+  onSelectHost,
+}: {
+  hosts: ReturnType<typeof useHosts>;
+  serverId: string;
+  onSelectHost: (serverId: string) => void;
+}): ReactElement | null {
+  if (hosts.length <= 1) {
+    return null;
+  }
+  return (
+    <HostFilter
+      hosts={hosts}
+      selectedHost={serverId}
+      onSelectHost={onSelectHost}
+      includeAllHost={false}
+      triggerTestID="goals-host-filter-trigger"
+    />
+  );
+}
+
+function GoalsNewButton({
+  visible,
+  onPress,
+}: {
+  visible: boolean;
+  onPress: () => void;
+}): ReactElement | null {
+  const { t } = useTranslation();
+  if (!visible) {
+    return null;
+  }
+  return (
+    <Button variant="outline" size="sm" leftIcon={Plus} onPress={onPress} testID="goals-new">
+      {t("goals.newGoal")}
+    </Button>
   );
 }
 
@@ -278,9 +465,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[4],
   },
   toolbarStart: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    flexShrink: 1,
+    gap: theme.spacing[2],
+    minWidth: 0,
   },
   scroll: {
     flex: 1,
@@ -303,6 +492,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
     marginBottom: theme.spacing[4],
+  },
+  emptyArchived: {
+    alignItems: "center",
   },
   centered: {
     alignItems: "center",

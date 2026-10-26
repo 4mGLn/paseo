@@ -14,7 +14,13 @@ import {
   type TaskTimelineBar,
 } from "@/goals/goal-progress";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
-import { groupGoalTasks, latestTaskAgent, type GoalAgentTarget } from "@/goals/goal-tasks";
+import { formatThinkingOptionLabel } from "@/agent-controls/labels";
+import {
+  groupGoalTasks,
+  latestTaskAgent,
+  latestTaskThinking,
+  type GoalAgentTarget,
+} from "@/goals/goal-tasks";
 import { settingsStyles } from "@/styles/settings";
 import { useRelativeTimeTick } from "@/usage/use-relative-time-tick";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
@@ -150,6 +156,10 @@ function TaskRow({
   }
   if (tokens !== null) {
     meta.push(t("goals.detail.tokens", { n: formatCompactCount(tokens) }));
+  }
+  const thinking = latestTaskThinking(goal, task.id);
+  if (thinking) {
+    meta.push(t("goals.detail.thinking", { level: formatThinkingOptionLabel({ id: thinking }) }));
   }
   if (task.dependsOn.length > 0) {
     meta.push(t("goals.detail.dependsOn", { ids: task.dependsOn.join(", ") }));

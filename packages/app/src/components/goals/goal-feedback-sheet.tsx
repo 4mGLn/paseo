@@ -45,7 +45,15 @@ export function GoalFeedbackSheet({
   const canSend = (!isRequired || findings.trim().length > 0) && !isSending;
   const handleSend = useCallback(() => onSend(findings.trim()), [findings, onSend]);
   const header = useMemo<SheetHeader>(
-    () => ({ title: copy.title, subtitle: subject }),
+    // The header renders the subtitle as is, so it must be an element, not a bare string.
+    () => ({
+      title: copy.title,
+      subtitle: (
+        <Text style={styles.subtitle} numberOfLines={1}>
+          {subject}
+        </Text>
+      ),
+    }),
     [copy.title, subject],
   );
   const footer = useMemo(
@@ -93,6 +101,10 @@ export function GoalFeedbackSheet({
 const styles = StyleSheet.create((theme) => ({
   input: {
     minHeight: 120,
+  },
+  subtitle: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
   },
   footer: {
     flex: 1,
