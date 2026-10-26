@@ -52,7 +52,7 @@ export function toGoalRow(goal: Goal, now: number = Date.now()): GoalRow {
   return {
     id: goal.id,
     title: goal.title,
-    status: goal.pausedAt ? `${goal.status} (paused)` : goal.status,
+    status: goalStatusLabel(goal),
     tasks: `${done}/${goal.tasks.length}`,
     criteria: `${verified}/${goal.criteria.length}`,
     elapsed: formatDuration(goalElapsedMs(goal, now)),
@@ -60,6 +60,12 @@ export function toGoalRow(goal: Goal, now: number = Date.now()): GoalRow {
     waitingOn: describeGoalWaitingOn(goal)?.label ?? "-",
     updatedAt: goal.updatedAt,
   };
+}
+
+function goalStatusLabel(goal: Goal): string {
+  if (goal.pausedAt) return `${goal.status} (paused)`;
+  if (goal.acknowledgedAt) return `${goal.status} (acknowledged)`;
+  return goal.status;
 }
 
 export const goalSchema: OutputSchema<GoalRow> = {

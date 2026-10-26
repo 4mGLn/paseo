@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { SessionInboundMessageSchema, SessionOutboundMessageSchema } from "../messages.js";
-import { GoalConfigSchema } from "./types.js";
+import { summarizeGoalProgress, toGoalSummary } from "./progress.js";
+import { type Goal, GoalConfigSchema, GoalEventSchema } from "./types.js";
 
 const config = {
   cwd: "/repo",
@@ -114,5 +115,98 @@ describe("goal RPC schemas", () => {
     expect(GoalConfigSchema.safeParse({ ...config, limits: { maxCostUsd: 0 } }).success).toBe(
       false,
     );
+  });
+
+  test("acknowledge, the goal.update push and the list summary parse", () => {
+    const goal: Goal = {
+      id: "g",
+      title: "T",
+      objective: "",
+      status: "failed",
+      config,
+      leadAgentId: null,
+      leadWorkspaceId: null,
+      criteria: [],
+      tasks: [
+        {
+          id: "a",
+          title: "A",
+          description: "",
+          kind: "implement",
+          dependsOn: [],
+          status: "succeeded",
+          attempts: 1,
+          error: null,
+          summary: null,
+        },
+        {
+          id: "b",
+          title: "B",
+          description: "",
+          kind: "implement",
+          dependsOn: [],
+          status: "failed",
+          attempts: 2,
+          error: "x",
+          summary: null,
+        },
+        {
+          id: "c",
+          title: "C",
+          description: "",
+          kind: "read",
+          dependsOn: [],
+          status: "pending",
+          attempts: 0,
+          error: null,
+          summary: null,
+        },
+      ],
+      runs: [],
+      changeSets: [],
+      integration: null,
+      acknowledgedAt: "2026-01-02T00:00:00.000Z",
+      lastSeq: 9,
+      failureReason: "x",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(summarizeGoalProgress(goal)).toEqual({
+      tasksTotal: 3,
+      tasksDone: 1,
+      tasksFailed: 1,
+      tasksRunning: 0,
+    });
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "goal.acknowledge.request",
+        requestId: "r",
+        goalId: "g",
+        eventId: "e",
+      }).type,
+    ).toBe("goal.acknowledge.request");
+    const update = SessionOutboundMessageSchema.parse({
+      type: "goal.update",
+      payload: { goal: toGoalSummary(goal) },
+    });
+    expect(update.type === "goal.update" && update.payload.goal.progress?.tasksFailed).toBe(1);
+    // A list from a daemon that predates progress still parses.
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "goal.list.response",
+        payload: { requestId: "r", goals: [goal], error: null },
+      }).type,
+    ).toBe("goal.list.response");
+    expect(
+      GoalEventSchema.parse({ id: "e", goalId: "g", seq: 10, at: "x", type: "goal.acknowledged" })
+        .type,
+    ).toBe("goal.acknowledged");
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "session.events.set_subscription.request",
+        requestId: "r",
+        events: ["goal.update"],
+      }).type,
+    ).toBe("session.events.set_subscription.request");
   });
 });

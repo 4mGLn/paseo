@@ -114,6 +114,38 @@ test("an illegal transition is reported to the client and changes nothing", asyn
   expect((await client.goalInspect("g1")).events).toHaveLength(1);
 });
 
+test("a subscribed client is pushed goal changes, and an ended goal can be acknowledged", async () => {
+  const client = await boot();
+  const features = client.getLastServerInfoMessage()?.features;
+  expect(features).toMatchObject({ goalBudgets: true, goalUpdates: true, goalAcknowledge: true });
+  const pushed: { status: string; lastSeq: number; acknowledgedAt?: string | null }[] = [];
+  const owner = client.observeGoalUpdates();
+  owner.subscribe({
+    snapshot: () => {},
+    update: (message) => {
+      if (message.type === "goal.update") pushed.push(message.payload.goal);
+    },
+  });
+  await owner.ready;
+
+  await client.goalCreate({ goalId: "g1", title: "T", objective: "", criteria: [] });
+  await client.goalCancel({ goalId: "g1" });
+  const acked = await client.goalAcknowledge({ goalId: "g1" });
+  expect(acked.goal).toMatchObject({ status: "cancelled", acknowledgedAt: expect.any(String) });
+  const last = await waitFor(
+    async () => pushed.at(-1),
+    (goal) => goal?.lastSeq === 3,
+  );
+  expect(last).toMatchObject({ status: "cancelled", acknowledgedAt: acked.goal?.acknowledgedAt });
+  // Polling keeps working next to the push, and carries the same summary.
+  const listed = await client.goalList();
+  expect(listed.goals[0]).toMatchObject({
+    acknowledgedAt: acked.goal?.acknowledgedAt,
+    progress: { tasksTotal: 0, tasksDone: 0, tasksFailed: 0, tasksRunning: 0 },
+  });
+  await owner.release();
+});
+
 function createGitRepo(parent: string, branch = "main"): string {
   const repo = path.join(parent, "repo");
   execFileSync("git", ["init", "-b", branch, repo], { stdio: "pipe" });
