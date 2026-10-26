@@ -1,19 +1,32 @@
 import { useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import type { Goal, GoalEvent } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalEvent, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { useFetchQuery } from "@/data/query";
 import { isGoalTerminal } from "@/goals/goal-derivation";
+import { mergePolledGoals } from "@/goals/goal-updates";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import { useGoalPushLive } from "@/stores/goal-attention-store";
 
-// Goals have no push events yet, so the screen polls while it is mounted.
+// Without `goal.update` pushes the screen polls while it is mounted.
 const GOALS_POLL_MS = 5_000;
-/** How often the app-wide watcher polls for goals that need you. */
+/** How often the app-wide watcher polls for goals that need you, without pushes. */
 export const GOALS_BACKGROUND_POLL_MS = 15_000;
+/** With pushes live, polling only repairs a push missed across a reconnect. */
+export const GOALS_PUSH_FALLBACK_POLL_MS = 60_000;
 
 export const goalsQueryBaseKey = ["goals"] as const;
 
 export function goalsHostQueryKey(serverId: string) {
   return [...goalsQueryBaseKey, serverId] as const;
+}
+
+export function goalListQueryKey(serverId: string) {
+  return [...goalsHostQueryKey(serverId), "list"] as const;
+}
+
+export function goalDetailQueryKey(serverId: string, goalId: string) {
+  return [...goalsHostQueryKey(serverId), "detail", goalId] as const;
 }
 
 export type GoalLoadState<T> =
@@ -42,17 +55,20 @@ function toLoadState<T>(input: { isConnected: boolean; data: T | undefined }): G
 export function useGoalList(input: {
   serverId: string;
   enabled: boolean;
-  /** Defaults to the Goals screen's interval. */
+  /** Defaults to the Goals screen's interval. Ignored while pushes are live. */
   pollMs?: number;
-}): GoalQueryResult<Goal[]> {
-  const pollMs = input.pollMs ?? GOALS_POLL_MS;
+}): GoalQueryResult<GoalSummary[]> {
+  const isPushLive = useGoalPushLive(input.serverId);
+  const pollMs = isPushLive ? GOALS_PUSH_FALLBACK_POLL_MS : (input.pollMs ?? GOALS_POLL_MS);
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const client = useHostRuntimeClient(input.serverId);
   const isConnected = useHostRuntimeIsConnected(input.serverId);
   const shouldFetch = input.enabled && client !== null && isConnected;
+  const queryKey = useMemo(() => goalListQueryKey(input.serverId), [input.serverId]);
 
-  const query = useFetchQuery<Goal[]>({
-    queryKey: useMemo(() => [...goalsHostQueryKey(input.serverId), "list"], [input.serverId]),
+  const query = useFetchQuery<GoalSummary[]>({
+    queryKey,
     queryFn: async () => {
       if (!client) {
         throw new Error(t("common.errors.daemonClientUnavailable"));
@@ -61,7 +77,7 @@ export function useGoalList(input: {
       if (payload.error) {
         throw new Error(payload.error);
       }
-      return payload.goals;
+      return mergePolledGoals(queryClient.getQueryData<GoalSummary[]>(queryKey), payload.goals);
     },
     enabled: shouldFetch,
     dataShape: "list",
@@ -86,10 +102,12 @@ export function useGoalDetail(input: {
   const client = useHostRuntimeClient(input.serverId);
   const isConnected = useHostRuntimeIsConnected(input.serverId);
   const shouldFetch = client !== null && isConnected;
+  // Each push for this goal refetches the detail, so polling only backs it up.
+  const pollMs = useGoalPushLive(input.serverId) ? GOALS_PUSH_FALLBACK_POLL_MS : GOALS_POLL_MS;
 
   const query = useFetchQuery<GoalDetail>({
     queryKey: useMemo(
-      () => [...goalsHostQueryKey(input.serverId), "detail", input.goalId],
+      () => goalDetailQueryKey(input.serverId, input.goalId),
       [input.serverId, input.goalId],
     ),
     queryFn: async () => {
@@ -104,11 +122,11 @@ export function useGoalDetail(input: {
     },
     enabled: shouldFetch,
     dataShape: "value",
-    staleTimeMs: GOALS_POLL_MS,
+    staleTimeMs: pollMs,
     refetchInterval: (activeQuery) => {
       const goal = activeQuery.state.data?.goal;
       const settled = goal ? isGoalTerminal(goal.status) : false;
-      return shouldFetch && !settled ? GOALS_POLL_MS : false;
+      return shouldFetch && !settled ? pollMs : false;
     },
   });
 

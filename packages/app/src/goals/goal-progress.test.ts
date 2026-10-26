@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   budgetStatus,
   buildTaskTimeline,
+  buildVerificationBar,
   burnRatePerHour,
   countGoalTasks,
   estimateRemaining,
@@ -9,8 +10,10 @@ import {
   formatUsd,
   goalDeadline,
   goalElapsedMs,
+  goalListProgress,
   goalPercent,
   goalUsageStatus,
+  stageSamples,
   taskCompletion,
   taskDurationMs,
   taskTokens,
@@ -107,6 +110,25 @@ describe("goalPercent", () => {
   });
 });
 
+describe("goalListProgress", () => {
+  it("uses the host's summary and computes it for a host without one", () => {
+    const tasks = [
+      makeTask("t1", { status: "succeeded" }),
+      makeTask("t2", { status: "failed" }),
+      makeTask("t3", { status: "running" }),
+      makeTask("t4", { status: "cancelled" }),
+    ];
+    expect(goalListProgress(makeGoal({ tasks }))).toEqual({
+      tasksTotal: 4,
+      tasksDone: 1,
+      tasksFailed: 1,
+      tasksRunning: 1,
+    });
+    const progress = { tasksTotal: 9, tasksDone: 3, tasksFailed: 0, tasksRunning: 2 };
+    expect(goalListProgress({ ...makeGoal({ tasks }), progress })).toBe(progress);
+  });
+});
+
 describe("elapsed and durations", () => {
   it("freezes elapsed time when the goal ends and never goes negative", () => {
     const ended = makeGoal({ status: "completed", createdAt: iso(0), updatedAt: iso(30) });
@@ -196,6 +218,100 @@ describe("estimateRemaining", () => {
   });
 });
 
+describe("estimateRemaining with stage times", () => {
+  const base = { status: "executing" as const, createdAt: iso(0) };
+  // Two finished tasks of 10 and 30 minutes, each reviewed and merged.
+  const finished = {
+    tasks: [makeTask("t1", { status: "succeeded" }), makeTask("t2", { status: "succeeded" })],
+    runs: [finishedRun("r1", "t1", 0, 10), finishedRun("r2", "t2", 0, 30)],
+  };
+  const reviewedAndMerged = [
+    makeChangeSet("c1", "t1", {
+      status: "integrated",
+      reviewStartedAt: iso(10),
+      reviewedAt: iso(14),
+      mergeStartedAt: iso(14),
+      mergedAt: iso(15),
+    }),
+    makeChangeSet("c2", "t2", {
+      status: "integrated",
+      reviewStartedAt: iso(30),
+      reviewedAt: iso(38),
+      mergeStartedAt: iso(38),
+      mergedAt: iso(41),
+    }),
+  ];
+
+  it("samples finished reviews and merges only", () => {
+    const open = makeChangeSet("c3", "t3", { status: "in_review", reviewStartedAt: iso(40) });
+    expect(stageSamples({ changeSets: [...reviewedAndMerged, open] })).toEqual({
+      review: [4 * MIN, 8 * MIN],
+      merge: [1 * MIN, 3 * MIN],
+    });
+  });
+
+  it("adds the last review, merge and verification after the open tasks", () => {
+    const goal = makeGoal({
+      ...base,
+      tasks: [...finished.tasks, makeTask("t3")],
+      runs: finished.runs,
+      changeSets: reviewedAndMerged,
+      criteria: [{ id: "k1", text: "Works", verifiedAt: null, evidence: null }],
+    });
+    // t3 alone: 10 to 30 minutes; then a review (4 to 8), a merge (1 to 3) and the
+    // verification, sized like a review (4 to 8).
+    expect(estimateRemaining(goal, START + 45 * MIN)).toEqual({
+      kind: "range",
+      lowMs: 19 * MIN,
+      highMs: 49 * MIN,
+    });
+  });
+
+  it("counts down the review and verification already under way", () => {
+    const reviewing = makeGoal({
+      ...base,
+      ...finished,
+      changeSets: [
+        reviewedAndMerged[0]!,
+        makeChangeSet("c2", "t2", { status: "in_review", reviewStartedAt: iso(30) }),
+      ],
+    });
+    // 3 minutes into a review that takes 4 (only c1 finished): 1 left, then a 1-minute merge.
+    expect(estimateRemaining(reviewing, START + 33 * MIN)).toEqual({
+      kind: "range",
+      lowMs: 2 * MIN,
+      highMs: 2 * MIN,
+    });
+    const verifying = makeGoal({
+      ...base,
+      ...finished,
+      changeSets: reviewedAndMerged,
+      criteria: [{ id: "k1", text: "Works", verifiedAt: null, evidence: null }],
+      verifyStartedAt: iso(41),
+    });
+    expect(estimateRemaining(verifying, START + 43 * MIN)).toEqual({
+      kind: "range",
+      lowMs: 2 * MIN,
+      highMs: 6 * MIN,
+    });
+  });
+
+  it("falls back to task times alone without stage times", () => {
+    const goal = makeGoal({
+      ...base,
+      tasks: [...finished.tasks, makeTask("t3")],
+      runs: finished.runs,
+      changeSets: [makeChangeSet("c1", "t1", { status: "integrated" })],
+      criteria: [{ id: "k1", text: "Works", verifiedAt: null, evidence: null }],
+    });
+    expect(estimateRemaining(goal, START + 45 * MIN)).toEqual({
+      kind: "range",
+      lowMs: 10 * MIN,
+      highMs: 30 * MIN,
+    });
+  });
+});
+
 describe("goalDeadline", () => {
   it("counts down from the configured timeout", () => {
     const goal = makeGoal({
@@ -260,9 +376,33 @@ describe("buildTaskTimeline", () => {
       runs: [finishedRun("r1", "t1", 0, 50), makeRun("r2", "t2", { startedAt: iso(50) })],
     });
     expect(buildTaskTimeline(goal, START + 100 * MIN)).toEqual([
-      { taskId: "t1", offset: 0, width: 0.5, durationMs: 50 * MIN, attempts: 2, reworkRound: null },
-      { taskId: "t2", offset: 0.5, width: 0.5, durationMs: 50 * MIN, attempts: 0, reworkRound: 1 },
-      { taskId: "t3", offset: 0, width: 0, durationMs: null, attempts: 0, reworkRound: null },
+      {
+        taskId: "t1",
+        offset: 0,
+        width: 0.5,
+        durationMs: 50 * MIN,
+        attempts: 2,
+        reworkRound: null,
+        stages: [],
+      },
+      {
+        taskId: "t2",
+        offset: 0.5,
+        width: 0.5,
+        durationMs: 50 * MIN,
+        attempts: 0,
+        reworkRound: 1,
+        stages: [],
+      },
+      {
+        taskId: "t3",
+        offset: 0,
+        width: 0,
+        durationMs: null,
+        attempts: 0,
+        reworkRound: null,
+        stages: [],
+      },
     ]);
   });
 
@@ -276,6 +416,59 @@ describe("buildTaskTimeline", () => {
     const [bar] = buildTaskTimeline(goal, START + 20 * MIN);
     expect(bar?.offset).toBe(0);
     expect(bar?.width).toBe(1);
+  });
+});
+
+describe("timeline stages", () => {
+  it("places review and merge windows beside the run, open ones up to now", () => {
+    const goal = makeGoal({
+      status: "executing",
+      createdAt: iso(0),
+      tasks: [makeTask("t1", { status: "succeeded" })],
+      runs: [finishedRun("r1", "t1", 0, 40)],
+      changeSets: [
+        makeChangeSet("c1", "t1", {
+          status: "integrating",
+          reviewStartedAt: iso(40),
+          reviewedAt: iso(60),
+          mergeStartedAt: iso(60),
+        }),
+      ],
+    });
+    const [bar] = buildTaskTimeline(goal, START + 100 * MIN);
+    expect(bar?.stages).toEqual([
+      { kind: "review", offset: 0.4, width: 0.2, durationMs: 20 * MIN },
+      { kind: "merge", offset: 0.6, width: 0.4, durationMs: 40 * MIN },
+    ]);
+  });
+
+  it("leaves out a window that was cut short", () => {
+    const goal = makeGoal({
+      status: "executing",
+      createdAt: iso(0),
+      tasks: [makeTask("t1", { status: "succeeded" })],
+      changeSets: [makeChangeSet("c1", "t1", { status: "superseded", reviewStartedAt: iso(10) })],
+    });
+    expect(buildTaskTimeline(goal, START + 20 * MIN)[0]?.stages).toEqual([]);
+  });
+
+  it("shows verification once it starts, and freezes it when it ends", () => {
+    const running = makeGoal({ status: "executing", createdAt: iso(0), verifyStartedAt: iso(80) });
+    const bar = buildVerificationBar(running, START + 100 * MIN);
+    expect(bar).toMatchObject({ offset: 0.8, durationMs: 20 * MIN, isRunning: true });
+    expect(bar?.width).toBeCloseTo(0.2);
+    const done = makeGoal({
+      status: "completed",
+      createdAt: iso(0),
+      updatedAt: iso(100),
+      verifyStartedAt: iso(80),
+      verifiedAt: iso(90),
+    });
+    expect(buildVerificationBar(done, START + 200 * MIN)).toMatchObject({
+      durationMs: 10 * MIN,
+      isRunning: false,
+    });
+    expect(buildVerificationBar(makeGoal(), START)).toBeNull();
   });
 });
 

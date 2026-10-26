@@ -4,11 +4,11 @@ import { useIsFocused } from "expo-router/react-navigation";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
-import type { Goal } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { GoalDetail } from "@/components/goals/goal-detail";
 import { GoalEmptyState } from "@/components/goals/goal-empty-state";
 import { GoalFormSheet } from "@/components/goals/goal-form-sheet";
-import { GoalList, GoalListFilters } from "@/components/goals/goal-list";
+import { GoalList, GoalListFilters, type GoalListDismiss } from "@/components/goals/goal-list";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HostFilter } from "@/components/hosts/host-filter";
 import { Button } from "@/components/ui/button";
@@ -16,14 +16,17 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { GoalListFilter } from "@/goals/goal-attention";
 import type { GoalFormPrefill } from "@/goals/goal-form-model";
 import { buildTemplatePrefill, type GoalTemplate } from "@/goals/goal-templates";
+import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useGoalList } from "@/hooks/use-goals";
-import { useHostFeatureAvailabilityMap } from "@/runtime/host-features";
+import { useHostFeature, useHostFeatureAvailabilityMap } from "@/runtime/host-features";
 import { useHosts } from "@/runtime/host-runtime";
+import { useToast } from "@/contexts/toast-context";
+import { toErrorMessage } from "@/utils/error-messages";
 import { useLastWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspaceFields } from "@/stores/session-store-hooks";
 import { resolveGoalsScreenBodyState } from "./goals-screen-state";
 
-const EMPTY_GOALS: Goal[] = [];
+const EMPTY_GOALS: GoalSummary[] = [];
 
 interface GoalsScreenProps {
   /** Opens on this host and goal, such as one just started from a chat. */
@@ -73,6 +76,7 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
   });
   const goals = loadState.status === "loaded" ? loadState.data : EMPTY_GOALS;
   const canCreate = bodyState.kind === "empty" || bodyState.kind === "content";
+  const dismiss = useGoalListDismiss(serverId);
 
   const selectHost = useCallback((nextServerId: string) => {
     setPickedServerId(nextServerId);
@@ -113,7 +117,7 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
         <View style={styles.filters}>
           <GoalListFilters goals={goals} filter={filter} onChange={setFilter} />
         </View>
-        <GoalList goals={goals} filter={filter} onSelect={setSelectedGoalId} />
+        <GoalList goals={goals} filter={filter} onSelect={setSelectedGoalId} dismiss={dismiss} />
       </>
     );
   } else if (bodyState.kind === "empty") {
@@ -163,6 +167,23 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
         />
       ) : null}
     </View>
+  );
+}
+
+/** Dismiss for list rows, on hosts with `goalAcknowledge`; a failed dismiss shows a toast. */
+function useGoalListDismiss(serverId: string): GoalListDismiss | null {
+  const toast = useToast();
+  const supported = useHostFeature(serverId, "goalAcknowledge");
+  const { acknowledge, pendingAcknowledgeGoalId } = useGoalMutations({ serverId });
+  const onDismiss = useCallback(
+    (goalId: string) => {
+      acknowledge(goalId).catch((error: unknown) => toast.error(toErrorMessage(error)));
+    },
+    [acknowledge, toast],
+  );
+  return useMemo(
+    () => (supported ? { onDismiss, pendingGoalId: pendingAcknowledgeGoalId } : null),
+    [onDismiss, pendingAcknowledgeGoalId, supported],
   );
 }
 
