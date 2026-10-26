@@ -3,11 +3,13 @@ import type {
   ChangeSet,
   ChangeSetStatus,
   Goal,
+  GoalConfig,
   GoalEvent,
   GoalEventInput,
   Integration,
   Task,
 } from "@getpaseo/protocol/goal/types";
+import { DEFAULT_GOAL_BRANCH_PREFIX } from "@getpaseo/protocol/goal/config-bounds";
 import type { GitPort } from "./git-ops.js";
 import type { ManagerAgentPort, ManagerWorkspacePort, TurnResult } from "./goal-manager.js";
 import {
@@ -35,8 +37,13 @@ export interface PipelineHost {
   /** Cancel an agent and, when given, archive its workspace. */
   discard(agentId: string | null, workspaceId: string | null): Promise<void>;
   notifyLeadFinal(goal: Goal, text: string): void;
-  /** Run one agent turn under the goal's time limit and permission policy. */
-  runTurn(goalId: string, agentId: string, prompt: string): Promise<TurnResult>;
+  /** Run one agent turn under the goal's time limit and permission policy, recording its usage. */
+  runTurn(
+    goalId: string,
+    agentId: string,
+    prompt: string,
+    role: "reviewer" | "verifier",
+  ): Promise<TurnResult>;
 }
 
 export interface PipelineOptions {
@@ -58,6 +65,10 @@ const FINAL_STATUSES: ReadonlySet<ChangeSetStatus> = new Set([
   "superseded",
   "rejected",
 ]);
+
+function verifierProvider(config: GoalConfig): string {
+  return config.verifyProvider ?? config.reviewProvider ?? config.leadProvider;
+}
 
 /** The task a rework task descends from. Rework ids are `<task>-rw<round>`. */
 export function rootTaskId(taskId: string): string {
@@ -86,6 +97,8 @@ export class ChangeSetPipeline {
   private readonly verifying = new Set<string>();
   /** Reviewers and verifiers running per goal, so ending the goal can stop them. */
   private readonly liveAgents = new Map<string, Set<string>>();
+  /** Reviews, merges and rework scheduling in progress per goal. */
+  private readonly busy = new Map<string, number>();
 
   constructor(options: PipelineOptions) {
     this.store = options.store;
@@ -152,7 +165,7 @@ export class ChangeSetPipeline {
       cwd: goal.config.cwd,
       isolation: "worktree",
       title: `${goal.title} (integration)`,
-      branchName: `paseo-goal/${goalId}`,
+      branchName: `${goal.config.branchPrefix ?? DEFAULT_GOAL_BRANCH_PREFIX}/${goalId}`,
       keepBranchName: true,
       ...(goal.config.baseCommit ? { baseRef: goal.config.baseCommit } : {}),
     });
@@ -255,11 +268,35 @@ export class ChangeSetPipeline {
     });
   }
 
+  /**
+   * True while anything of this goal still runs in this process. A failed goal is
+   * reopened only once this is false, so work it left stopping cannot act on it again.
+   */
+  hasLiveWork(goalId: string): boolean {
+    return (
+      (this.busy.get(goalId) ?? 0) > 0 ||
+      (this.liveAgents.get(goalId)?.size ?? 0) > 0 ||
+      this.verifying.has(goalId) ||
+      this.preparing.has(goalId) ||
+      [...this.capturing].some((key) => key.startsWith(`${goalId}:`))
+    );
+  }
+
+  /** Track one piece of this goal's work as live until it settles. */
+  private hold(goalId: string, work: () => Promise<void>): Promise<void> {
+    this.busy.set(goalId, (this.busy.get(goalId) ?? 0) + 1);
+    return work().finally(() => {
+      const left = (this.busy.get(goalId) ?? 1) - 1;
+      if (left > 0) this.busy.set(goalId, left);
+      else this.busy.delete(goalId);
+    });
+  }
+
   // ---- reactions ---------------------------------------------------------
 
   onEvent(goal: Goal, event: GoalEvent): void {
     if (event.type === "changeset.captured") {
-      this.host.track(this.review(goal.id, event.changeSetId));
+      this.host.track(this.hold(goal.id, () => this.review(goal.id, event.changeSetId)));
     } else if (event.type === "changeset.transitioned") {
       this.onTransition(goal, event.changeSetId, event.to);
     }
@@ -267,11 +304,11 @@ export class ChangeSetPipeline {
 
   private onTransition(goal: Goal, changeSetId: string, to: ChangeSetStatus): void {
     if (to === "approved") {
-      this.host.track(this.enqueueIntegration(goal.id, changeSetId));
+      this.host.track(this.hold(goal.id, () => this.enqueueIntegration(goal.id, changeSetId)));
     } else if (to === "integrated") {
       this.host.requestPump(goal.id);
     } else if (reworkReasonFor(to)) {
-      this.host.track(this.requestRework(goal.id, changeSetId));
+      this.host.track(this.hold(goal.id, () => this.requestRework(goal.id, changeSetId)));
     }
   }
 
@@ -381,7 +418,7 @@ export class ChangeSetPipeline {
       let prompt = buildReviewPrompt(goal, task, cs);
       let problem = "";
       for (let attempt = 0; attempt < REPLY_ATTEMPTS; attempt += 1) {
-        const result = await this.host.runTurn(goal.id, agentId, prompt);
+        const result = await this.host.runTurn(goal.id, agentId, prompt, "reviewer");
         if (this.host.isStopped() || this.store.get(goal.id)?.status !== "executing") return null;
         if (result.outcome !== "completed") {
           throw new Error(`Reviewer did not finish (${result.outcome})`);
@@ -587,16 +624,16 @@ export class ChangeSetPipeline {
     if (!goal?.config || goal.status !== "executing") return;
     for (const cs of goal.changeSets) {
       if (cs.status === "captured" || cs.status === "in_review") {
-        this.host.track(this.review(goalId, cs.id));
+        this.host.track(this.hold(goalId, () => this.review(goalId, cs.id)));
       } else if (cs.status === "approved") {
-        this.host.track(this.enqueueIntegration(goalId, cs.id));
+        this.host.track(this.hold(goalId, () => this.enqueueIntegration(goalId, cs.id)));
       } else if (cs.status === "integrating") {
         await this.recoverInterruptedMerge(goal, cs);
       } else if (
         reworkReasonFor(cs.status) &&
         !goal.tasks.some((t) => t.rework?.changeSetId === cs.id)
       ) {
-        this.host.track(this.requestRework(goalId, cs.id));
+        this.host.track(this.hold(goalId, () => this.requestRework(goalId, cs.id)));
       }
     }
     await this.recaptureMissing(goalId);
@@ -712,7 +749,7 @@ export class ChangeSetPipeline {
         : null);
     if (!workspace) return null;
     const { agentId } = await this.agents.createAgent({
-      provider: config.reviewProvider ?? config.leadProvider,
+      provider: verifierProvider(config),
       cwd: workspace.cwd,
       workspaceId: workspace.workspaceId,
       title: `Verify: ${goal.title}`,
@@ -723,7 +760,7 @@ export class ChangeSetPipeline {
       let prompt = buildVerifyPrompt(goal, goal.integration?.branch ?? null);
       let problem = "";
       for (let attempt = 0; attempt < REPLY_ATTEMPTS; attempt += 1) {
-        const result = await this.host.runTurn(goal.id, agentId, prompt);
+        const result = await this.host.runTurn(goal.id, agentId, prompt, "verifier");
         if (this.host.isStopped() || this.store.get(goal.id)?.status !== "executing") return null;
         if (result.outcome !== "completed") {
           throw new Error(`Verifier did not finish (${result.outcome})`);

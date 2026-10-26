@@ -1965,7 +1965,7 @@ export class VoiceAssistantWebSocketServer {
         directorySync: true,
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         ...(this.workspaceLabelService ? { workspaceLabels: true } : {}),
-        ...(this.goalService ? { goals: true } : {}),
+        ...(this.goalService ? { goals: true, goalControls: true } : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.
         workspaceSetupRun: true,
         workspaceSetupObservation: true,
@@ -2122,6 +2122,8 @@ export class VoiceAssistantWebSocketServer {
         agentConfigApply: true,
         // COMPAT(agentTeams): added in v0.12.0, remove gate after 2027-10-21.
         agentTeams: true,
+        // COMPAT(agentTeamsConfig): added in v0.13.0, remove gate after 2027-10-26.
+        agentTeamsConfig: true,
       },
     };
   }

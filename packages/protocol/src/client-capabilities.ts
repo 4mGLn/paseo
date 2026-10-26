@@ -46,6 +46,10 @@ export const CLIENT_CAPS = {
   workspaceSetupObservation: "workspace_setup_observation",
   // COMPAT(workspaceSetupBlocked): added in v0.8.0, remove after 2027-03-07 once client floor >= v0.8.0.
   workspaceSetupBlocked: "workspace_setup_blocked",
+  // COMPAT(goalControlEvents): added in v0.13.0. The daemon omits goal.paused,
+  // goal.resumed, goal.retried and usage.recorded from goal.inspect events for older
+  // clients whose strict event union rejects them. Remove after 2027-04-26.
+  goalControlEvents: "goal_control_events",
   browserHost: "browser_host",
 } as const;
 

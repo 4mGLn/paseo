@@ -29,24 +29,30 @@ paseo goal inspect <id>           # tasks and their status
 paseo goal changes <id>           # change sets and where each stands
 paseo goal notifications <id>     # messages to the Lead and the chat, and their outcome
 paseo goal inspect <id> --json    # full goal and event history
+paseo goal reject-plan <id> --message "Split the migration out"
+paseo goal pause <id>             # start no new worker runs
+paseo goal resume <id>
+paseo goal retry <id>             # retry failed tasks; reopens a failed goal
 paseo goal cancel <id>
 ```
+
+`paseo goal ls` shows each goal's progress, elapsed time, reported usage and what it is waiting on. `paseo goal inspect` shows the same per task.
 
 Without `--cwd` the goal is manual: it records plans and state and nothing runs. With `--cwd` the Manager takes over. `--cwd` must be a git repository.
 
 ## Lifecycle
 
 1. **Plan.** The Lead replies with a JSON task graph: ids, titles, descriptions, kinds (`implement`, `review`, `read`), dependencies and optional providers. The Manager checks it (no cycles, known providers, within the task limit, no ids ending in `-rw<n>`) and sends an unusable plan back, up to two times.
-2. **Approve.** The goal waits for `paseo goal approve <id>`, or approves itself with `--auto-approve`.
+2. **Approve.** The goal waits for `paseo goal approve <id>`, or approves itself with `--auto-approve`. `paseo goal reject-plan <id> --message ...` sends the plan back instead: the Lead and its worktree are retired, and a new Lead plans with your feedback and the rejected plan in its prompt. A plan can be rejected 5 times.
 3. **Execute.** Ready tasks start, at most `maxParallel` per goal and 4 across the daemon. Each task gets its own worktree. A task runs on its own provider or the goal's default. Its prompt includes the reports of the tasks it depends on. A failed task is retried after a backoff, up to `maxAttempts` failed attempts. A run interrupted by a restart does not count as a failed attempt.
 4. **Capture.** When an implement task succeeds, its work is committed if needed and recorded as a change set with explicit base and head commits and the changed files. A task that changed nothing is recorded as such.
 5. **Review.** A reviewer reads `git diff base..head` in the author's worktree. Changes it asks for, merge conflicts and test failures each become a rework task that continues in the author's worktree, up to `maxReworkRounds`.
-6. **Integrate.** Approved change sets merge one at a time into the goal's integration branch in its own worktree. The branch is `paseo-goal/<goalId>`, and Paseo's branch auto-namer is told to leave it alone. Its worktree path is in `paseo goal changes <id> --json`. `testCommand`, if set, runs after each merge; a failure resets the branch.
+6. **Integrate.** Approved change sets merge one at a time into the goal's integration branch in its own worktree. The branch is `<branchPrefix>/<goalId>`, `paseo-goal/<goalId>` by default, and Paseo's branch auto-namer is told to leave it alone. Its worktree path is in `paseo goal changes <id> --json`. `testCommand`, if set, runs after each merge; a failure resets the branch.
 7. **Verify.** When everything is integrated, the verifier checks each acceptance criterion and records its evidence. Only then does the goal complete.
 
 An implement task that depends on another starts only after that task's change set is integrated, and branches from the integrated commit, so it builds on the merged code.
 
-The result is the branch `paseo-goal/<goalId>` and its worktree. Nothing is merged into your branch or pushed. Review it and merge it yourself.
+The result is the integration branch and its worktree. Nothing is merged into your branch or pushed. Review it and merge it yourself.
 
 ## What is guaranteed
 
@@ -57,16 +63,38 @@ The result is the branch `paseo-goal/<goalId>` and its worktree. Nothing is merg
 - **Every notification has a recorded outcome.** A message to the Lead (a task failed for good, the goal completed) or to the originating chat (how the goal ended) is recorded before it is sent, with its text, and each attempt is recorded as delivered or failed. A failed attempt is retried after 5 seconds, then 30, 120 and 300, five attempts in all; after the fifth failure the notification stays `failed` with its last error. Delivered means the agent layer accepted the prompt, not that anyone read it. Notifications are the only events accepted after a goal has ended.
 - **Duplicates do nothing.** An event id is recorded once. Resending a request with the same `eventId` returns the existing result. The CLI does not send an `eventId`.
 
+## Control a running goal
+
+- **Pause.** `paseo goal pause` stops new worker runs from starting. Runs already going finish and are recorded; their reviews, merges and rework scheduling continue. Nothing new starts, and the goal is neither verified nor failed for being stuck until you resume. Planning and plan approval still happen. Time, run and budget limits keep counting. The pause is an event, so it holds across restarts: interrupted runs are closed out and wait as pending tasks.
+- **Retry.** `paseo goal retry <id> [--task <taskId>]` returns failed or cancelled tasks to pending. Their earlier failed runs stop counting against `maxAttempts`, so each gets a full set of attempts again; the run limit, time limit and budgets do not reset. On a live goal you can name one task. A failed goal is reopened to executing and every failed and cancelled task is retried, because one left behind would fail the goal again at once. A failed goal is not reopened when a change set was rejected (the goal can no longer complete), the run limit, deadline or a budget is used up, or nothing failed (planning or verification failures). Retry also waits until the failed goal's stopping agents have ended. After reopening, change sets are picked up where the failure left them, as after a restart, and the chat that started the goal is told about its next ending as well.
+- **Cancel** is final.
+
+The app gates these on `server_info.features.goalControls`. `describeGoalWaitingOn` in `packages/protocol/src/goal/waiting-on.ts` names what a live goal is waiting on (plan approval, a held change set, running tasks, review, merge, retry, verification, or a pause); the CLI and the app both use it.
+
+## Usage and budgets
+
+The Manager records one `usage.recorded` event per agent turn: Lead, workers, reviewers and the verifier. It holds what the provider reported at the end of the turn, or nothing. The goal carries the sum as `usage` (`inputTokens`, `cachedInputTokens`, `outputTokens`, `totalTokens` = input + output, `costUsd`, `reportedTurns`, `totalTurns`), and each worker run carries its own.
+
+Providers report differently, so treat the numbers as a floor:
+
+- Some report nothing, or report after the turn has ended (pi and omp poll session stats in the background). Those turns count in `totalTurns` and not in `reportedTurns`. Show "reported for N of M turns" next to any total.
+- Some report the agent's session total rather than the turn's. A Lead or reviewer that needs a correction turn can then be counted twice. Workers run one turn per agent and are not affected.
+- `costUsd` is only what the provider computed. Most report tokens without cost.
+
+`limits.maxTotalTokens` and `limits.maxCostUsd` fail the goal once the reported totals reach them, and a goal over budget is not reopened. They cannot stop a turn already running, and they never count what was not reported.
+
 ## Configuration
 
-Set on `paseo goal create`. Defaults apply when a flag is omitted.
+Set on `paseo goal create`. Defaults apply when a flag is omitted. Ranges and defaults live in `packages/protocol/src/goal/config-bounds.ts`, which the schema, the daemon, the CLI and the app share.
 
 | Field                        | Flag                 | Default    | Meaning                                                                                                                                 |
 | ---------------------------- | -------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `cwd`                        | `--cwd`              | none       | Git repository the goal works on. The Manager runs the goal only when it is set; without it the goal is manual                          |
 | `leadProvider`               | `--lead`             | required   | Provider for the Lead                                                                                                                   |
 | `defaultProvider`            | `--provider`         | required   | Provider for tasks that name none                                                                                                       |
-| `reviewProvider`             | `--review-provider`  | the Lead's | Provider for reviewers and the verifier                                                                                                 |
+| `reviewProvider`             | `--review-provider`  | the Lead's | Provider for reviewers, and for the verifier unless `verifyProvider` is set                                                             |
+| `verifyProvider`             | `--verify-provider`  | reviewer's | Provider for the verifier                                                                                                               |
+| `branchPrefix`               | `--branch-prefix`    | paseo-goal | Integration branch is `<branchPrefix>/<goalId>`. Segments of letters, digits, `.`, `_`, `-` joined by `/`, at most 100 characters       |
 | `maxParallel`                | `--max-parallel`     | 2          | Tasks at once, 1 to 8                                                                                                                   |
 | `maxAttempts`                | `--max-attempts`     | 2          | Tries per task, 1 to 5                                                                                                                  |
 | `maxReworkRounds`            | `--max-rework`       | 2          | Rework rounds per change, 0 to 5                                                                                                        |
@@ -81,8 +109,11 @@ Set on `paseo goal create`. Defaults apply when a flag is omitted.
 | `limits.runTimeoutMinutes`   | `--run-timeout`      | 60         | Time for any one agent turn. The agent is then cancelled; if it has not stopped 30 seconds later, the turn is abandoned and fails       |
 | `limits.goalTimeoutMinutes`  | `--goal-timeout`     | 1440       | Time from creation until the goal must be finished                                                                                      |
 | `limits.retryBackoffSeconds` | `--retry-backoff`    | 5          | Pause before a retry, times the attempt number                                                                                          |
+| `limits.deadlineAt`          | `--deadline`         | none       | ISO time the goal must be finished by. Must be in the future at creation; the earlier of this and `goalTimeoutMinutes` applies          |
+| `limits.maxTotalTokens`      | `--max-tokens`       | none       | Reported input plus output tokens over the goal's life, 1000 to 10 billion. See [Usage and budgets](#usage-and-budgets)                 |
+| `limits.maxCostUsd`          | `--max-cost`         | none       | Reported cost in USD over the goal's life, 0.01 to 100000                                                                               |
 
-Every provider field, and a task's `provider` in a plan, takes `<provider>/<model>` (`--lead codex/<model>`) as well as a bare provider id. The daemon splits at the first `/`; a bare id starts the provider's default model. `allowedProviders` lists bare provider ids and is matched against the part before the `/`.
+Every provider field, and a task's `provider` in a plan, takes `<provider>/<model>`, so each role (Lead, workers, reviewer, verifier) can run its own provider and model (`--lead codex/<model>`) as well as a bare provider id. The daemon splits at the first `/`; a bare id starts the provider's default model. `allowedProviders` lists bare provider ids and is matched against the part before the `/`.
 
 Creation fails at once if a provider is not registered, is outside the allow-list, or `cwd` is not a git repository.
 
@@ -118,7 +149,15 @@ Not protected: network access, files outside the worktrees that the provider's u
 - Mixed providers: a planner on one, implementers on others, an independent reviewer on a third.
 - Unattended runs bounded by time and run limits, and runs gated by your approval of the plan, each change, or both.
 
-Not supported: goals without a git repository, merging into your branch or opening a pull request, re-planning around a failed criterion (the goal fails), and multi-repository goals. The app's Goals screen lists goals, creates manual and managed ones, approves plans and cancels; it does not show change sets and runs. The create form has a model picker under each provider picker (Lead, default, review), listing the provider's selectable models from the providers snapshot; it sends the choice as `<provider>/<model>`, leaves the model out for "Provider default", and resets the model when you change that provider. The review model is hidden while the reviewer uses the Lead's provider and model. The form does not set `allowedProviders` or per-task providers.
+Not supported: goals without a git repository, merging into your branch or opening a pull request, re-planning around a failed criterion (the goal fails), and multi-repository goals.
+
+### In the app
+
+- **List.** Goals waiting on you come first: a plan or a change set held for approval, or a failure. Filters narrow to Needs you, Running or Done. With no goals, the screen offers templates that fill the create form.
+- **Needs you.** The app has no push channel for goals. `GoalAttentionWatcher` polls `goal.list` every 15 seconds on each host that runs goals; the Goals screen polls every 5. The sidebar badge counts plans and change sets held for approval, not failures. A goal that starts waiting shows a toast; the first poll after launch stays quiet.
+- **Detail.** The stepper, the banner and the progress panel all derive from the goal state in `packages/app/src/goals/`, with the phase taken from `describeGoalWaitingOn`. Held change sets get Approve and Request changes. Each task opens the agent of its latest run. Pause, Resume, Send back (plan rejection) and Retry appear only with `goalControls`.
+- **Progress is an estimate.** The percent weights each implement task as half done when its run succeeds, three quarters when its change is approved, done when merged; planning and verification bracket the tasks. Time left needs two finished tasks and spreads the fastest and slowest over `maxParallel` (at most 4); review, merge and verification time is not sampled, so read it as a floor. Tokens and cost show "Not reported" until a provider reports.
+- **Create form.** The objective is the only text you must write when the goal is manual; the title defaults to its first line. Careful, Balanced and Turbo fill every advanced setting; Balanced is the daemon's defaults. Steppers walk the ranges in `GOAL_CONFIG_BOUNDS`, so a value the daemon refuses cannot be entered. The form remembers your last managed goal per host (working directory, providers, settings) and offers its settings as Mine; the test command comes back only for the same directory. Budget caps are sent only to hosts with `goalControls`, since an older daemon would drop them silently. Optional fields equal to the daemon's default are left out of the config. The form does not set per-task providers, `verifyProvider`, `branchPrefix` or `limits.deadlineAt`.
 
 ### From a chat
 
@@ -129,7 +168,6 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 - Setup scripts run in every goal worktree. Anything setup leaves uncommitted in the integration worktree is reset before the first merge; setup output in a task's worktree is committed with its work and goes through review.
 - The reviewer check sees `HEAD` and uncommitted files in the author's worktree, not ignored files or other refs. Reviewers legitimately run tests that create ignored files, and every agent shares the repository's refs, so a ref snapshot would flag other agents' own commits; neither check is done.
 - A reviewer or verifier interrupted by a restart is not cancelled before its replacement starts. If a provider keeps agent processes alive across a daemon restart, two could briefly work on one worktree.
-- `plan.rejected` retires the Lead and plans again, but no command sends it yet.
 - Verification runs once, after all changes are integrated.
 - A crash after a merge commit but before it is recorded leaves that commit on the integration branch; recovery resets the branch and merges again.
 - If `cwd` is a subdirectory of the repository, git commands run in that subdirectory of each worktree.
@@ -146,6 +184,7 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 | `goal/limits-and-policy.test.ts`   | Time and run limits, backoff, permission policy, provider boundaries, read-only roles                                                                   |
 | `goal/recovery-matrix.test.ts`     | A restart after every event of a full run finishes the goal                                                                                             |
 | `goal/log-compat.test.ts`          | Logs from earlier phases replay; unknown logs are set aside                                                                                             |
+| `goal/goal-controls.test.ts`       | Reject plan, pause and resume, retry and reopen, usage totals and budgets, across restarts                                                              |
 | `goal/review-fixes.test.ts`        | Regressions from independent review: restarts, stuck turns, base commit, external cancel, backoff slots, test-command runner, integration head, quoting |
 | `goal/goal-ports.test.ts`          | The permission wait loop and turn-end detection                                                                                                         |
 | `goal/git-ops.test.ts`             | Capture, merge, conflict abort and reset on real repositories                                                                                           |
@@ -156,4 +195,5 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 - Add fields and event types; never change or remove the meaning of an existing one. Old logs must still replay, and the compat test must cover the change.
 - Put every rule the Manager relies on in the reducer. The Manager can then be wrong without corrupting a goal.
 - Use commits, not branch names, for anything stored. Paseo can rename a worktree's branch.
-- Keep new RPCs under the `goal.*` namespace and gated on `server_info.features.goals`.
+- Keep new RPCs under the `goal.*` namespace and gated on `server_info.features.goals`, or `goalControls` for the controls.
+- A new event type breaks an older client's strict event union. `goal-session.ts` leaves such types out of `goal.inspect` for clients without the matching capability (`goal_control_events` covers `goal.paused`, `goal.resumed`, `goal.retried` and `usage.recorded`); add yours there.

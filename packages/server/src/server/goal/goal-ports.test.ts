@@ -4,8 +4,11 @@ import {
   createGoalAgentPort,
   createGoalWorkspacePort,
   settleTurn,
+  toTurnUsage,
+  watchTurn,
   type GoalPortDeps,
 } from "./goal-ports.js";
+import type { AgentManagerEvent } from "../agent/agent-manager.js";
 
 const done = (lastMessage: string) => ({ status: "idle", permission: null, lastMessage });
 const asking = { status: "running", permission: { id: "p1" }, lastMessage: null };
@@ -77,6 +80,33 @@ describe("settleTurn", () => {
     );
     expect(result).toEqual({ outcome: "needs_permission" });
     expect(polls).toBe(2);
+  });
+});
+
+describe("turn usage", () => {
+  test("keeps the last usage the provider reported during the turn", () => {
+    let emit: (event: AgentManagerEvent) => void = () => {};
+    const watcher = watchTurn((listener) => {
+      emit = listener;
+      return () => {};
+    });
+    const stream = (event: unknown) =>
+      emit({ type: "agent_stream", agentId: "a1", event } as unknown as AgentManagerEvent);
+    stream({ type: "usage_updated", provider: "codex", usage: { inputTokens: 5 } });
+    stream({
+      type: "turn_completed",
+      provider: "codex",
+      usage: { inputTokens: 10, outputTokens: 2, totalCostUsd: 0.01, contextWindowMaxTokens: 9 },
+    });
+    // Reported after the turn ended: not this turn's.
+    stream({ type: "usage_updated", provider: "codex", usage: { inputTokens: 99 } });
+    expect(watcher.usage()).toEqual({ inputTokens: 10, outputTokens: 2, costUsd: 0.01 });
+    expect(watcher.end()).toEqual({ type: "turn_completed" });
+  });
+
+  test("a turn without usage, or with only unusable numbers, reports none", () => {
+    expect(toTurnUsage(undefined)).toBeUndefined();
+    expect(toTurnUsage({ inputTokens: Number.NaN, outputTokens: -1 })).toBeUndefined();
   });
 });
 

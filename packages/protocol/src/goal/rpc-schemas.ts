@@ -67,6 +67,40 @@ export const GoalRequestChangesRequestSchema = z.object({
   eventId,
 });
 
+// Goal controls, gated on server_info.features.goalControls.
+
+export const GoalRejectPlanRequestSchema = z.object({
+  type: z.literal("goal.reject_plan.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  // What the Lead should change. Sent to a fresh Lead with the rejected plan.
+  feedback: z.string().optional(),
+  eventId,
+});
+
+export const GoalRetryRequestSchema = z.object({
+  type: z.literal("goal.retry.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  // Omit to retry every failed or cancelled task. A failed goal always retries all of them.
+  taskId: z.string().trim().min(1).optional(),
+  eventId,
+});
+
+export const GoalPauseRequestSchema = z.object({
+  type: z.literal("goal.pause.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  eventId,
+});
+
+export const GoalResumeRequestSchema = z.object({
+  type: z.literal("goal.resume.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  eventId,
+});
+
 const GoalMutationPayloadSchema = z.object({
   requestId: z.string(),
   goal: GoalSchema.nullable(),
@@ -119,5 +153,25 @@ export const GoalApproveChangeSetResponseSchema = z.object({
 
 export const GoalRequestChangesResponseSchema = z.object({
   type: z.literal("goal.request_changes.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalRejectPlanResponseSchema = z.object({
+  type: z.literal("goal.reject_plan.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalRetryResponseSchema = z.object({
+  type: z.literal("goal.retry.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalPauseResponseSchema = z.object({
+  type: z.literal("goal.pause.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalResumeResponseSchema = z.object({
+  type: z.literal("goal.resume.response"),
   payload: GoalMutationPayloadSchema,
 });

@@ -179,8 +179,8 @@ export interface PaseoToolHostDependencies {
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
-  /** daemon.teams, read at startup. Gates list_team_members and send_team_message. */
-  agentTeams?: AgentTeamsConfig;
+  /** Current daemon.teams. Gates list_team_members and send_team_message. */
+  getAgentTeams?: () => AgentTeamsConfig | undefined;
   /** Defaults to one limiter shared by the whole daemon process. */
   teamMessageLimiter?: TeamMessageLimiter;
   /**
@@ -3587,7 +3587,7 @@ function createToolCatalog(
     if (!teamName) {
       throw new PaseoToolInputError(`Team run ${runId} has no team chat`);
     }
-    if (options.agentTeams?.[teamName]?.peerMessaging !== true) {
+    if (options.getAgentTeams?.()?.[teamName]?.peerMessaging !== true) {
       throw new PaseoToolInputError(
         `Team "${teamName}" does not enable peer messaging; set daemon.teams.${teamName}.peerMessaging to true`,
       );

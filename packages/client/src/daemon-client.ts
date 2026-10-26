@@ -6586,6 +6586,82 @@ export class DaemonClient {
     });
   }
 
+  private requireGoalControls(): void {
+    if (this.lastServerInfoMessage?.features?.goalControls !== true) {
+      throw new Error("Update the host to reject plans, retry, pause or resume goals.");
+    }
+  }
+
+  /** Send the proposed plan back; a fresh Lead plans again with the feedback. */
+  async goalRejectPlan(options: {
+    goalId: string;
+    feedback?: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalControls();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.reject_plan.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.reject_plan.request",
+        goalId: options.goalId,
+        ...(options.feedback ? { feedback: options.feedback } : {}),
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** Retry one failed or cancelled task, or all of them; a failed goal is reopened. */
+  async goalRetry(options: {
+    goalId: string;
+    taskId?: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalControls();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.retry.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.retry.request",
+        goalId: options.goalId,
+        ...(options.taskId ? { taskId: options.taskId } : {}),
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalPause(options: {
+    goalId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalControls();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.pause.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.pause.request",
+        goalId: options.goalId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalResume(options: {
+    goalId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalControls();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.resume.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.resume.request",
+        goalId: options.goalId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
   async scheduleCreate(options: CreateScheduleOptions): Promise<ScheduleCreatePayload> {
     return this.sendCorrelatedSessionRequest({
       requestId: options.requestId,

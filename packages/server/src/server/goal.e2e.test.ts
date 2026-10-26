@@ -539,3 +539,51 @@ test("creating a goal fails at once for a directory that is not a git repository
     }),
   ).rejects.toThrow(/is not a git repository/);
 }, 30_000);
+
+test("goal controls: a rejected plan is redone with the feedback, and a paused goal starts nothing until resumed", async () => {
+  const repo = createGitRepo(root);
+  const big = [implementTask("big")];
+  const small = [implementTask("small")];
+  const respond = scriptedAgents(big, (_prompt, cwd) => {
+    writeFileSync(path.join(cwd, "small.txt"), "small\n");
+    return "built small";
+  });
+  const client = await boot((prompt, config) =>
+    prompt.includes("You are the Lead") && prompt.includes("Make it smaller")
+      ? fenced({ tasks: small })
+      : respond?.(prompt, config),
+  );
+  expect(client.getLastServerInfoMessage()?.features?.goalControls).toBe(true);
+  await client.goalCreate({
+    goalId: "g1",
+    title: "Ship",
+    objective: "add small.txt",
+    criteria: ["small.txt exists"],
+    config: managedConfig(repo, { autoApprovePlan: false, branchPrefix: "goals/e2e" }),
+  });
+  await waitFor(
+    () => client.goalInspect("g1"),
+    (r) => r.goal?.status === "awaiting_plan_approval",
+  );
+  await client.goalRejectPlan({ goalId: "g1", feedback: "Make it smaller" });
+  const replanned = await waitFor(
+    () => client.goalInspect("g1"),
+    (r) => r.goal?.status === "awaiting_plan_approval" && r.goal.tasks[0]?.id === "small",
+  );
+  expect(replanned.goal?.planRejections?.map((r) => r.reason)).toEqual(["Make it smaller"]);
+
+  await client.goalPause({ goalId: "g1" });
+  await client.goalApprovePlan({ goalId: "g1" });
+  await client.goalResume({ goalId: "g1" });
+  const done = await waitFor(() => client.goalInspect("g1"), isFinished);
+  expect(done.goal?.status).toBe("completed");
+  expect(done.goal?.pausedAt).toBeNull();
+  expect(done.goal?.integration?.branch).toBe("goals/e2e/g1");
+  expect(done.goal?.usage?.totalTurns).toBeGreaterThan(0);
+
+  // No worker run started while the goal was paused.
+  const types = done.events.map((e) => e.type);
+  const between = types.slice(types.indexOf("goal.paused"), types.indexOf("goal.resumed"));
+  expect(between).not.toContain("run.started");
+  expect(types).toContain("plan.rejected");
+});
