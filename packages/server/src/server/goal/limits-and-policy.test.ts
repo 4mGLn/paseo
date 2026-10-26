@@ -48,7 +48,8 @@ describe("limits and policies", () => {
     await tick();
     const agent = env.goalOf(store).runs[0]?.agentId;
 
-    env.clock.advance(60_001);
+    // Event times come from the real clock, a few milliseconds after the fake one started.
+    env.clock.advance(61_000);
     await tick();
 
     const g = env.goalOf(store);
@@ -262,6 +263,38 @@ describe("limits and policies", () => {
         allowedProviders: ["claude", "codex"],
       }),
     ).resolves.toBeDefined();
+  });
+
+  test("config validation checks the verifier's provider and the absolute deadline", async () => {
+    const validate = createGoalConfigValidator({
+      git: { head: async () => "abc" },
+      knownProviders: () => ["claude", "codex"],
+      now: () => Date.parse("2026-06-01T00:00:00Z"),
+    });
+    await expect(validate({ ...CONFIG, verifyProvider: "mystery" })).rejects.toThrow(
+      /verifyProvider "mystery" is not a registered provider/,
+    );
+    await expect(validate({ ...CONFIG, limits: { deadlineAt: "next tuesday" } })).rejects.toThrow(
+      /is not a date/,
+    );
+    await expect(
+      validate({ ...CONFIG, limits: { deadlineAt: "2026-05-01T00:00:00Z" } }),
+    ).rejects.toThrow(/in the past/);
+    await expect(
+      validate({ ...CONFIG, limits: { deadlineAt: "2026-07-01T00:00:00Z" } }),
+    ).resolves.toBeDefined();
+  });
+
+  test("an absolute deadline earlier than the time limit fails the goal when it passes", async () => {
+    env.script([task("a")], () => "hold");
+    const deadlineAt = new Date(env.clock.now() + 10 * 60_000).toISOString();
+    const { store } = await start(withConfig({ limits: { goalTimeoutMinutes: 60, deadlineAt } }));
+    await tick();
+    env.clock.advance(11 * 60_000);
+    await tick();
+    const g = env.goalOf(store);
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toBe(`Deadline ${deadlineAt} reached`);
   });
 
   // ---- read-only roles --------------------------------------------------

@@ -110,6 +110,7 @@ import {
   AGENT_TEAM_LABEL,
   applyAgentTeamModelOverrides,
   listResolvedAgentTeams,
+  readAgentTeamsConfig,
   resolveAgentTeam,
 } from "./agent/agent-teams.js";
 import { buildAgentTeamRosterPrompt } from "./agent/agent-team-roster.js";
@@ -862,7 +863,6 @@ export class Session {
   private readonly workspaceRecovery: WorkspaceRecoveryService;
   private workspaceBaseBranch: WorkspaceBaseBranchService | undefined;
   private readonly daemonConfigStore: DaemonConfigStore;
-  private readonly daemonRuntimeConfig: DaemonRuntimeConfig | undefined;
   private readonly pushNotifications: PushNotifications;
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   // What worktree setup and teardown commands run through: the plugins' hooks, or none.
@@ -1165,7 +1165,10 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.goalSession = GoalSession.forService({
-      host: { emit: (msg) => this.emit(msg) },
+      host: {
+        emit: (msg) => this.emit(msg),
+        supportsGoalControlEvents: () => this.supports(CLIENT_CAPS.goalControlEvents),
+      },
       goalService,
       logger: this.sessionLogger,
     });
@@ -1288,7 +1291,6 @@ export class Session {
         })
       : null;
     this.daemonConfigStore = daemonConfigStore;
-    this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.terminalManager = terminalManager;
     this.terminalController = new TerminalSessionController({
       terminalManager,
@@ -5002,7 +5004,7 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "agent.teams.list.request" }>,
   ): Promise<void> {
     const { teams, error } = listResolvedAgentTeams({
-      teams: this.daemonRuntimeConfig?.teams,
+      teams: readAgentTeamsConfig(this.daemonConfigStore.get()),
       agentProfiles: this.daemonConfigStore.get().agentProfiles,
     });
     this.emit({
@@ -5040,7 +5042,7 @@ export class Session {
     }
     const team = applyAgentTeamModelOverrides(
       resolveAgentTeam({
-        teams: this.daemonRuntimeConfig?.teams,
+        teams: readAgentTeamsConfig(this.daemonConfigStore.get()),
         agentProfiles: this.daemonConfigStore.get().agentProfiles,
         name: msg.team,
       }),

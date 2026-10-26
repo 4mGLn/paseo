@@ -10,8 +10,12 @@ import {
   runApproveChangeSetCommand,
   runApproveCommand,
   runCancelCommand,
+  runPauseCommand,
   runPlanCommand,
+  runRejectPlanCommand,
   runRequestChangesCommand,
+  runResumeCommand,
+  runRetryCommand,
 } from "./transition.js";
 
 export function createGoalCommand(): Command {
@@ -46,6 +50,14 @@ export function createGoalCommand(): Command {
         "Provider, optionally with a model, for the reviewer and verifier (default: the Lead's)",
       )
       .option(
+        "--verify-provider <provider[/model]>",
+        "Provider, optionally with a model, for the verifier (default: the review provider)",
+      )
+      .option(
+        "--branch-prefix <prefix>",
+        "Integration branch is <prefix>/<goalId> (default paseo-goal)",
+      )
+      .option(
         "--test-command <cmd>",
         "Shell command run after each merge; a failure sends the change back",
       )
@@ -56,6 +68,12 @@ export function createGoalCommand(): Command {
       .option("--run-timeout <minutes>", "Time allowed for any one agent turn (default 60)")
       .option("--goal-timeout <minutes>", "Time allowed for the whole goal (default 1440)")
       .option("--retry-backoff <seconds>", "Pause before a failed task is retried (default 5)")
+      .option("--max-tokens <n>", "Fail the goal once providers report this many tokens")
+      .option("--max-cost <usd>", "Fail the goal once providers report this much cost in USD")
+      .option(
+        "--deadline <iso-time>",
+        "Time the goal must be finished by, e.g. 2026-11-01T18:00:00Z",
+      )
       .option(
         "--on-permission <policy>",
         "When an agent asks for a permission: fail the run, or wait for you to answer in Paseo",
@@ -89,6 +107,35 @@ export function createGoalCommand(): Command {
   addJsonAndDaemonHostOptions(
     goal.command("approve").description("Approve the proposed plan").argument("<id>", "Goal ID"),
   ).action(withOutput(runApproveCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("reject-plan")
+      .description("Send the proposed plan back to a fresh Lead to plan again")
+      .argument("<id>", "Goal ID")
+      .option("--message <text>", "What the new plan should change"),
+  ).action(withOutput(runRejectPlanCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("retry")
+      .description(
+        "Retry failed or cancelled tasks with fresh attempts; reopens a failed goal (retries all of them)",
+      )
+      .argument("<id>", "Goal ID")
+      .option("--task <taskId>", "Retry only this task (a live goal only)"),
+  ).action(withOutput(runRetryCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("pause")
+      .description("Start no new worker runs; runs already going finish")
+      .argument("<id>", "Goal ID"),
+  ).action(withOutput(runPauseCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal.command("resume").description("Resume a paused goal").argument("<id>", "Goal ID"),
+  ).action(withOutput(runResumeCommand));
 
   addJsonAndDaemonHostOptions(
     goal

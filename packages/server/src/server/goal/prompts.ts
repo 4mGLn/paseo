@@ -40,7 +40,25 @@ export function buildLeadPlanningPrompt(goal: Goal): string {
     "Rules: ids are unique; dependsOn lists only ids from this plan and must not form a cycle;",
     "give each implement task a self-contained description, since its agent starts with no other context;",
     "tasks that can run in parallel should not depend on each other.",
+    ...rejectionSection(goal),
   ].join("\n");
+}
+
+/** The last plan a person sent back, with their feedback, so the next plan answers it. */
+function rejectionSection(goal: Goal): string[] {
+  const rejections = goal.planRejections ?? [];
+  const last = rejections.at(-1);
+  if (!last) return [];
+  const feedback = last.reason.trim();
+  return [
+    "",
+    `A person rejected the previous plan${rejections.length > 1 ? ` (rejection ${rejections.length})` : ""}.`,
+    feedback
+      ? `Their feedback, which the new plan must address:\n${feedback}`
+      : "They gave no reason; propose a plan that differs from it.",
+    "",
+    quoteData("The rejected plan:", JSON.stringify({ tasks: last.tasks }, null, 2)),
+  ];
 }
 
 export function buildPlanCorrectionPrompt(problem: string): string {

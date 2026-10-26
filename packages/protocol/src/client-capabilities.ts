@@ -55,6 +55,10 @@ export const CLIENT_CAPS = {
   // Sources without it never receive agent-level background agents in inclusive lists or
   // update subscriptions, because older apps auto-open a tab for every replicated root agent.
   backgroundAgents: "background_agents",
+  // COMPAT(goalControlEvents): added in v0.13.0. The daemon omits goal.paused,
+  // goal.resumed, goal.retried and usage.recorded from goal.inspect events for older
+  // clients whose strict event union rejects them. Remove after 2027-04-26.
+  goalControlEvents: "goal_control_events",
   browserHost: "browser_host",
   // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove after 2027-05-22 once client floor >= v0.17.2.
   // An agent sender's steer means wait-for-turn-end from clients without it, because older
