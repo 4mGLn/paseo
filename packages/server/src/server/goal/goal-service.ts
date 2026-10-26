@@ -30,6 +30,11 @@ export interface CreateGoalInput {
   config?: GoalConfig | null;
 }
 
+/** What the service asks of the Manager before reopening a failed goal. */
+export interface GoalActivityProbe {
+  hasLiveWork(goalId: string): boolean;
+}
+
 export interface GoalInspection {
   goal: Goal;
   events: GoalEvent[];
@@ -40,11 +45,18 @@ export interface GoalInspection {
  * decides anything itself; legality lives in the reducer.
  */
 export class GoalService {
+  private activity: GoalActivityProbe | null = null;
+
   constructor(
     private readonly store: GoalStore,
     private readonly log: GoalEventLog,
     private readonly validateConfig?: GoalConfigValidator,
   ) {}
+
+  /** The Manager is built after the service; it reports whether a goal still has work stopping. */
+  attachActivityProbe(probe: GoalActivityProbe): void {
+    this.activity = probe;
+  }
 
   async start(): Promise<void> {
     await this.store.recover();
@@ -146,19 +158,80 @@ export class GoalService {
     return this.dispatch(goalId, eventId, { type: "goal.cancelled" });
   }
 
+  /** A person sends the proposed plan back; the Lead plans again with the feedback. */
+  rejectPlan(goalId: string, feedback: string | undefined, eventId?: string): Promise<Goal> {
+    return this.dispatch(goalId, eventId, {
+      type: "plan.rejected",
+      reason: feedback?.trim() ?? "",
+    });
+  }
+
+  /** Stop new worker runs from starting. Runs already going finish normally. */
+  async pause(goalId: string, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.paused", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    this.requireManaged(goalId, "pause");
+    return this.dispatch(goalId, eventId, { type: "goal.paused" });
+  }
+
+  async resume(goalId: string, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.resumed", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    this.requireManaged(goalId, "resume");
+    return this.dispatch(goalId, eventId, { type: "goal.resumed" });
+  }
+
+  /**
+   * Retry one failed or cancelled task, or all of them. A failed goal is reopened,
+   * and then every failed and cancelled task is retried whichever one is named.
+   */
+  async retry(goalId: string, taskId: string | undefined, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.retried", taskId ?? "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const goal = this.requireManaged(goalId, "retry");
+    const retryable = goal.tasks
+      .filter((t) => t.status === "failed" || t.status === "cancelled")
+      .map((t) => t.id);
+    const reopen = goal.status === "failed";
+    if (taskId && !retryable.includes(taskId)) {
+      const task = goal.tasks.find((t) => t.id === taskId);
+      throw new Error(
+        task
+          ? `Task ${taskId} is ${task.status}; only a failed or cancelled task can be retried`
+          : `Task ${taskId} not found in goal ${goalId}`,
+      );
+    }
+    if (retryable.length === 0) {
+      throw new Error(`Goal ${goalId} has no failed or cancelled task to retry`);
+    }
+    if (reopen && this.activity?.hasLiveWork(goalId)) {
+      throw new Error("The goal's agents are still stopping; retry again in a moment");
+    }
+    return this.dispatch(goalId, eventId, {
+      type: "goal.retried",
+      taskIds: reopen || !taskId ? retryable : [taskId],
+      reopen,
+      target: taskId ?? "",
+    });
+  }
+
   private async dispatch(
     goalId: string,
     eventId: string | undefined,
     body: Record<string, unknown> & { type: GoalEventInput["type"] },
   ): Promise<Goal> {
     this.requireGoal(goalId);
+    // `target` scopes the client id to what the request acts on; it is not part of the event.
+    const { target, ...fields } = body;
+    const scope = String(target ?? body.changeSetId ?? "");
     const { goal } = await this.store.dispatch(goalId, {
       // Client ids are namespaced so they cannot collide with the Manager's own.
-      id: eventId
-        ? clientEventId(body.type, String(body.changeSetId ?? ""), eventId)
-        : randomUUID(),
+      id: eventId ? clientEventId(body.type, scope, eventId) : randomUUID(),
       goalId,
-      ...body,
+      ...fields,
     } as GoalEventInput);
     return goal;
   }
@@ -176,6 +249,15 @@ export class GoalService {
     if (!eventId) return false;
     this.requireGoal(goalId);
     return this.log.hasEvent(goalId, clientEventId(type, changeSetId, eventId));
+  }
+
+  /** A manual goal runs nothing, so it has nothing to pause, resume or retry. */
+  private requireManaged(goalId: string, action: string): Goal {
+    const goal = this.requireGoal(goalId);
+    if (!goal.config) {
+      throw new Error(`Goal ${goalId} is manual and runs nothing; there is nothing to ${action}`);
+    }
+    return goal;
   }
 
   private requireGoal(goalId: string): Goal {

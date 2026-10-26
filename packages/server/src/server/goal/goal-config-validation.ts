@@ -8,6 +8,8 @@ export interface ConfigValidationDeps {
   git: Pick<GitPort, "head">;
   /** Provider ids the daemon has registered. */
   knownProviders: () => string[];
+  /** Current time in epoch milliseconds; tests supply their own. */
+  now?: () => number;
 }
 
 const baseProvider = (provider: string): string => provider.split("/")[0] ?? provider;
@@ -22,7 +24,16 @@ export function createGoalConfigValidator(deps: ConfigValidationDeps): GoalConfi
       ["leadProvider", config.leadProvider],
       ["defaultProvider", config.defaultProvider],
       ...(config.reviewProvider ? [["reviewProvider", config.reviewProvider]] : []),
+      ...(config.verifyProvider ? [["verifyProvider", config.verifyProvider]] : []),
     ] as const;
+    const deadlineAt = config.limits?.deadlineAt;
+    if (deadlineAt !== undefined) {
+      const at = Date.parse(deadlineAt);
+      if (Number.isNaN(at)) throw new Error(`limits.deadlineAt "${deadlineAt}" is not a date`);
+      if (at <= (deps.now ?? Date.now)()) {
+        throw new Error(`limits.deadlineAt "${deadlineAt}" is in the past`);
+      }
+    }
     const known = deps.knownProviders();
     for (const [field, provider] of used) {
       if (!known.includes(baseProvider(provider))) {

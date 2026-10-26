@@ -38,6 +38,15 @@ export {
 } from "./plugin-config.js";
 import { TerminalProfileSchema } from "./terminal-profile.js";
 export { TerminalProfileSchema, type TerminalProfile } from "./terminal-profile.js";
+import { AgentTeamsConfigWireSchema } from "./agent-team-config.js";
+export {
+  AgentTeamsConfigWireSchema,
+  AgentTeamConfigWireSchema,
+  AgentTeamRoleConfigWireSchema,
+  type AgentTeamsConfigWire,
+  type AgentTeamConfigWire,
+  type AgentTeamRoleConfigWire,
+} from "./agent-team-config.js";
 import { z } from "zod";
 import { TerminalActivitySchema } from "./terminal-activity.js";
 import { CLIENT_CAPS } from "./client-capabilities.js";
@@ -74,6 +83,14 @@ import {
   GoalApproveChangeSetResponseSchema,
   GoalRequestChangesRequestSchema,
   GoalRequestChangesResponseSchema,
+  GoalRejectPlanRequestSchema,
+  GoalRejectPlanResponseSchema,
+  GoalRetryRequestSchema,
+  GoalRetryResponseSchema,
+  GoalPauseRequestSchema,
+  GoalPauseResponseSchema,
+  GoalResumeRequestSchema,
+  GoalResumeResponseSchema,
   GoalCreateResponseSchema,
   GoalListResponseSchema,
   GoalInspectResponseSchema,
@@ -264,6 +281,7 @@ export const MutableDaemonConfigSchema = z
     appendSystemPrompt: z.string().default(""),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    teams: AgentTeamsConfigWireSchema.optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
@@ -292,6 +310,8 @@ export const MutableDaemonConfigPatchSchema = z
     appendSystemPrompt: z.string().optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    // Replaces the whole teams record.
+    teams: AgentTeamsConfigWireSchema.optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     features: SpeechSettingsPatchSchema.optional(),
@@ -3764,6 +3784,10 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   GoalCancelRequestSchema,
   GoalApproveChangeSetRequestSchema,
   GoalRequestChangesRequestSchema,
+  GoalRejectPlanRequestSchema,
+  GoalRetryRequestSchema,
+  GoalPauseRequestSchema,
+  GoalResumeRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -4136,6 +4160,9 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceSortTimes: z.boolean().optional(),
         // COMPAT(goals): added in v0.12.0, remove gate after 2027-10-21.
         goals: z.boolean().optional(),
+        // COMPAT(goalControls): added in v0.13.0, remove gate after 2027-10-26.
+        // goal.reject_plan, goal.retry, goal.pause and goal.resume.
+        goalControls: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
@@ -4165,6 +4192,10 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(agentTeams): added in v0.12.0, remove gate after 2027-10-21.
         // Covers agent.teams.list and the create-agent `team` and `teamModelOverrides` fields.
         agentTeams: z.boolean().optional(),
+        // COMPAT(agentTeamsConfig): added in v0.13.0, remove gate after 2027-10-26.
+        // `teams` in the daemon config get/patch path, applied live. An older daemon
+        // drops `teams` from a patch silently, so the client hides the editor.
+        agentTeamsConfig: z.boolean().optional(),
       })
       .optional(),
   })
@@ -7688,6 +7719,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   GoalCancelResponseSchema,
   GoalApproveChangeSetResponseSchema,
   GoalRequestChangesResponseSchema,
+  GoalRejectPlanResponseSchema,
+  GoalRetryResponseSchema,
+  GoalPauseResponseSchema,
+  GoalResumeResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);
@@ -8208,6 +8243,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.timelineReplacementInvalidation]: z.boolean().optional(),
       [CLIENT_CAPS.timelineNotifications]: z.boolean().optional(),
       [CLIENT_CAPS.backgroundAgents]: z.boolean().optional(),
+      [CLIENT_CAPS.goalControlEvents]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()

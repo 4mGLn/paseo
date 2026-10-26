@@ -1,0 +1,39 @@
+/**
+ * Ranges and defaults for goal settings, in one place for the schema, the daemon,
+ * the CLI and the app's create form. A default of `null` means "off" or "none".
+ */
+export interface GoalNumberBound {
+  min: number;
+  max: number;
+  default: number | null;
+}
+
+export const GOAL_CONFIG_BOUNDS = {
+  maxParallel: { min: 1, max: 8, default: 2 },
+  maxAttempts: { min: 1, max: 5, default: 2 },
+  maxReworkRounds: { min: 0, max: 5, default: 2 },
+  limits: {
+    maxTasks: { min: 1, max: 100, default: 25 },
+    maxRuns: { min: 1, max: 500, default: 60 },
+    runTimeoutMinutes: { min: 1, max: 1440, default: 60 },
+    goalTimeoutMinutes: { min: 1, max: 10080, default: 1440 },
+    retryBackoffSeconds: { min: 0, max: 3600, default: 5 },
+    // Input plus output tokens the providers report, over the goal's life.
+    maxTotalTokens: { min: 1000, max: 10_000_000_000, default: null },
+    // US dollars the providers report, over the goal's life.
+    maxCostUsd: { min: 0.01, max: 100_000, default: null },
+  },
+} as const satisfies {
+  maxParallel: GoalNumberBound;
+  maxAttempts: GoalNumberBound;
+  maxReworkRounds: GoalNumberBound;
+  limits: Record<string, GoalNumberBound>;
+};
+
+/** Prefix of the integration branch, `<prefix>/<goalId>`. */
+export const DEFAULT_GOAL_BRANCH_PREFIX = "paseo-goal";
+
+/** Segments of letters, digits, `.`, `_` and `-`, joined by `/`; no segment starts with `.` or `-`. */
+export const GOAL_BRANCH_PREFIX_PATTERN =
+  /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
+export const GOAL_BRANCH_PREFIX_MAX_LENGTH = 100;

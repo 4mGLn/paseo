@@ -107,6 +107,81 @@ export async function runCancelCommand(
   }
 }
 
+export interface GoalRejectPlanOptions extends GoalCommandOptions {
+  message?: string;
+}
+
+export async function runRejectPlanCommand(
+  id: string,
+  options: GoalRejectPlanOptions,
+  _command: Command,
+): Promise<SingleResult<GoalRow>> {
+  const client = await connectGoalClient(options.daemonTarget);
+  try {
+    return toResult(
+      await client.goalRejectPlan({
+        goalId: id,
+        ...(options.message ? { feedback: options.message } : {}),
+      }),
+    );
+  } catch (error) {
+    throw toGoalCommandError("GOAL_REJECT_PLAN_FAILED", "reject plan", error);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+export interface GoalRetryOptions extends GoalCommandOptions {
+  task?: string;
+}
+
+export async function runRetryCommand(
+  id: string,
+  options: GoalRetryOptions,
+  _command: Command,
+): Promise<SingleResult<GoalRow>> {
+  const client = await connectGoalClient(options.daemonTarget);
+  try {
+    return toResult(
+      await client.goalRetry({ goalId: id, ...(options.task ? { taskId: options.task } : {}) }),
+    );
+  } catch (error) {
+    throw toGoalCommandError("GOAL_RETRY_FAILED", "retry goal", error);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+export async function runPauseCommand(
+  id: string,
+  options: GoalCommandOptions,
+  _command: Command,
+): Promise<SingleResult<GoalRow>> {
+  const client = await connectGoalClient(options.daemonTarget);
+  try {
+    return toResult(await client.goalPause({ goalId: id }));
+  } catch (error) {
+    throw toGoalCommandError("GOAL_PAUSE_FAILED", "pause goal", error);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+export async function runResumeCommand(
+  id: string,
+  options: GoalCommandOptions,
+  _command: Command,
+): Promise<SingleResult<GoalRow>> {
+  const client = await connectGoalClient(options.daemonTarget);
+  try {
+    return toResult(await client.goalResume({ goalId: id }));
+  } catch (error) {
+    throw toGoalCommandError("GOAL_RESUME_FAILED", "resume goal", error);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
 function toResult(payload: { goal: Parameters<typeof toGoalRow>[0] | null; error: string | null }) {
   if (payload.error || !payload.goal) {
     throw new Error(payload.error ?? "Daemon returned no goal");
