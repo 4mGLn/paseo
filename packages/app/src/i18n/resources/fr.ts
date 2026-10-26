@@ -792,7 +792,7 @@ export const fr: TranslationResources = {
         titleRequired: "Décrivez l'objectif ou donnez-lui un titre",
         criteriaRequired: "Ajoutez au moins un critère pour exécuter avec des agents",
         projectRequired: "Choisissez un projet",
-        notGitRepo: "{{path}} n'est pas sous git",
+        notGitRepo: "{{folder}} n'est pas sous git",
         providerRequired: "Choisissez un fournisseur",
         excludesRole: "{{provider}} est utilisé par un rôle mais n'est pas autorisé",
       },

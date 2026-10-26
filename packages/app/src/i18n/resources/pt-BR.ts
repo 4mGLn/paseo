@@ -787,7 +787,7 @@ export const ptBR: TranslationResources = {
         titleRequired: "Descreva a meta ou dê um título a ela",
         criteriaRequired: "Adicione pelo menos um critério para executar com agentes",
         projectRequired: "Escolha um projeto",
-        notGitRepo: "{{path}} não está sob git",
+        notGitRepo: "{{folder}} não está sob git",
         providerRequired: "Escolha um provedor",
         excludesRole: "{{provider}} é usado por uma função, mas não é permitido",
       },

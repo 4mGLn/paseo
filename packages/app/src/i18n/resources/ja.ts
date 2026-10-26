@@ -781,7 +781,7 @@ export const ja: TranslationResources = {
         titleRequired: "ゴールを説明するか、タイトルを付けてください",
         criteriaRequired: "エージェントで実行するには基準を 1 つ以上追加してください",
         projectRequired: "プロジェクトを選択してください",
-        notGitRepo: "{{path}} は git の管理下にありません",
+        notGitRepo: "{{folder}} は git の管理下にありません",
         providerRequired: "プロバイダーを選択してください",
         excludesRole: "{{provider}} はロールで使われていますが、許可されていません",
       },

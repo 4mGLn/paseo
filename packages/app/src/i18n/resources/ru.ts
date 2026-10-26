@@ -797,7 +797,7 @@ export const ru: TranslationResources = {
         titleRequired: "Опишите цель или дайте ей название",
         criteriaRequired: "Добавьте хотя бы один критерий, чтобы выполнять агентами",
         projectRequired: "Выберите проект",
-        notGitRepo: "{{path}} не под управлением git",
+        notGitRepo: "{{folder}} не под управлением git",
         providerRequired: "Выберите провайдера",
         excludesRole: "{{provider}} используется ролью, но не разрешён",
       },

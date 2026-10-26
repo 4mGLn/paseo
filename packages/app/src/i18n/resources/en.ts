@@ -762,7 +762,7 @@ export const en = {
         titleRequired: "Describe the goal or give it a title",
         criteriaRequired: "Add at least one criterion to run with agents",
         projectRequired: "Choose a project",
-        notGitRepo: "{{path}} is not under git",
+        notGitRepo: "{{folder}} is not under git",
         providerRequired: "Choose a provider",
         excludesRole: "{{provider}} is used by a role but not allowed",
       },

@@ -755,7 +755,7 @@ export const zhCN: TranslationResources = {
         titleRequired: "请描述目标或为其设置标题",
         criteriaRequired: "至少添加一条标准才能由 Agent 执行",
         projectRequired: "请选择 project",
-        notGitRepo: "{{path}} 不在 git 管理下",
+        notGitRepo: "{{folder}} 不在 git 管理下",
         providerRequired: "请选择 Provider",
         excludesRole: "{{provider}} 被某个角色使用，但未被允许",
       },

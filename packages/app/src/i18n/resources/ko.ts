@@ -766,7 +766,7 @@ export const ko: TranslationResources = {
         titleRequired: "목표를 설명하거나 제목을 입력하세요",
         criteriaRequired: "에이전트로 실행하려면 기준을 하나 이상 추가하세요",
         projectRequired: "프로젝트를 선택하세요",
-        notGitRepo: "{{path}}은(는) git으로 관리되지 않습니다",
+        notGitRepo: "{{folder}}은(는) git으로 관리되지 않습니다",
         providerRequired: "프로바이더를 선택하세요",
         excludesRole: "{{provider}}은(는) 역할에서 사용하지만 허용되지 않습니다",
       },

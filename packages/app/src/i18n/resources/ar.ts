@@ -784,7 +784,7 @@ export const ar: TranslationResources = {
         titleRequired: "صف الهدف أو أعطه عنوانًا",
         criteriaRequired: "أضف معيارًا واحدًا على الأقل للتشغيل باستخدام الوكلاء",
         projectRequired: "اختر مشروعًا",
-        notGitRepo: "{{path}} ليس تحت إدارة git",
+        notGitRepo: "{{folder}} ليس تحت إدارة git",
         providerRequired: "اختر مزوّدًا",
         excludesRole: "{{provider}} يستخدمه دور لكنه غير مسموح به",
       },
