@@ -20,7 +20,7 @@ import { useRelativeTimeTick } from "@/usage/use-relative-time-tick";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { toErrorMessage } from "@/utils/error-messages";
 import { formatDuration } from "@/utils/time";
-import { GoalBar } from "./goal-bar";
+import { GoalBar, type GoalBarSegment } from "./goal-bar";
 import { TaskStatusIcon } from "./task-status-icon";
 
 export function GoalTaskList({
@@ -93,6 +93,21 @@ export function GoalTaskList({
   );
 }
 
+/** Time a task's change sets spent in one stage, or null when the host recorded none. */
+function stageTotalMs(bar: TaskTimelineBar | null, kind: "review" | "merge"): number | null {
+  const stages = bar?.stages.filter((stage) => stage.kind === kind) ?? [];
+  return stages.length === 0 ? null : stages.reduce((sum, stage) => sum + stage.durationMs, 0);
+}
+
+function stageSegments(bar: TaskTimelineBar): GoalBarSegment[] {
+  return bar.stages.map((stage, index) => ({
+    key: `${stage.kind}-${index}`,
+    kind: stage.kind,
+    offset: stage.offset,
+    fraction: stage.width,
+  }));
+}
+
 function isRetryable(task: Task): boolean {
   return task.status === "failed" || task.status === "cancelled";
 }
@@ -122,6 +137,14 @@ function TaskRow({
   if (task.attempts > 1) {
     meta.push(t("goals.detail.attempts", { n: task.attempts }));
   }
+  const reviewMs = stageTotalMs(bar, "review");
+  if (reviewMs !== null) {
+    meta.push(t("goals.detail.reviewTime", { time: formatDuration(reviewMs) }));
+  }
+  const mergeMs = stageTotalMs(bar, "merge");
+  if (mergeMs !== null) {
+    meta.push(t("goals.detail.mergeTime", { time: formatDuration(mergeMs) }));
+  }
   if (task.rework) {
     meta.push(t("goals.detail.rework", { n: task.rework.round }));
   }
@@ -145,12 +168,13 @@ function TaskRow({
             {task.error}
           </Text>
         ) : null}
-        {bar && bar.width > 0 ? (
+        {bar && (bar.width > 0 || bar.stages.length > 0) ? (
           <View style={styles.timeline}>
             <GoalBar
               fraction={bar.width}
               offset={bar.offset}
               tone={task.status === "failed" ? "danger" : "neutral"}
+              segments={stageSegments(bar)}
             />
           </View>
         ) : null}

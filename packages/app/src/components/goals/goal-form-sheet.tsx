@@ -50,8 +50,8 @@ export function GoalFormSheet({
   const { t } = useTranslation();
   const controlSize: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
   const { createGoal, isCreating } = useGoalMutations({ serverId });
-  // Budget caps ship with the goal controls; a host without them would drop the caps silently.
-  const budgetSupported = useHostFeature(serverId, "goalControls");
+  // A host without `goalBudgets` would drop the caps silently, so the inputs stay hidden there.
+  const budgetSupported = useHostFeature(serverId, "goalBudgets");
   const [snapshot] = useState(() => buildSnapshot({ serverId, prefill, budgetSupported }));
   const model = useGoalFormModel(snapshot);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
