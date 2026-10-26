@@ -174,6 +174,8 @@ export class Harness {
   active = 0;
   peakActive = 0;
   respond: ((turn: Omit<Turn, "resolve">) => TurnResult | "hold") | null = null;
+  /** The thinking option the fake provider reports for an agent created without one. */
+  providerThinking: string | null = null;
   private nextId = 1;
 
   agentPort: ManagerAgentPort = {
@@ -185,7 +187,8 @@ export class Harness {
       }
       const agentId = `agent-${this.nextId++}`;
       this.agents.push({ ...input, agentId });
-      return { agentId };
+      const thinking = input.thinking ?? this.providerThinking;
+      return { agentId, ...(thinking ? { thinking } : {}) };
     },
     runTurn: (agentId, prompt) => {
       const provider = this.agents.find((a) => a.agentId === agentId)?.provider ?? "?";

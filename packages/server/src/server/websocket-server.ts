@@ -1991,6 +1991,7 @@ export class VoiceAssistantWebSocketServer {
               goalBudgets: true,
               goalUpdates: true,
               goalAcknowledge: true,
+              goalThinking: true,
             }
           : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.

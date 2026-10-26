@@ -43,7 +43,7 @@ Without `--cwd` the goal is manual: it records plans and state and nothing runs.
 
 ## Lifecycle
 
-1. **Plan.** The Lead replies with a JSON task graph: ids, titles, descriptions, kinds (`implement`, `review`, `read`), dependencies and optional providers. The Manager checks it (no cycles, known providers, within the task limit, no ids ending in `-rw<n>`) and sends an unusable plan back, up to two times.
+1. **Plan.** The Lead replies with a JSON task graph: ids, titles, descriptions, kinds (`implement`, `review`, `read`), dependencies, optional providers and optional `thinking`. The Manager checks it (no cycles, known providers, thinking ids the task's model lists, within the task limit, no ids ending in `-rw<n>`) and sends an unusable plan back, up to two times.
 2. **Approve.** The goal waits for `paseo goal approve <id>`, or approves itself with `--auto-approve`. `paseo goal reject-plan <id> --message ...` sends the plan back instead: the Lead and its worktree are retired, and a new Lead plans with your feedback and the rejected plan in its prompt. A plan can be rejected 5 times.
 3. **Execute.** Ready tasks start, at most `maxParallel` per goal and 4 across the daemon. Each task gets its own worktree. A task runs on its own provider or the goal's default. Its prompt includes the reports of the tasks it depends on. A failed task is retried after a backoff, up to `maxAttempts` failed attempts. A run interrupted by a restart does not count as a failed attempt.
 4. **Capture.** When an implement task succeeds, its work is committed if needed and recorded as a change set with explicit base and head commits and the changed files. A task that changed nothing is recorded as such.
@@ -71,7 +71,7 @@ The result is the integration branch and its worktree. Nothing is merged into yo
 - **Cancel** is final.
 - **Acknowledge.** `paseo goal ack <id>` (`goal.acknowledge`) dismisses an ended goal so it stops asking for attention. It records a `goal.acknowledged` event and sets `acknowledgedAt`, so the mark survives a restart. It changes nothing else: the status stays, and a failed goal can still be retried. A retry that reopens the goal clears the mark, so its next ending needs attention again. A live goal cannot be acknowledged; acknowledging twice returns the goal unchanged.
 
-Gate each on its own `server_info.features` flag: `goalControls` for pause, resume, retry and plan rejection, `goalAcknowledge` for acknowledge, `goalBudgets` before sending `limits.maxTotalTokens`, `limits.maxCostUsd` or `limits.deadlineAt` (an older daemon drops them silently), and `goalUpdates` for pushes.
+Gate each on its own `server_info.features` flag: `goalControls` for pause, resume, retry and plan rejection, `goalAcknowledge` for acknowledge, `goalBudgets` before sending `limits.maxTotalTokens`, `limits.maxCostUsd` or `limits.deadlineAt` (an older daemon drops them silently), `goalThinking` before sending any thinking field (the client refuses them without it, since an older daemon would drop them), and `goalUpdates` for pushes.
 
 `describeGoalWaitingOn` in `packages/protocol/src/goal/waiting-on.ts` names what a live goal is waiting on (plan approval, a held change set, running tasks, review, merge, retry, verification, or a pause); the CLI and the app both use it. It returns an English `label` for the CLI and a translation `key` (`goals.waitingOn.*`) with `params` (`count`, `ids`, `title`, `tasks`) for the app. Use `count` for plural forms.
 
@@ -106,6 +106,10 @@ Set on `paseo goal create`. Defaults apply when a flag is omitted. Ranges and de
 | `defaultProvider`            | `--provider`         | required   | Provider for tasks that name none                                                                                                       |
 | `reviewProvider`             | `--review-provider`  | the Lead's | Provider for reviewers, and for the verifier unless `verifyProvider` is set                                                             |
 | `verifyProvider`             | `--verify-provider`  | reviewer's | Provider for the verifier                                                                                                               |
+| `leadThinking`               | `--lead-thinking`    | model's    | Thinking option for the Lead                                                                                                            |
+| `workerThinking`             | `--worker-thinking`  | model's    | Thinking option for workers on `defaultProvider`. A task's own `thinking` wins                                                          |
+| `reviewThinking`             | `--review-thinking`  | model's    | Thinking option for reviewers                                                                                                           |
+| `verifyThinking`             | `--verify-thinking`  | model's    | Thinking option for the verifier                                                                                                        |
 | `branchPrefix`               | `--branch-prefix`    | paseo-goal | Integration branch is `<branchPrefix>/<goalId>`. Segments of letters, digits, `.`, `_`, `-` joined by `/`, at most 100 characters       |
 | `maxParallel`                | `--max-parallel`     | 2          | Tasks at once, 1 to 8                                                                                                                   |
 | `maxAttempts`                | `--max-attempts`     | 2          | Tries per task, 1 to 5                                                                                                                  |
@@ -127,7 +131,9 @@ Set on `paseo goal create`. Defaults apply when a flag is omitted. Ranges and de
 
 Every provider field, and a task's `provider` in a plan, takes `<provider>/<model>`, so each role (Lead, workers, reviewer, verifier) can run its own provider and model (`--lead codex/<model>`) as well as a bare provider id. The daemon splits at the first `/`; a bare id starts the provider's default model. `allowedProviders` lists bare provider ids and is matched against the part before the `/`.
 
-Creation fails at once if a provider is not registered, is outside the allow-list, or `cwd` is not a git repository.
+A thinking field holds a thinking option id from the model's catalog (`thinkingOptions[].id`), the same id a chat passes as `thinking`. Unset leaves the model's default. Roles do not inherit each other's thinking, unlike providers: an id belongs to one model, and the roles may run on different ones. For the same reason `workerThinking` applies only to a worker whose provider value is exactly `defaultProvider`; a task on another provider uses its own `thinking` or the model's default. A rework task keeps the original task's `thinking`. Each worker run records the thinking its agent started with as `thinking` (on `run.attached` and the run): the id asked for, or the provider's default when the provider reports one. The Lead, reviewers and the verifier have no run; read their setting from the config. `goalRoleThinking` in `packages/protocol/src/goal/thinking.ts` resolves a role's thinking for display.
+
+Creation fails at once if a provider is not registered, is outside the allow-list, `cwd` is not a git repository, or a thinking id is not one the role's model lists. When the provider's catalog cannot be read, or does not list the model, the id is accepted and the provider decides when the agent starts.
 
 When a limit is reached the goal fails, its agents are cancelled, and the reason is recorded. `paseo goal approve-changeset` and `paseo goal request-changes --message ...` act on changes held by `--require-approval`.
 
@@ -200,7 +206,8 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 | `goal/goal-controls.test.ts`         | Reject plan, pause and resume, retry and reopen, usage totals and budgets, across restarts                                                              |
 | `goal/goal-update-publisher.test.ts` | `goal.update` pushes: sent at once, bursts folded per goal, stopped cleanly                                                                             |
 | `goal/review-fixes.test.ts`          | Regressions from independent review: restarts, stuck turns, base commit, external cancel, backoff slots, test-command runner, integration head, quoting |
-| `goal/goal-ports.test.ts`            | The permission wait loop and turn-end detection                                                                                                         |
+| `goal/goal-ports.test.ts`            | The permission wait loop, turn-end detection, and how provider, model and thinking reach the create path                                                |
+| `goal/goal-thinking.test.ts`         | Per-role thinking: resolution, catalog validation, what each agent and run gets, replay, configs without it                                             |
 | `goal/git-ops.test.ts`               | Capture, merge, conflict abort and reset on real repositories                                                                                           |
 | `goal.e2e.test.ts`                   | A real daemon on real worktrees: full runs, conflicts, failing tests, restarts, renames                                                                 |
 

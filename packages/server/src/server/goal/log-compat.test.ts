@@ -129,6 +129,10 @@ describe("goal logs written by earlier phases", () => {
     expect(GoalSchema.safeParse(goal).success).toBe(true);
     expect(goal).toMatchObject({ leadAgentId: "lead-1", leadWorkspaceId: null });
     expect(goal?.runs[0]).toMatchObject({ id: "a-a1", cwd: null, status: "succeeded" });
+    // Logs from before goal thinking carry no thinking anywhere.
+    expect(goal?.runs[0]).not.toHaveProperty("thinking");
+    expect(goal?.config).not.toHaveProperty("leadThinking");
+    expect(goal?.config).not.toHaveProperty("workerThinking");
   });
 
   test("a log from before notifications were recorded replays with none and sends nothing", async () => {

@@ -1464,12 +1464,15 @@ export async function createPaseoDaemon(
   const goalEventLog = new GoalEventLog({ dir: path.join(config.paseoHome, "goals") });
   const goalStore = new GoalStore(goalEventLog);
   const goalGit = createGitPort();
+  const goalModelCatalog = (provider: string, cwd: string) =>
+    providerSnapshotManager.listModels({ provider, cwd, wait: true });
   const goalService = new GoalService(
     goalStore,
     goalEventLog,
     createGoalConfigValidator({
       git: goalGit,
       knownProviders: () => agentManager.getRegisteredProviderIds(),
+      modelCatalog: goalModelCatalog,
     }),
   );
   await goalService.start();
@@ -1486,6 +1489,7 @@ export async function createPaseoDaemon(
     createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
     archiveWorkspace: archiveScheduleWorkspaceExternal,
     waitForWorkspaceSetup: (workspaceId: string) => workspaceSetupRuntime.wait(workspaceId),
+    modelCatalog: goalModelCatalog,
   };
   const goalManager = new GoalManager({
     store: goalStore,

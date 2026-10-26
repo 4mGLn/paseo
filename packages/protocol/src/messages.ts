@@ -3891,6 +3891,10 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(goalAcknowledge): added in v0.13.0, remove gate after 2027-10-26.
         // goal.acknowledge.
         goalAcknowledge: z.boolean().optional(),
+        // COMPAT(goalThinking): added in v0.13.1, remove gate after 2027-10-26.
+        // Honours leadThinking, workerThinking, reviewThinking, verifyThinking and a task's
+        // `thinking`. Older daemons drop them silently, so send them only when this is set.
+        goalThinking: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),

@@ -6469,6 +6469,18 @@ export class DaemonClient {
     requestId?: string;
   }): Promise<GoalMutationPayload> {
     this.requireGoals();
+    const config = options.config;
+    if (
+      config &&
+      (config.leadThinking ||
+        config.workerThinking ||
+        config.reviewThinking ||
+        config.verifyThinking) &&
+      this.lastServerInfoMessage?.features?.goalThinking !== true
+    ) {
+      // An older daemon would drop the thinking settings and run on model defaults.
+      throw new Error("Update the host to choose a thinking level per goal role.");
+    }
     return this.sendNamespacedCorrelatedSessionRequest<"goal.create.response">({
       requestId: options.requestId,
       message: {

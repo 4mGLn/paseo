@@ -1,5 +1,7 @@
 import type { GoalConfig } from "@getpaseo/protocol/goal/types";
+import { goalRoleProvider } from "@getpaseo/protocol/goal/thinking";
 import type { GitPort } from "./git-ops.js";
+import { assertThinkingOption, type GoalModelCatalog } from "./goal-thinking.js";
 
 /** Returns the config to store: the one given, with the base commit filled in. */
 export type GoalConfigValidator = (config: GoalConfig) => Promise<GoalConfig>;
@@ -8,6 +10,11 @@ export interface ConfigValidationDeps {
   git: Pick<GitPort, "head">;
   /** Provider ids the daemon has registered. */
   knownProviders: () => string[];
+  /**
+   * Model catalog the thinking settings are checked against. Without it, or when it
+   * cannot be read, thinking ids are accepted and the provider decides.
+   */
+  modelCatalog?: GoalModelCatalog;
   /** Current time in epoch milliseconds; tests supply their own. */
   now?: () => number;
 }
@@ -50,6 +57,22 @@ export function createGoalConfigValidator(deps: ConfigValidationDeps): GoalConfi
       head = await deps.git.head(config.cwd);
     } catch {
       throw new Error(`cwd "${config.cwd}" is not a git repository`);
+    }
+    const thinking = [
+      ["leadThinking", "lead", config.leadThinking],
+      ["workerThinking", "worker", config.workerThinking],
+      ["reviewThinking", "reviewer", config.reviewThinking],
+      ["verifyThinking", "verifier", config.verifyThinking],
+    ] as const;
+    for (const [field, role, value] of thinking) {
+      if (value === undefined) continue;
+      await assertThinkingOption({
+        catalog: deps.modelCatalog,
+        providerValue: goalRoleProvider(config, role),
+        thinking: value,
+        cwd: config.cwd,
+        field,
+      });
     }
     return { ...config, baseCommit: config.baseCommit ?? head };
   };

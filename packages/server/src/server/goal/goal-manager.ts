@@ -5,9 +5,11 @@ import type {
   GoalEventInput,
   NotificationTarget,
   Task,
+  TaskSpec,
   TurnUsage,
   UsageRole,
 } from "@getpaseo/protocol/goal/types";
+import { goalRoleProvider, goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import {
   budgetExceeded,
   goalDeadlineMs,
@@ -26,6 +28,12 @@ import type { GoalStore } from "./goal-store.js";
 import { ChangeSetPipeline } from "./change-set-pipeline.js";
 import type { GitPort } from "./git-ops.js";
 import { PlanParseError, extractPlan } from "./plan-extract.js";
+import {
+  GoalThinkingError,
+  assertThinkingOption,
+  thinkingInput,
+  type GoalModelCatalog,
+} from "./goal-thinking.js";
 import { buildReworkPrompt } from "./review.js";
 import {
   buildLeadNotification,
@@ -52,11 +60,14 @@ export interface CreateGoalAgentInput {
   workspaceId: string;
   title: string;
   labels: Record<string, string>;
+  /** Thinking option id; absent leaves the model's default. */
+  thinking?: string;
 }
 
 /** What the Manager needs from Paseo's agent layer. */
 export interface ManagerAgentPort {
-  createAgent(input: CreateGoalAgentInput): Promise<{ agentId: string }>;
+  /** `thinking` is the agent's thinking option once created, when known. */
+  createAgent(input: CreateGoalAgentInput): Promise<{ agentId: string; thinking?: string }>;
   /**
    * Sends the prompt and resolves when the agent's turn ends. When the agent asks
    * for a permission, `fail` returns `needs_permission` and `wait` keeps waiting
@@ -75,6 +86,8 @@ export interface ManagerAgentPort {
   notify(agentId: string, text: string): Promise<void>;
   /** Provider ids a plan may name. */
   knownProviders(): string[];
+  /** Model catalog a plan's thinking ids are checked against; absent accepts them. */
+  modelCatalog?: GoalModelCatalog;
 }
 
 export interface CreateGoalWorkspaceInput {
@@ -508,6 +521,7 @@ export class GoalManager {
       const { agentId } = await this.agents
         .createAgent({
           provider: config.leadProvider,
+          ...thinkingInput(goalRoleThinking(config, "lead")),
           cwd: workspace.cwd,
           workspaceId: workspace.workspaceId,
           title: `Lead: ${goal.title}`,
@@ -559,6 +573,7 @@ export class GoalManager {
           this.providersFor(goal),
           resolveLimits(goal.config).maxTasks,
         );
+        await this.checkPlanThinking(goal, tasks);
         await this.dispatch(goal.id, {
           id: `${goal.id}:plan-proposed:${goal.lastSeq}:${attempt}`,
           goalId: goal.id,
@@ -567,12 +582,27 @@ export class GoalManager {
         });
         return;
       } catch (error) {
-        if (!(error instanceof PlanParseError)) throw error;
+        if (!(error instanceof PlanParseError || error instanceof GoalThinkingError)) throw error;
         problem = error.message;
         prompt = buildPlanCorrectionPrompt(problem);
       }
     }
     await this.failGoal(goal.id, `Lead did not produce a valid plan: ${problem}`);
+  }
+
+  /** A task's thinking id must be one its model lists, when the catalog knows the model. */
+  private async checkPlanThinking(goal: Goal, tasks: readonly TaskSpec[]): Promise<void> {
+    if (!goal.config) return;
+    for (const task of tasks) {
+      if (!task.thinking) continue;
+      await assertThinkingOption({
+        catalog: this.agents.modelCatalog,
+        providerValue: goalRoleProvider(goal.config, "worker", task),
+        thinking: task.thinking,
+        cwd: goal.config.cwd,
+        field: `Task ${task.id} thinking`,
+      });
+    }
   }
 
   /** Providers a plan may name: the registered ones, narrowed by the goal's allow-list. */
@@ -719,8 +749,9 @@ export class GoalManager {
       live.cwd = workspace.cwd;
       if (!alive()) return await this.abandon(live, this.stopped);
 
-      const { agentId } = await this.agents.createAgent({
+      const { agentId, thinking } = await this.agents.createAgent({
         provider,
+        ...thinkingInput(goalRoleThinking(goal.config, "worker", task)),
         cwd: workspace.cwd,
         workspaceId: workspace.workspaceId,
         title: `${goal.title}: ${task.title}`,
@@ -740,6 +771,7 @@ export class GoalManager {
         agentId,
         workspaceId: workspace.workspaceId,
         cwd: workspace.cwd,
+        ...(thinking ? { thinking } : {}),
       });
       if (!attached || !alive()) return await this.abandon(live, this.stopped);
 
