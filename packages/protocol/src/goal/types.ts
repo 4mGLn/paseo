@@ -1,5 +1,15 @@
 import { z } from "zod";
 import { AgentProviderSchema } from "../provider-manifest.js";
+import {
+  GOAL_BRANCH_PREFIX_MAX_LENGTH,
+  GOAL_BRANCH_PREFIX_PATTERN,
+  GOAL_CONFIG_BOUNDS as B,
+  type GoalNumberBound,
+} from "./config-bounds.js";
+
+function boundedInt(bound: GoalNumberBound) {
+  return z.number().int().min(bound.min).max(bound.max);
+}
 
 export const GoalStatusSchema = z.enum([
   "planning",
@@ -49,6 +59,9 @@ export const TaskSchema = TaskSpecSchema.extend({
   rework: ReworkSchema.optional(),
   // For an implement task: its work has been captured as a change set, or recorded as empty.
   captured: z.boolean().optional(),
+  // Failed runs before the last retry a person asked for. They no longer count
+  // against maxAttempts. Absent when the task was never retried by hand.
+  forgivenFailures: z.number().int().nonnegative().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -61,31 +74,48 @@ export const GoalConfigSchema = z.object({
   leadProvider: AgentProviderSchema,
   // Used for tasks that do not name a provider.
   defaultProvider: AgentProviderSchema,
-  maxParallel: z.number().int().min(1).max(8),
-  maxAttempts: z.number().int().min(1).max(5),
+  maxParallel: boundedInt(B.maxParallel),
+  maxAttempts: boundedInt(B.maxAttempts),
   autoApprovePlan: z.boolean(),
   // Send the Lead a message when a task fails for good or all tasks finish.
   notifyLead: z.boolean(),
-  // Provider for the independent reviewer and the criteria verifier. Defaults to the Lead's.
+  // Provider for the independent reviewer, and for the verifier unless verifyProvider is set.
+  // Defaults to the Lead's.
   reviewProvider: AgentProviderSchema.optional(),
+  // Provider for the criteria verifier. Defaults to reviewProvider, then the Lead's.
+  verifyProvider: AgentProviderSchema.optional(),
   // Shell command run in the integration worktree after each merge. A non-zero exit rejects the merge.
   testCommand: z.string().trim().min(1).optional(),
   // Hold every reviewed change set until a person approves it.
   requireHumanApproval: z.boolean().optional(),
   // Review, conflict and test-failure rework rounds allowed per change.
-  maxReworkRounds: z.number().int().min(0).max(5).optional(),
+  maxReworkRounds: boundedInt(B.maxReworkRounds).optional(),
+  // The integration branch is `<branchPrefix>/<goalId>`. Defaults to DEFAULT_GOAL_BRANCH_PREFIX.
+  branchPrefix: z
+    .string()
+    .trim()
+    .min(1)
+    .max(GOAL_BRANCH_PREFIX_MAX_LENGTH)
+    .regex(GOAL_BRANCH_PREFIX_PATTERN)
+    .optional(),
   limits: z
     .object({
       // Tasks in a plan.
-      maxTasks: z.number().int().min(1).max(100).optional(),
+      maxTasks: boundedInt(B.limits.maxTasks).optional(),
       // Agent runs over the goal's lifetime, retries and rework included.
-      maxRuns: z.number().int().min(1).max(500).optional(),
+      maxRuns: boundedInt(B.limits.maxRuns).optional(),
       // Wall-clock time for any one agent turn.
-      runTimeoutMinutes: z.number().int().min(1).max(1440).optional(),
+      runTimeoutMinutes: boundedInt(B.limits.runTimeoutMinutes).optional(),
       // Wall-clock time from creation until the goal must be finished.
-      goalTimeoutMinutes: z.number().int().min(1).max(10080).optional(),
+      goalTimeoutMinutes: boundedInt(B.limits.goalTimeoutMinutes).optional(),
       // Pause before a failed task is retried, multiplied by the attempt number.
-      retryBackoffSeconds: z.number().int().min(0).max(3600).optional(),
+      retryBackoffSeconds: boundedInt(B.limits.retryBackoffSeconds).optional(),
+      // Input plus output tokens the providers report over the goal's life.
+      maxTotalTokens: boundedInt(B.limits.maxTotalTokens).optional(),
+      // US dollars the providers report over the goal's life.
+      maxCostUsd: z.number().min(B.limits.maxCostUsd.min).max(B.limits.maxCostUsd.max).optional(),
+      // ISO 8601 time the goal must be finished by, in addition to goalTimeoutMinutes.
+      deadlineAt: z.string().trim().min(1).optional(),
     })
     .optional(),
   // What to do when an unattended agent asks for a permission: fail the run, or leave
@@ -99,6 +129,33 @@ export const GoalConfigSchema = z.object({
 export type GoalConfig = z.infer<typeof GoalConfigSchema>;
 
 export const RunStatusSchema = z.enum(["running", "succeeded", "failed", "interrupted"]);
+
+// What a provider reported for one agent turn. Any field may be missing: providers
+// report different subsets, and some report nothing.
+export const TurnUsageSchema = z.object({
+  inputTokens: z.number().nonnegative().optional(),
+  cachedInputTokens: z.number().nonnegative().optional(),
+  outputTokens: z.number().nonnegative().optional(),
+  costUsd: z.number().nonnegative().optional(),
+});
+export type TurnUsage = z.infer<typeof TurnUsageSchema>;
+
+// Usage summed over turns. `reportedTurns` of `totalTurns` agent turns came with usage;
+// the totals cover only those.
+export const UsageTotalsSchema = z.object({
+  inputTokens: z.number().nonnegative(),
+  cachedInputTokens: z.number().nonnegative(),
+  outputTokens: z.number().nonnegative(),
+  // inputTokens + outputTokens; what limits.maxTotalTokens is checked against.
+  totalTokens: z.number().nonnegative(),
+  costUsd: z.number().nonnegative(),
+  reportedTurns: z.number().int().nonnegative(),
+  totalTurns: z.number().int().nonnegative(),
+});
+export type UsageTotals = z.infer<typeof UsageTotalsSchema>;
+
+export const UsageRoleSchema = z.enum(["lead", "worker", "reviewer", "verifier"]);
+export type UsageRole = z.infer<typeof UsageRoleSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 // One execution attempt of a task by one agent. Tracked apart from the task so
@@ -115,6 +172,8 @@ export const AgentRunSchema = z.object({
   startedAt: z.string(),
   endedAt: z.string().nullable(),
   error: z.string().nullable(),
+  // Usage of this run's turns. Absent until a turn of the run is recorded.
+  usage: UsageTotalsSchema.optional(),
 });
 export type AgentRun = z.infer<typeof AgentRunSchema>;
 
@@ -200,6 +259,14 @@ export const NotificationSchema = z.object({
 });
 export type Notification = z.infer<typeof NotificationSchema>;
 
+// A plan a person sent back to the Lead, and why.
+export const PlanRejectionSchema = z.object({
+  reason: z.string(),
+  tasks: z.array(TaskSpecSchema),
+  at: z.string(),
+});
+export type PlanRejection = z.infer<typeof PlanRejectionSchema>;
+
 export const GoalSchema = z.object({
   id: IdSchema,
   title: z.string().trim().min(1),
@@ -216,6 +283,15 @@ export const GoalSchema = z.object({
   integration: IntegrationSchema.nullable(),
   // Absent from daemons that predate recorded notifications.
   notifications: z.array(NotificationSchema).optional(),
+  // When the goal was paused; null or absent while it runs. A paused goal starts no worker runs.
+  pausedAt: z.string().nullable().optional(),
+  // Plans sent back to the Lead, oldest first. Absent from daemons without goal controls.
+  planRejections: z.array(PlanRejectionSchema).optional(),
+  // Times a failed goal was reopened by a retry.
+  reopens: z.number().int().nonnegative().optional(),
+  // Usage of every agent turn: Lead, workers, reviewers, verifier. Absent until the
+  // first turn is recorded, and from daemons that predate usage tracking.
+  usage: UsageTotalsSchema.optional(),
   // Sequence number of the last event folded into this state.
   lastSeq: z.number().int().nonnegative(),
   failureReason: z.string().nullable(),
@@ -275,6 +351,7 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     tasks: z.array(TaskSpecSchema),
   }),
   z.object({ ...eventEnvelope, type: z.literal("plan.approved") }),
+  // `reason` is the person's feedback for the Lead; it may be empty.
   z.object({ ...eventEnvelope, type: z.literal("plan.rejected"), reason: z.string() }),
   z.object({ ...eventEnvelope, type: z.literal("task.started"), taskId: IdSchema }),
   z.object({
@@ -370,6 +447,27 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventEnvelope, type: z.literal("goal.completed") }),
   z.object({ ...eventEnvelope, type: z.literal("goal.failed"), reason: z.string() }),
   z.object({ ...eventEnvelope, type: z.literal("goal.cancelled") }),
+  // One agent turn ended. `usage` is what the provider reported, absent when it reported
+  // nothing. `runId` is set for a worker run's turn.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("usage.recorded"),
+    role: UsageRoleSchema,
+    agentId: z.string().min(1),
+    runId: IdSchema.optional(),
+    usage: TurnUsageSchema.optional(),
+  }),
+  // A person stops new worker runs from starting, then lets them start again.
+  z.object({ ...eventEnvelope, type: z.literal("goal.paused") }),
+  z.object({ ...eventEnvelope, type: z.literal("goal.resumed") }),
+  // A person retries failed or cancelled tasks. `reopen` is set when the goal had
+  // failed and goes back to executing; it then covers every failed and cancelled task.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("goal.retried"),
+    taskIds: z.array(IdSchema).min(1),
+    reopen: z.boolean(),
+  }),
 ]);
 export type GoalEvent = z.infer<typeof GoalEventSchema>;
 export type GoalEventType = GoalEvent["type"];

@@ -29,12 +29,15 @@ describe("GoalSession", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  async function openSession(): Promise<GoalSession> {
+  async function openSession(controlEvents?: boolean): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
     await service.start();
     return new GoalSession({
-      host: { emit: (msg) => emitted.push(msg) },
+      host: {
+        emit: (msg) => emitted.push(msg),
+        ...(controlEvents === undefined ? {} : { supportsGoalControlEvents: () => controlEvents }),
+      },
       goalService: service,
       logger: pino({ level: "silent" }),
     });
@@ -146,4 +149,77 @@ describe("GoalSession", () => {
     };
     expect(list.payload.goals.map((g) => g.id)).toEqual(["g1"]);
   });
+
+  test("rejects a plan with feedback, pauses and resumes, and refuses to retry a manual goal", async () => {
+    const session = await openSession();
+    await send(session, {
+      type: "goal.create.request",
+      requestId: "r1",
+      goalId: "g1",
+      title: "T",
+      objective: "",
+      criteria: [],
+    });
+    await send(session, {
+      type: "goal.propose_plan.request",
+      requestId: "r2",
+      goalId: "g1",
+      tasks: [task("a")],
+    });
+    await send(session, {
+      type: "goal.reject_plan.request",
+      requestId: "r3",
+      goalId: "g1",
+      feedback: "smaller steps",
+    });
+    await send(session, { type: "goal.retry.request", requestId: "r4", goalId: "g1" });
+    const rejected = emitted.find((m) => m.type === "goal.reject_plan.response") as {
+      payload: { goal: { status: string; planRejections: { reason: string }[] } };
+    };
+    expect(rejected.payload.goal.status).toBe("planning");
+    expect(rejected.payload.goal.planRejections.map((r) => r.reason)).toEqual(["smaller steps"]);
+    const error = emitted.find((m) => m.type === "rpc_error") as {
+      payload: { requestId: string; error: string };
+    };
+    expect(error.payload).toMatchObject({ requestId: "r4" });
+    expect(error.payload.error).toMatch(/manual/);
+  });
+
+  for (const [label, capable, expected] of [
+    ["sends", true, ["goal.created", "goal.paused", "goal.resumed"]],
+    ["omits", false, ["goal.created"]],
+  ] as const) {
+    test(`${label} goal control events to clients ${capable ? "with" : "without"} the capability`, async () => {
+      const session = await openSession(capable);
+      await send(session, {
+        type: "goal.create.request",
+        requestId: "r1",
+        goalId: "g1",
+        title: "T",
+        objective: "",
+        criteria: ["works"],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "codex",
+          maxParallel: 1,
+          maxAttempts: 1,
+          autoApprovePlan: false,
+          notifyLead: false,
+        },
+      });
+      await send(session, { type: "goal.pause.request", requestId: "r2", goalId: "g1" });
+      await send(session, { type: "goal.resume.request", requestId: "r3", goalId: "g1" });
+      await send(session, { type: "goal.inspect.request", requestId: "r4", goalId: "g1" });
+      const paused = emitted.find((m) => m.type === "goal.pause.response") as {
+        payload: { goal: { pausedAt: string | null } };
+      };
+      expect(paused.payload.goal.pausedAt).toBeTruthy();
+      const inspected = emitted.find((m) => m.type === "goal.inspect.response") as {
+        payload: { events: { type: string }[]; goal: { pausedAt: string | null } };
+      };
+      expect(inspected.payload.goal.pausedAt).toBeNull();
+      expect(inspected.payload.events.map((e) => e.type)).toEqual(expected);
+    });
+  }
 });

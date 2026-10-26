@@ -5,12 +5,21 @@ import type {
   GoalEventInput,
   NotificationTarget,
   Task,
+  TurnUsage,
+  UsageRole,
 } from "@getpaseo/protocol/goal/types";
-import { systemClock, resolveLimits, type Clock } from "./goal-limits.js";
+import {
+  budgetExceeded,
+  goalDeadlineMs,
+  resolveLimits,
+  systemClock,
+  type Clock,
+} from "./goal-limits.js";
 import {
   GoalTransitionError,
   MAX_NOTIFICATION_ATTEMPTS,
   NOTIFICATION_BACKOFF_MS,
+  countedFailures,
   isTerminalGoalStatus,
 } from "./goal-reducer.js";
 import type { GoalStore } from "./goal-store.js";
@@ -27,11 +36,15 @@ import {
 } from "./prompts.js";
 import { blockedTasks, readyTasks } from "./task-graph.js";
 
-export type TurnResult =
+export type TurnResult = (
   | { outcome: "completed"; text: string }
   | { outcome: "failed"; error: string }
   | { outcome: "canceled" }
-  | { outcome: "needs_permission" };
+  | { outcome: "needs_permission" }
+) & {
+  /** What the provider reported for the turn; absent when it reported nothing. */
+  usage?: TurnUsage;
+};
 
 export interface CreateGoalAgentInput {
   provider: string;
@@ -180,7 +193,7 @@ export class GoalManager {
         failGoal: (goalId, reason) => this.failGoal(goalId, reason),
         requestPump: (goalId) => this.track(this.pump(goalId)),
         discard: (agentId, workspaceId) => this.discard(agentId, workspaceId),
-        runTurn: (goalId, agentId, prompt) => this.turn(goalId, agentId, prompt),
+        runTurn: (goalId, agentId, prompt, role) => this.turn(goalId, agentId, prompt, { role }),
         notifyLeadFinal: (goal, text) => this.track(this.notifyLeadFinal(goal, text)),
       },
     });
@@ -227,24 +240,18 @@ export class GoalManager {
   /** Fail the goal when its overall time limit passes. */
   private armDeadline(goal: Goal): void {
     if (!goal.config || this.deadlines.has(goal.id)) return;
-    const { goalTimeoutMs } = resolveLimits(goal.config);
-    const remaining = Date.parse(goal.createdAt) + goalTimeoutMs - this.clock.now();
+    const remaining = goalDeadlineMs(goal) - this.clock.now();
     const cancel = this.clock.setTimeout(
       () => {
         this.deadlines.delete(goal.id);
         const current = this.store.get(goal.id);
         if (!current || isTerminalGoalStatus(current.status) || this.stopped) return;
         // Timers cannot wait longer than about 24 days; if the clock jumped, look again.
-        if (Date.parse(current.createdAt) + goalTimeoutMs - this.clock.now() > 0) {
+        if (goalDeadlineMs(current) - this.clock.now() > 0) {
           this.armDeadline(current);
           return;
         }
-        this.track(
-          this.failGoal(
-            goal.id,
-            `Time limit of ${Math.round(goalTimeoutMs / 60_000)} minutes reached`,
-          ),
-        );
+        this.track(this.failGoal(goal.id, describeDeadline(current)));
       },
       Math.min(Math.max(0, remaining), MAX_TIMER_MS),
     );
@@ -285,6 +292,12 @@ export class GoalManager {
     this.retries.set(key, cancel);
   }
 
+  private cancelRetry(goalId: string, taskId: string): void {
+    const key = `${goalId}:${taskId}`;
+    this.retries.get(key)?.();
+    this.retries.delete(key);
+  }
+
   private cancelRetries(goalId: string): void {
     for (const [key, cancel] of this.retries) {
       if (!key.startsWith(`${goalId}:`)) continue;
@@ -297,7 +310,30 @@ export class GoalManager {
    * One agent turn under the goal's time limit and permission policy. A turn
    * that overruns is cancelled and reported as a failure.
    */
-  private async turn(goalId: string, agentId: string, prompt: string): Promise<TurnResult> {
+  private async turn(
+    goalId: string,
+    agentId: string,
+    prompt: string,
+    usage: { role: UsageRole; runId?: string },
+  ): Promise<TurnResult> {
+    // Keyed by the goal's position when the turn started: one agent never starts two turns there.
+    const usageEventId = `${goalId}:usage:${agentId}:${this.store.get(goalId)?.lastSeq ?? 0}`;
+    const result = await this.timedTurn(goalId, agentId, prompt);
+    if (!this.stopped) {
+      await this.dispatch(goalId, {
+        id: usageEventId,
+        goalId,
+        type: "usage.recorded",
+        role: usage.role,
+        agentId,
+        ...(usage.runId ? { runId: usage.runId } : {}),
+        ...(result.usage ? { usage: result.usage } : {}),
+      });
+    }
+    return result;
+  }
+
+  private async timedTurn(goalId: string, agentId: string, prompt: string): Promise<TurnResult> {
     const config = this.store.get(goalId)?.config;
     const { runTimeoutMs } = resolveLimits(config);
     const minutes = Math.round(runTimeoutMs / 60_000);
@@ -405,7 +441,26 @@ export class GoalManager {
         this.track(this.pipeline.abort(goal.id));
         break;
       default:
+        this.onControlEvent(goal, event);
         break;
+    }
+  }
+
+  /** Reactions to a person's controls and to recorded usage. */
+  private onControlEvent(goal: Goal, event: GoalEvent): void {
+    if (event.type === "goal.resumed") {
+      this.track(this.pump(goal.id));
+    } else if (event.type === "goal.retried") {
+      for (const taskId of event.taskIds) this.cancelRetry(goal.id, taskId);
+      if (event.reopen) {
+        this.armDeadline(goal);
+        this.track(this.resumeReopened(goal.id));
+      } else {
+        this.track(this.pump(goal.id));
+      }
+    } else if (event.type === "usage.recorded") {
+      const overBudget = budgetExceeded(goal);
+      if (overBudget) this.track(this.failGoal(goal.id, overBudget));
     }
   }
 
@@ -492,7 +547,7 @@ export class GoalManager {
     let prompt = buildLeadPlanningPrompt(goal);
     let problem = "";
     for (let attempt = 0; attempt < MAX_PLAN_ATTEMPTS; attempt += 1) {
-      const result = await this.turn(goal.id, agentId, prompt);
+      const result = await this.turn(goal.id, agentId, prompt, { role: "lead" });
       if (this.stopped || lead.canceled || this.store.get(goal.id)?.status !== "planning") return;
       if (result.outcome !== "completed") {
         await this.failGoal(goal.id, `Lead agent did not finish planning (${result.outcome}).`);
@@ -563,6 +618,8 @@ export class GoalManager {
     if (this.stopped) return;
     const goal = this.store.get(goalId);
     if (!goal?.config || goal.status !== "executing") return;
+    // A paused goal starts nothing, and is neither completed nor failed for being stuck.
+    if (goal.pausedAt) return;
 
     for (const task of this.launchable(goal)) {
       // Capacity is re-read on every pass: a launch claims its slot before it
@@ -586,6 +643,11 @@ export class GoalManager {
     const { maxRuns } = resolveLimits(goal.config);
     if (goal.runs.length >= maxRuns) {
       await this.failGoal(goalId, `Run limit of ${maxRuns} reached`);
+      return;
+    }
+    const overBudget = budgetExceeded(goal);
+    if (overBudget) {
+      await this.failGoal(goalId, overBudget);
       return;
     }
     const runId = `${task.id}-a${task.attempts + 1}`;
@@ -681,7 +743,10 @@ export class GoalManager {
       });
       if (!attached || !alive()) return await this.abandon(live, this.stopped);
 
-      const result = await this.turn(goalId, agentId, this.promptFor(goal, task));
+      const result = await this.turn(goalId, agentId, this.promptFor(goal, task), {
+        role: "worker",
+        runId,
+      });
       if (this.stopped) return;
       if (live.canceled || !this.isGoalLive(goalId)) return await this.abandon(live, false);
 
@@ -831,7 +896,7 @@ export class GoalManager {
     if (goal?.config && task) {
       // Only attempts that failed count against the limit: a restart interrupts a
       // run without the provider having failed.
-      const failed = failedAttempts(goal, taskId);
+      const failed = countedFailures(goal, taskId);
       if (failed < goal.config.maxAttempts) {
         // Give a struggling provider a moment before trying again, longer each time.
         await this.scheduleRetry(
@@ -841,9 +906,11 @@ export class GoalManager {
           resolveLimits(goal.config).retryBackoffMs * failed,
         );
       } else {
+        // A task retried by hand can fail for good again; that is a new notice.
+        const forgiven = task.forgivenFailures ?? 0;
         await this.notifyLeadOnce(
           goal,
-          `task-${task.id}-failed`,
+          `task-${task.id}-failed${forgiven > 0 ? `-after-${forgiven}` : ""}`,
           `task ${task.id} failed after ${failed} attempts: ${error}`,
         );
       }
@@ -903,6 +970,32 @@ export class GoalManager {
     if (leadWorkspace) await this.discard(null, leadWorkspace);
   }
 
+  // ---- reopening ---------------------------------------------------------
+
+  /**
+   * True while anything of this goal still runs in this process. The service
+   * refuses to reopen a failed goal until its stopping work has settled.
+   */
+  hasLiveWork(goalId: string): boolean {
+    return (
+      this.liveRunsFor(goalId) > 0 || this.leads.has(goalId) || this.pipeline.hasLiveWork(goalId)
+    );
+  }
+
+  /**
+   * A failed goal was reopened. Nothing of it runs any more, so pick up its change
+   * sets where the failure left them, as after a restart, then schedule.
+   */
+  private async resumeReopened(goalId: string): Promise<void> {
+    try {
+      await this.pipeline.recover(goalId);
+    } catch (error) {
+      if (!this.stopped) await this.failGoal(goalId, `Reopening failed: ${errorMessage(error)}`);
+      return;
+    }
+    await this.pump(goalId);
+  }
+
   // ---- recovery ---------------------------------------------------------
 
   /** Close out work the previous daemon process left half done, then resume. */
@@ -943,7 +1036,7 @@ export class GoalManager {
       const strandedFailure =
         task.status === "failed" &&
         goal !== undefined &&
-        failedAttempts(goal, task.id) < maxAttempts;
+        countedFailures(goal, task.id) < maxAttempts;
       if (!interrupted && !strandedFailure) continue;
       await this.dispatch(goalId, {
         id: `${goalId}:${task.id}-a${task.attempts}:recovered-${task.status}`,
@@ -989,10 +1082,12 @@ export class GoalManager {
   /** Tell the chat the goal was started from how it ended, once, as the goal ends. */
   private async notifyOrigin(goal: Goal, outcome: string): Promise<void> {
     if (!goal.config?.originAgentId) return;
+    // A reopened goal ends again, and that ending is a new notice.
+    const key = goal.reopens ? `goal-ended-r${goal.reopens}` : "goal-ended";
     await this.deliver(goal.id, {
-      id: `${goal.id}:notification:origin:goal-ended`,
+      id: `${goal.id}:notification:origin:${key}`,
       target: "origin",
-      key: "goal-ended",
+      key,
       text: buildLeadNotification(goal, outcome),
     });
   }
@@ -1105,9 +1200,12 @@ export class GoalManager {
   }
 }
 
-/** Runs of a task that ended in failure; interrupted and cancelled runs do not count. */
-function failedAttempts(goal: Goal, taskId: string): number {
-  return goal.runs.filter((r) => r.taskId === taskId && r.status === "failed").length;
+function describeDeadline(goal: Goal): string {
+  const { goalTimeoutMs } = resolveLimits(goal.config);
+  const byTimeout = Date.parse(goal.createdAt) + goalTimeoutMs;
+  return goalDeadlineMs(goal) < byTimeout
+    ? `Deadline ${goal.config?.limits?.deadlineAt} reached`
+    : `Time limit of ${Math.round(goalTimeoutMs / 60_000)} minutes reached`;
 }
 
 /** Work builds on what is integrated so far, or else on the commit the goal started from. */

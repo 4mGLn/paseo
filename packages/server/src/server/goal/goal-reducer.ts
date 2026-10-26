@@ -7,8 +7,11 @@ import type {
   GoalStatus,
   Notification,
   Task,
+  TaskSpec,
+  TurnUsage,
+  UsageTotals,
 } from "@getpaseo/protocol/goal/types";
-import { resolveLimits } from "./goal-limits.js";
+import { budgetExceeded, goalDeadlineMs, resolveLimits } from "./goal-limits.js";
 import { readyTasks, validateTaskGraph } from "./task-graph.js";
 
 export class GoalTransitionError extends Error {
@@ -36,8 +39,29 @@ export const MAX_NOTIFICATION_ATTEMPTS = 5;
  */
 export const NOTIFICATION_BACKOFF_MS = [5_000, 30_000, 120_000, 300_000];
 
+/** Times a person may send a goal's plan back to the Lead. */
+export const MAX_PLAN_REJECTIONS = 5;
+
 export function isTerminalGoalStatus(status: GoalStatus): boolean {
   return TERMINAL_GOAL_STATUSES.has(status);
+}
+
+/** Runs of a task that failed since a person last retried it; these count against maxAttempts. */
+export function countedFailures(goal: Goal, taskId: string): number {
+  const failed = goal.runs.filter((r) => r.taskId === taskId && r.status === "failed").length;
+  const forgiven = goal.tasks.find((t) => t.id === taskId)?.forgivenFailures ?? 0;
+  return failed - forgiven;
+}
+
+function toSpec(task: Task): TaskSpec {
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    kind: task.kind,
+    dependsOn: task.dependsOn,
+    ...(task.provider ? { provider: task.provider } : {}),
+  };
 }
 
 /**
@@ -85,8 +109,10 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
   if (event.seq !== goal.lastSeq + 1) {
     throw new GoalTransitionError(event.type, `expected seq ${goal.lastSeq + 1}, got ${event.seq}`);
   }
-  // A goal's outcome is sent as it ends, so its notifications outlive it. Nothing else does.
-  if (isTerminalGoalStatus(goal.status) && !event.type.startsWith("notification.")) {
+  // A goal's outcome is sent as it ends, so its notifications outlive it, and a
+  // failed goal can be reopened by a retry. Nothing else reaches an ended goal.
+  const reopening = event.type === "goal.retried" && goal.status === "failed";
+  if (isTerminalGoalStatus(goal.status) && !event.type.startsWith("notification.") && !reopening) {
     throw new GoalTransitionError(event.type, `goal is ${goal.status}`);
   }
 
@@ -142,6 +168,7 @@ const HANDLERS: Record<string, EventHandler> = {
   changeset: (goal, event) => applyChangeSetEvent(goal, event),
   integration: (goal, event) => applyChangeSetEvent(goal, event),
   notification: (goal, event) => applyNotificationEvent(goal, event),
+  usage: (goal, event) => applyUsageEvent(goal, event),
 };
 
 function applyToLiveGoal(goal: Goal, event: GoalEvent): Goal {
@@ -191,9 +218,25 @@ function applyPlanEvent(goal: Goal, event: GoalEvent): Goal {
       requireStatus(goal, event, "awaiting_plan_approval");
       return { ...goal, status: "executing" };
 
-    case "plan.rejected":
+    case "plan.rejected": {
       requireStatus(goal, event, "awaiting_plan_approval");
-      return { ...goal, status: "planning", tasks: [] };
+      const rejections = goal.planRejections ?? [];
+      if (rejections.length >= MAX_PLAN_REJECTIONS) {
+        throw new GoalTransitionError(
+          event.type,
+          `the plan was already rejected ${rejections.length} times; the limit is ${MAX_PLAN_REJECTIONS}`,
+        );
+      }
+      return {
+        ...goal,
+        status: "planning",
+        tasks: [],
+        planRejections: [
+          ...rejections,
+          { reason: event.reason, tasks: goal.tasks.map(toSpec), at: event.at },
+        ],
+      };
+    }
 
     default:
       throw new GoalTransitionError(event.type, "unexpected event for this handler");
@@ -512,6 +555,54 @@ function transitionChangeSet(
   };
 }
 
+const EMPTY_USAGE: UsageTotals = {
+  inputTokens: 0,
+  cachedInputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  costUsd: 0,
+  reportedTurns: 0,
+  totalTurns: 0,
+};
+
+function addUsage(totals: UsageTotals | undefined, turn: TurnUsage | undefined): UsageTotals {
+  const base = totals ?? EMPTY_USAGE;
+  if (!turn) return { ...base, totalTurns: base.totalTurns + 1 };
+  const input = turn.inputTokens ?? 0;
+  const output = turn.outputTokens ?? 0;
+  return {
+    inputTokens: base.inputTokens + input,
+    cachedInputTokens: base.cachedInputTokens + (turn.cachedInputTokens ?? 0),
+    outputTokens: base.outputTokens + output,
+    totalTokens: base.totalTokens + input + output,
+    costUsd: base.costUsd + (turn.costUsd ?? 0),
+    reportedTurns: base.reportedTurns + 1,
+    totalTurns: base.totalTurns + 1,
+  };
+}
+
+/** An agent turn ended; add what its provider reported to the goal and, for a worker, its run. */
+function applyUsageEvent(goal: Goal, event: GoalEvent): Goal {
+  if (event.type !== "usage.recorded") {
+    throw new GoalTransitionError(event.type, "unexpected event for this handler");
+  }
+  if (event.role === "worker" && !event.runId) {
+    throw new GoalTransitionError(event.type, "a worker turn names its run");
+  }
+  if (event.runId && !goal.runs.some((r) => r.id === event.runId)) {
+    throw new GoalTransitionError(event.type, `unknown run ${event.runId}`);
+  }
+  return {
+    ...goal,
+    usage: addUsage(goal.usage, event.usage),
+    runs: event.runId
+      ? goal.runs.map((r) =>
+          r.id === event.runId ? { ...r, usage: addUsage(r.usage, event.usage) } : r,
+        )
+      : goal.runs,
+  };
+}
+
 function applyNotificationEvent(goal: Goal, event: GoalEvent): Goal {
   const notifications = goal.notifications ?? [];
   switch (event.type) {
@@ -656,7 +747,92 @@ function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
         ),
         runs: interruptLiveRuns(goal.runs, event.at),
       };
+
+    case "goal.paused":
+      if (goal.pausedAt) throw new GoalTransitionError(event.type, "goal is already paused");
+      return { ...goal, pausedAt: event.at };
+
+    case "goal.resumed":
+      if (!goal.pausedAt) throw new GoalTransitionError(event.type, "goal is not paused");
+      return { ...goal, pausedAt: null };
+
+    case "goal.retried":
+      return applyRetry(goal, event);
+
     default:
       throw new GoalTransitionError(event.type, "unexpected event for this handler");
   }
+}
+
+/**
+ * A person retries failed or cancelled tasks. Their earlier failures stop counting
+ * against maxAttempts. A failed goal is reopened only when it can still finish:
+ * every failed and cancelled task is retried, no change set was rejected, and the
+ * run and time limits leave room.
+ */
+function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried" }>): Goal {
+  if (!goal.config) {
+    throw new GoalTransitionError(event.type, "a manual goal runs nothing to retry");
+  }
+  requireStatus(goal, event, "executing", "failed");
+  const reopen = goal.status === "failed";
+  if (event.reopen !== reopen) {
+    throw new GoalTransitionError(
+      event.type,
+      reopen ? "the goal failed; a retry must reopen it" : "only a failed goal can be reopened",
+    );
+  }
+  const retryable = new Set(
+    goal.tasks.filter((t) => t.status === "failed" || t.status === "cancelled").map((t) => t.id),
+  );
+  for (const id of event.taskIds) {
+    if (!retryable.has(id)) {
+      const known = goal.tasks.find((t) => t.id === id);
+      throw new GoalTransitionError(
+        event.type,
+        known
+          ? `task ${id} is ${known.status}, expected failed or cancelled`
+          : `unknown task ${id}`,
+      );
+    }
+  }
+  const { maxRuns } = resolveLimits(goal.config);
+  if (goal.runs.length >= maxRuns) {
+    throw new GoalTransitionError(event.type, `the run limit of ${maxRuns} is used up`);
+  }
+  if (Date.parse(event.at) >= goalDeadlineMs(goal)) {
+    throw new GoalTransitionError(event.type, "the goal's time limit has passed");
+  }
+  const overBudget = budgetExceeded(goal);
+  if (overBudget) throw new GoalTransitionError(event.type, overBudget);
+  if (reopen) {
+    const missing = [...retryable].filter((id) => !event.taskIds.includes(id));
+    if (missing.length > 0) {
+      throw new GoalTransitionError(
+        event.type,
+        `reopening needs every failed or cancelled task retried; missing ${missing.join(", ")}`,
+      );
+    }
+    const rejected = goal.changeSets.filter((c) => c.status === "rejected");
+    if (rejected.length > 0) {
+      throw new GoalTransitionError(
+        event.type,
+        `change set ${rejected.map((c) => c.id).join(", ")} was rejected, so the goal cannot complete`,
+      );
+    }
+  }
+  const retried = new Set(event.taskIds);
+  const failedRuns = (taskId: string) =>
+    goal.runs.filter((r) => r.taskId === taskId && r.status === "failed").length;
+  return {
+    ...goal,
+    status: "executing",
+    failureReason: reopen ? null : goal.failureReason,
+    ...(reopen ? { reopens: (goal.reopens ?? 0) + 1 } : {}),
+    tasks: goal.tasks.map((t) =>
+      retried.has(t.id)
+        ? { ...t, status: "pending", error: null, forgivenFailures: failedRuns(t.id) }
+        : t,
+    ),
+  };
 }

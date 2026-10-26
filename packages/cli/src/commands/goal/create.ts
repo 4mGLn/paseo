@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { Command } from "commander";
+import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
 import type { GoalConfig } from "@getpaseo/protocol/goal/types";
 import type { SingleResult } from "../../output/index.js";
 import {
@@ -22,6 +23,11 @@ export interface GoalCreateOptions extends GoalCommandOptions {
   autoApprove?: boolean;
   notifyLead?: boolean;
   reviewProvider?: string;
+  verifyProvider?: string;
+  branchPrefix?: string;
+  maxTokens?: string;
+  maxCost?: string;
+  deadline?: string;
   testCommand?: string;
   requireApproval?: boolean;
   maxRework?: string;
@@ -41,6 +47,13 @@ function intOption(value: string | undefined, name: string): number | undefined 
   return parsed;
 }
 
+function numberOption(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) throw new Error(`${name} must be a number`);
+  return parsed;
+}
+
 function buildLimits(options: GoalCreateOptions): GoalConfig["limits"] {
   const limits = {
     maxTasks: intOption(options.maxTasks, "--max-tasks"),
@@ -48,6 +61,9 @@ function buildLimits(options: GoalCreateOptions): GoalConfig["limits"] {
     runTimeoutMinutes: intOption(options.runTimeout, "--run-timeout"),
     goalTimeoutMinutes: intOption(options.goalTimeout, "--goal-timeout"),
     retryBackoffSeconds: intOption(options.retryBackoff, "--retry-backoff"),
+    maxTotalTokens: intOption(options.maxTokens, "--max-tokens"),
+    maxCostUsd: numberOption(options.maxCost, "--max-cost"),
+    deadlineAt: options.deadline,
   };
   const set = Object.fromEntries(Object.entries(limits).filter(([, v]) => v !== undefined));
   return Object.keys(set).length > 0 ? set : undefined;
@@ -64,11 +80,15 @@ function buildConfig(options: GoalCreateOptions): GoalConfig | undefined {
     cwd: path.resolve(options.cwd),
     leadProvider: options.lead,
     defaultProvider: options.provider,
-    maxParallel: Number.parseInt(options.maxParallel ?? "2", 10),
-    maxAttempts: Number.parseInt(options.maxAttempts ?? "2", 10),
+    maxParallel:
+      intOption(options.maxParallel, "--max-parallel") ?? GOAL_CONFIG_BOUNDS.maxParallel.default,
+    maxAttempts:
+      intOption(options.maxAttempts, "--max-attempts") ?? GOAL_CONFIG_BOUNDS.maxAttempts.default,
     autoApprovePlan: options.autoApprove === true,
     notifyLead: options.notifyLead !== false,
     ...(options.reviewProvider ? { reviewProvider: options.reviewProvider } : {}),
+    ...(options.verifyProvider ? { verifyProvider: options.verifyProvider } : {}),
+    ...(options.branchPrefix ? { branchPrefix: options.branchPrefix } : {}),
     ...(options.testCommand ? { testCommand: options.testCommand } : {}),
     ...(options.requireApproval ? { requireHumanApproval: true } : {}),
     ...(options.maxRework ? { maxReworkRounds: Number.parseInt(options.maxRework, 10) } : {}),

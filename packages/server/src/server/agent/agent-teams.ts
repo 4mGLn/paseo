@@ -1,17 +1,15 @@
 import { z } from "zod";
 import type { AgentProfile } from "@getpaseo/protocol/agent-profile";
 
-import { AGENT_TEAM_LABEL } from "@getpaseo/protocol/agent-labels";
+import { AGENT_TEAM_LABEL, AGENT_TEAM_ROLE_LABEL } from "@getpaseo/protocol/agent-labels";
 
-export { AGENT_TEAM_LABEL };
+export { AGENT_TEAM_LABEL, AGENT_TEAM_ROLE_LABEL };
 
 /**
  * Stamped by the daemon on every helper a team chat (or one of its helpers)
  * creates; the value is the team chat's agent id. Agents cannot set it.
  */
 export const AGENT_TEAM_RUN_LABEL = "paseo.team-run";
-/** Free-form role a team chat sets on a helper through create_agent labels. */
-export const AGENT_TEAM_ROLE_LABEL = "paseo.team-role";
 /** Labels only the daemon may set; agent-facing tools strip or refuse them. */
 export const DAEMON_OWNED_TEAM_LABELS: readonly string[] = [AGENT_TEAM_LABEL, AGENT_TEAM_RUN_LABEL];
 
@@ -69,6 +67,24 @@ export const AgentTeamConfigSchema = z
   .strict();
 
 export const AgentTeamsConfigSchema = z.record(TeamNameSchema, AgentTeamConfigSchema);
+
+/**
+ * The teams in the mutable daemon config, in the daemon's own shape. The config
+ * store only holds teams that passed `AgentTeamsConfigSchema`; the wire type is
+ * looser so old clients keep parsing newer daemons.
+ */
+export function readAgentTeamsConfig(config: { teams?: unknown }): AgentTeamsConfig | undefined {
+  return config.teams === undefined ? undefined : AgentTeamsConfigSchema.parse(config.teams);
+}
+
+/** Validates teams written through the config RPC, with a message a person can act on. */
+export function parseAgentTeamsConfigPatch(value: unknown): AgentTeamsConfig {
+  const result = AgentTeamsConfigSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error(`Invalid daemon.teams: ${z.prettifyError(result.error)}`);
+  }
+  return result.data;
+}
 
 export type AgentTeamRoleConfig = z.infer<typeof AgentTeamRoleConfigSchema>;
 export type AgentTeamConfig = z.infer<typeof AgentTeamConfigSchema>;
