@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
-import { openGoalForm, type GoalFormModel, type GoalFormPrefill } from "./goal-form-model";
+import { openGoalForm, type GoalFormModel, type GoalFormSnapshot } from "./goal-form-model";
 
 /** One model per mount (docs/forms.md): later prop changes never rebuild it. */
-export function useGoalFormModel(prefill: GoalFormPrefill | undefined): GoalFormModel {
-  const [model] = useState(() => openGoalForm({ prefill }));
+export function useGoalFormModel(snapshot: GoalFormSnapshot): GoalFormModel {
+  const [model] = useState(() => openGoalForm(snapshot));
 
   useEffect(() => {
     return () => {

@@ -1,32 +1,27 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
-import { ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 import { useIsFocused } from "expo-router/react-navigation";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, Plus } from "lucide-react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { Plus } from "lucide-react-native";
+import { StyleSheet } from "react-native-unistyles";
 import type { Goal } from "@getpaseo/protocol/goal/types";
 import { GoalDetail } from "@/components/goals/goal-detail";
+import { GoalEmptyState } from "@/components/goals/goal-empty-state";
 import { GoalFormSheet } from "@/components/goals/goal-form-sheet";
+import { GoalList, GoalListFilters } from "@/components/goals/goal-list";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HostFilter } from "@/components/hosts/host-filter";
-import { SettingsCard } from "@/components/settings";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { PressHighlight } from "@/components/ui/press-highlight";
-import { StatusBadge } from "@/components/ui/status-badge";
-import { GOAL_STATUS_BADGE, summarizeGoalProgress } from "@/goals/goal-derivation";
+import type { GoalListFilter } from "@/goals/goal-attention";
 import type { GoalFormPrefill } from "@/goals/goal-form-model";
+import { buildTemplatePrefill, type GoalTemplate } from "@/goals/goal-templates";
 import { useGoalList } from "@/hooks/use-goals";
 import { useHostFeatureAvailabilityMap } from "@/runtime/host-features";
 import { useHosts } from "@/runtime/host-runtime";
 import { useLastWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspaceFields } from "@/stores/session-store-hooks";
-import { settingsStyles } from "@/styles/settings";
-import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { resolveGoalsScreenBodyState } from "./goals-screen-state";
-
-const ThemedChevronRight = withUnistyles(ChevronRight);
-const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 const EMPTY_GOALS: Goal[] = [];
 
@@ -53,7 +48,11 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
   const goalsSupport = useHostFeatureAvailabilityMap(serverIds, "goals");
   const [pickedServerId, setPickedServerId] = useState<string | null>(initialServerId ?? null);
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(initialGoalId ?? null);
-  const [isFormOpen, setIsFormOpen] = useState(false);
+  // Each open gets its own key, so the form mounts fresh with the prefill it was opened with.
+  const [form, setForm] = useState<{ key: number; prefill: GoalFormPrefill | undefined } | null>(
+    null,
+  );
+  const [filter, setFilter] = useState<GoalListFilter>("all");
 
   // A picked host that was removed falls back to the first host that supports goals.
   const pickedHostExists = hosts.some((host) => host.serverId === pickedServerId);
@@ -79,11 +78,29 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
     setPickedServerId(nextServerId);
     setSelectedGoalId(null);
   }, []);
-  const openForm = useCallback(() => setIsFormOpen(true), []);
-  const closeForm = useCallback(() => setIsFormOpen(false), []);
+  const formPrefill = useLastWorkspacePrefill(serverId);
+  const openForm = useCallback(
+    () => setForm({ key: Date.now(), prefill: formPrefill }),
+    [formPrefill],
+  );
+  const openTemplate = useCallback(
+    (template: GoalTemplate) =>
+      setForm({
+        key: Date.now(),
+        prefill: buildTemplatePrefill(
+          template,
+          {
+            objective: t(`goals.templates.${template.id}.objective`),
+            criteria: t(`goals.templates.${template.id}.criteria`),
+          },
+          formPrefill ?? {},
+        ),
+      }),
+    [formPrefill, t],
+  );
+  const closeForm = useCallback(() => setForm(null), []);
   const closeDetail = useCallback(() => setSelectedGoalId(null), []);
   const selectCreatedGoal = useCallback((goal: Goal) => setSelectedGoalId(goal.id), []);
-  const formPrefill = useLastWorkspacePrefill(serverId);
 
   // The detail stays reachable only while the host can still serve goals.
   const detailGoalId = canCreate ? selectedGoalId : null;
@@ -91,7 +108,16 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
   if (detailGoalId) {
     body = <GoalDetail serverId={serverId} goalId={detailGoalId} onBack={closeDetail} />;
   } else if (bodyState.kind === "content") {
-    body = <GoalList goals={goals} onSelect={setSelectedGoalId} />;
+    body = (
+      <>
+        <View style={styles.filters}>
+          <GoalListFilters goals={goals} filter={filter} onChange={setFilter} />
+        </View>
+        <GoalList goals={goals} filter={filter} onSelect={setSelectedGoalId} />
+      </>
+    );
+  } else if (bodyState.kind === "empty") {
+    body = <GoalEmptyState onCreate={openForm} onTemplate={openTemplate} />;
   } else if (bodyState.kind === "loading") {
     body = <LoadingSpinner size="large" color={styles.spinner.color} />;
   } else {
@@ -127,10 +153,11 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
       >
         <View style={styles.column}>{body}</View>
       </ScrollView>
-      {isFormOpen ? (
+      {form ? (
         <GoalFormSheet
+          key={form.key}
           serverId={serverId}
-          prefill={formPrefill}
+          prefill={form.prefill}
           onClose={closeForm}
           onCreated={selectCreatedGoal}
         />
@@ -157,7 +184,7 @@ function GoalsMessage({
   kind,
   onRetry,
 }: {
-  kind: "no-host" | "update-host" | "load-error" | "empty";
+  kind: "no-host" | "update-host" | "load-error";
   onRetry: () => void;
 }): ReactElement {
   const { t } = useTranslation();
@@ -165,7 +192,6 @@ function GoalsMessage({
     "no-host": t("goals.noHost"),
     "update-host": t("goals.updateHost"),
     "load-error": t("goals.loadFailed"),
-    empty: t("goals.empty"),
   };
   return (
     <View style={styles.centered} testID={`goals-${kind}`}>
@@ -176,69 +202,6 @@ function GoalsMessage({
         </Button>
       ) : null}
     </View>
-  );
-}
-
-function GoalList({
-  goals,
-  onSelect,
-}: {
-  goals: Goal[];
-  onSelect: (goalId: string) => void;
-}): ReactElement {
-  const sorted = useMemo(
-    () => [...goals].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
-    [goals],
-  );
-  return (
-    <SettingsCard testID="goals-table">
-      {sorted.map((goal) => (
-        <GoalRow key={goal.id} goal={goal} onSelect={onSelect} />
-      ))}
-    </SettingsCard>
-  );
-}
-
-function GoalRow({
-  goal,
-  onSelect,
-}: {
-  goal: Goal;
-  onSelect: (goalId: string) => void;
-}): ReactElement {
-  const { t } = useTranslation();
-  const progress = summarizeGoalProgress(goal);
-  const handlePress = useCallback(() => onSelect(goal.id), [goal.id, onSelect]);
-  const rowStyle = useCallback(
-    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
-      settingsStyles.row,
-      hovered && styles.rowHovered,
-      pressed && styles.rowPressed,
-    ],
-    [],
-  );
-
-  return (
-    <PressHighlight
-      style={rowStyle}
-      onPress={handlePress}
-      accessibilityRole="button"
-      testID={`goal-row-${goal.id}`}
-    >
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
-          {goal.title}
-        </Text>
-        <Text style={settingsStyles.rowHint}>{t("goals.progress", { ...progress })}</Text>
-      </View>
-      <View style={styles.rowTrailing}>
-        <StatusBadge
-          label={t(`goals.status.${goal.status}`)}
-          variant={GOAL_STATUS_BADGE[goal.status]}
-        />
-        <ThemedChevronRight size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-      </View>
-    </PressHighlight>
   );
 }
 
@@ -275,6 +238,10 @@ const styles = StyleSheet.create((theme) => ({
     maxWidth: 720,
     alignSelf: "center",
   },
+  filters: {
+    alignItems: "flex-start",
+    marginBottom: theme.spacing[4],
+  },
   centered: {
     alignItems: "center",
     gap: theme.spacing[4],
@@ -284,17 +251,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     textAlign: "center",
-  },
-  rowTrailing: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-  },
-  rowHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
-  rowPressed: {
-    backgroundColor: theme.colors.surface3,
   },
   // Static color holder read by the spinner; keeps the muted token without useUnistyles.
   spinner: {
