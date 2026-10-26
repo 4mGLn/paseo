@@ -3,10 +3,13 @@ import {
   EMPTY_GOAL_FORM_VALUES,
   buildGoalCreateInput,
   describeGoalOutcome,
+  goalRoleModel,
+  goalRoleThinkingOptions,
   openGoalForm,
   parseGoalCriteria,
   validateGoalForm,
   type GoalFormValues,
+  type GoalProviderOption,
 } from "./goal-form-model";
 import { goalFormMemoryFromConfig } from "./goal-form-memory";
 import { buildGoalProjectOptions } from "./goal-projects";
@@ -507,8 +510,8 @@ describe("project and host", () => {
       memoryByServer,
     });
     model.applyHosts([
-      { serverId: "host-a", label: "A", budgetSupported: false },
-      { serverId: "host-b", label: "B", budgetSupported: true },
+      { serverId: "host-a", label: "A", budgetSupported: false, thinkingSupported: false },
+      { serverId: "host-b", label: "B", budgetSupported: true, thinkingSupported: true },
     ]);
     model.applyProjectOptions(projects);
     model.setHost("host-b");
@@ -528,5 +531,152 @@ describe("project and host", () => {
         testCommand: "",
       },
     });
+  });
+});
+
+describe("thinking per role", () => {
+  const LEVELS = [
+    { id: "low", label: "Low", isDefault: true },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+  ];
+  const PROVIDERS: GoalProviderOption[] = [
+    {
+      id: "claude",
+      label: "Claude",
+      models: [
+        { id: "opus", label: "Opus", isDefault: true, thinkingOptions: LEVELS },
+        { id: "haiku", label: "Haiku" },
+        { id: "max", label: "Max only", thinkingOptions: [{ id: "max", label: "Max" }] },
+      ],
+    },
+    {
+      id: "codex",
+      label: "Codex",
+      models: [{ id: "gpt", label: "GPT", thinkingOptions: [{ id: "xhigh" }, { id: "low" }] }],
+    },
+  ];
+
+  function managedForm(overrides: Parameters<typeof openGoalForm>[0] = {}) {
+    const model = openGoalForm({
+      thinkingSupported: true,
+      ...overrides,
+      prefill: {
+        objective: "Ship it",
+        criteriaText: "Works",
+        managed: true,
+        cwd: "/repo",
+        leadProvider: "claude",
+        defaultProvider: "codex",
+        ...overrides.prefill,
+      },
+    });
+    model.applyProviderOptions(PROVIDERS);
+    return model;
+  }
+
+  it("runs the reviewer and verifier on the Lead's model unless a review provider is chosen", () => {
+    const base = values({ leadProvider: "claude", leadModel: "opus" });
+    expect(goalRoleModel(base, "verifier")).toEqual({ provider: "claude", model: "opus" });
+    expect(
+      goalRoleModel({ ...base, reviewProvider: "codex", reviewModel: "gpt" }, "verifier"),
+    ).toEqual({ provider: "codex", model: "gpt" });
+  });
+
+  it("offers the levels of the chosen model, or the provider's default model", () => {
+    const form = values({ leadProvider: "claude", defaultProvider: "codex" });
+    expect(goalRoleThinkingOptions(form, PROVIDERS, "lead")?.map((o) => o.id)).toEqual([
+      "low",
+      "medium",
+      "high",
+    ]);
+    expect(goalRoleThinkingOptions({ ...form, leadModel: "haiku" }, PROVIDERS, "lead")).toEqual([]);
+    expect(goalRoleThinkingOptions(form, PROVIDERS, "worker")?.map((o) => o.id)).toEqual([
+      "xhigh",
+      "low",
+    ]);
+    expect(goalRoleThinkingOptions(form, [], "lead")).toBeNull();
+  });
+
+  it("sends each level that is set, and nothing for the model's default", () => {
+    const model = managedForm();
+    model.setValue("leadThinking", "high");
+    model.setValue("workerThinking", "xhigh");
+    const config = model.getState().createInput?.config;
+    expect(config).toMatchObject({ leadThinking: "high", workerThinking: "xhigh" });
+    expect(config).not.toHaveProperty("reviewThinking");
+    expect(config).not.toHaveProperty("verifyThinking");
+  });
+
+  it("drops a level the new model does not list and keeps one it does", () => {
+    const model = managedForm();
+    model.setValue("leadThinking", "medium");
+    model.setValue("reviewThinking", "low");
+    model.setValue("leadModel", "haiku");
+    // The reviewer follows the Lead, so both lose their level on a model without any.
+    expect(model.getState().values).toMatchObject({ leadThinking: "", reviewThinking: "" });
+    expect(model.getState().thinkingOptions.lead).toEqual([]);
+
+    model.setValue("workerThinking", "low");
+    model.setValue("defaultProvider", "claude");
+    // Claude's default model lists "low" too, so the worker keeps it.
+    expect(model.getState().values.workerThinking).toBe("low");
+    model.setValue("defaultModel", "max");
+    expect(model.getState().values.workerThinking).toBe("");
+  });
+
+  it("keeps a remembered level until the providers say the model lacks it", () => {
+    const model = openGoalForm({
+      thinkingSupported: true,
+      prefill: {
+        objective: "Ship it",
+        criteriaText: "Works",
+        managed: true,
+        cwd: "/repo",
+        leadProvider: "claude/haiku",
+        defaultProvider: "codex",
+        leadThinking: "high",
+        workerThinking: "xhigh",
+      },
+    });
+    expect(model.getState().values.leadThinking).toBe("high");
+    model.applyProviderOptions(PROVIDERS);
+    expect(model.getState().values).toMatchObject({ leadThinking: "", workerThinking: "xhigh" });
+  });
+
+  it("neither offers nor sends thinking on a host without goalThinking", () => {
+    const model = managedForm({ thinkingSupported: false, prefill: { leadThinking: "high" } });
+    expect(model.getState().thinkingOptions.lead).toEqual([]);
+    expect(model.getState().createInput?.config).not.toHaveProperty("leadThinking");
+  });
+
+  it("names each chosen level in the summary", () => {
+    const model = managedForm();
+    model.setValue("leadThinking", "high");
+    model.setValue("workerThinking", "xhigh");
+    expect(model.getState().summary.filter((part) => part.key === "thinking")).toEqual([
+      { key: "thinking", role: "lead", label: "High" },
+      { key: "thinking", role: "worker", label: expect.any(String) },
+    ]);
+  });
+
+  it("leaves thinking alone when a preset is chosen", () => {
+    const model = managedForm();
+    model.setValue("leadThinking", "high");
+    model.chooseSettings("careful");
+    expect(model.getState().values.leadThinking).toBe("high");
+  });
+
+  it("remembers the levels with the last goal and offers them on the next one", () => {
+    const model = managedForm();
+    model.setValue("reviewThinking", "medium");
+    const config = model.getState().createInput?.config;
+    if (!config) {
+      throw new Error("expected a managed config");
+    }
+    const memory = goalFormMemoryFromConfig(config, DAEMON_GOAL_SETTINGS);
+    expect(memory.thinking).toEqual({ reviewer: "medium" });
+    const next = openGoalForm({ serverId: "host", memoryByServer: { host: memory } });
+    expect(next.getState().values.reviewThinking).toBe("medium");
   });
 });

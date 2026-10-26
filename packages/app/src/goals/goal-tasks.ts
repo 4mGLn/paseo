@@ -47,6 +47,20 @@ export function latestTaskAgent(goal: Pick<Goal, "runs">, taskId: string): GoalA
   return null;
 }
 
+/**
+ * The thinking level the task's latest run started with: the one asked for, or the provider's
+ * default when it reports one. Null when no run recorded one, as with daemons before goal thinking.
+ */
+export function latestTaskThinking(goal: Pick<Goal, "runs">, taskId: string): string | null {
+  for (let index = goal.runs.length - 1; index >= 0; index -= 1) {
+    const run = goal.runs[index];
+    if (run?.taskId === taskId) {
+      return run.thinking ?? null;
+    }
+  }
+  return null;
+}
+
 const CHANGE_SET_ORDER: Partial<Record<ChangeSetStatus, number>> = {
   awaiting_human: 0,
   conflicted: 1,

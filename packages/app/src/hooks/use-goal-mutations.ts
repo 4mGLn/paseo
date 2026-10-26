@@ -2,9 +2,17 @@ import { useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { Goal } from "@getpaseo/protocol/goal/types";
+import type { GoalRetainedResource } from "@getpaseo/protocol/goal/rpc-schemas";
+import type { Goal, GoalPriority, GoalSummary } from "@getpaseo/protocol/goal/types";
 import type { GoalCreateInput } from "@/goals/goal-form-model";
-import { goalsHostQueryKey } from "@/hooks/use-goals";
+import { removeGoalFromList, replaceGoalInList } from "@/goals/goal-updates";
+import {
+  goalDetailQueryKey,
+  goalListArchivedModeOfKey,
+  goalListQueryKey,
+  goalsHostQueryKey,
+  type GoalDetail,
+} from "@/hooks/use-goals";
 import { useSessionStore } from "@/stores/session-store";
 
 export interface UseGoalMutationsResult {
@@ -32,6 +40,24 @@ export interface UseGoalMutationsResult {
   isPausing: boolean;
   /** The task a retry is in flight for; "" for a whole-goal retry. */
   pendingRetryTaskId: string | null;
+  rename: (input: { goalId: string; title: string }) => Promise<void>;
+  isRenaming: boolean;
+  /** Shown at once in the cached lists, and put back if the host refuses it. */
+  setPriority: (input: { goalId: string; priority: GoalPriority }) => Promise<void>;
+  archive: (goalId: string) => Promise<void>;
+  unarchive: (goalId: string) => Promise<void>;
+  /** The goal an archive or unarchive is in flight for. */
+  pendingArchiveGoalId: string | null;
+  /** Resolves with what the goal created that delete left in place. */
+  deleteGoal: (goalId: string) => Promise<GoalDeleteResult>;
+  /** The goal a delete is in flight for. */
+  pendingDeleteGoalId: string | null;
+}
+
+export interface GoalDeleteResult {
+  /** False when the goal was already gone. */
+  deleted: boolean;
+  retained: GoalRetainedResource[];
 }
 
 export interface ChangeSetTarget {
@@ -61,6 +87,34 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: goalsHostQueryKey(serverId) });
   }, [queryClient, serverId]);
+
+  /** Every cached list of this host (with and without archived goals), mapped in place. */
+  const updateLists = useCallback(
+    (update: (goals: GoalSummary[], archived: "exclude" | "include") => GoalSummary[]) => {
+      for (const [queryKey, current] of queryClient.getQueriesData<GoalSummary[]>({
+        queryKey: goalListQueryKey(serverId),
+      })) {
+        if (current) {
+          queryClient.setQueryData(queryKey, update(current, goalListArchivedModeOfKey(queryKey)));
+        }
+      }
+    },
+    [queryClient, serverId],
+  );
+
+  /** A goal a mutation returned, shown before the refetch lands. */
+  const applyGoal = useCallback(
+    (goal: Goal | null) => {
+      if (!goal) {
+        return;
+      }
+      updateLists((goals, archived) => replaceGoalInList(goals, goal, { archived }));
+      queryClient.setQueryData<GoalDetail>(goalDetailQueryKey(serverId, goal.id), (current) =>
+        current ? { ...current, goal } : current,
+      );
+    },
+    [queryClient, serverId, updateLists],
+  );
 
   const createMutation = useMutation({
     mutationFn: async (input: GoalCreateInput): Promise<Goal | null> => {
@@ -145,6 +199,100 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
     onSettled: invalidate,
   });
 
+  const renameMutation = useMutation({
+    mutationFn: async (input: { goalId: string; title: string }): Promise<Goal | null> => {
+      const client = requireClient(serverId, unavailableMessage);
+      const payload = await client.goalRename(input);
+      throwPayloadError(payload);
+      return payload.goal;
+    },
+    onSuccess: applyGoal,
+    onSettled: invalidate,
+  });
+
+  const priorityMutation = useMutation({
+    mutationFn: async (input: { goalId: string; priority: GoalPriority }): Promise<Goal | null> => {
+      const client = requireClient(serverId, unavailableMessage);
+      const payload = await client.goalSetPriority(input);
+      throwPayloadError(payload);
+      return payload.goal;
+    },
+    // Priority only reorders the list, so it is safe to show before the host answers.
+    onMutate: (input) => {
+      const previous = queryClient.getQueriesData<GoalSummary[]>({
+        queryKey: goalListQueryKey(serverId),
+      });
+      updateLists((goals) =>
+        goals.map((goal) =>
+          goal.id === input.goalId ? { ...goal, priority: input.priority } : goal,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_error, _input, context) => {
+      for (const [queryKey, data] of context?.previous ?? []) {
+        queryClient.setQueryData(queryKey, data);
+      }
+    },
+    onSuccess: applyGoal,
+    onSettled: invalidate,
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: async (input: { goalId: string; archived: boolean }): Promise<Goal | null> => {
+      const client = requireClient(serverId, unavailableMessage);
+      const payload = input.archived
+        ? await client.goalArchive({ goalId: input.goalId })
+        : await client.goalUnarchive({ goalId: input.goalId });
+      throwPayloadError(payload);
+      return payload.goal;
+    },
+    onSuccess: applyGoal,
+    onSettled: invalidate,
+  });
+  const archiveAsync = archiveMutation.mutateAsync;
+  const archive = useCallback(
+    async (goalId: string) => {
+      await archiveAsync({ goalId, archived: true });
+    },
+    [archiveAsync],
+  );
+  const unarchive = useCallback(
+    async (goalId: string) => {
+      await archiveAsync({ goalId, archived: false });
+    },
+    [archiveAsync],
+  );
+
+  const deleteMutation = useMutation({
+    mutationFn: async (goalId: string): Promise<GoalDeleteResult> => {
+      const client = requireClient(serverId, unavailableMessage);
+      const payload = await client.goalDelete({ goalId });
+      throwPayloadError(payload);
+      return { deleted: payload.deleted, retained: payload.retained };
+    },
+    onSuccess: (_result, goalId) => {
+      updateLists((goals) => removeGoalFromList(goals, goalId));
+      queryClient.removeQueries({ queryKey: goalDetailQueryKey(serverId, goalId) });
+    },
+    onSettled: invalidate,
+  });
+
+  const renameAsync = renameMutation.mutateAsync;
+  const rename = useCallback(
+    async (input: { goalId: string; title: string }) => {
+      await renameAsync(input);
+    },
+    [renameAsync],
+  );
+  const priorityAsync = priorityMutation.mutateAsync;
+  const setPriority = useCallback(
+    async (input: { goalId: string; priority: GoalPriority }) => {
+      await priorityAsync(input);
+    },
+    [priorityAsync],
+  );
+
   let pendingChangeSetId: string | null = null;
   if (approveChangeSetMutation.isPending) {
     pendingChangeSetId = approveChangeSetMutation.variables?.changeSetId ?? null;
@@ -171,6 +319,16 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
     isRejecting: rejectPlanMutation.isPending,
     isPausing: pauseMutation.isPending,
     pendingRetryTaskId: retryMutation.isPending ? (retryMutation.variables?.taskId ?? "") : null,
+    rename,
+    isRenaming: renameMutation.isPending,
+    setPriority,
+    archive,
+    unarchive,
+    pendingArchiveGoalId: archiveMutation.isPending
+      ? (archiveMutation.variables?.goalId ?? null)
+      : null,
+    deleteGoal: deleteMutation.mutateAsync,
+    pendingDeleteGoalId: deleteMutation.isPending ? (deleteMutation.variables ?? null) : null,
     isCreating: createMutation.isPending,
     isApproving: approveMutation.isPending,
     isCancelling: cancelMutation.isPending,
