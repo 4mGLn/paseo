@@ -47,6 +47,7 @@ describe("GoalUpdatePublisher", () => {
   let service: GoalService;
   let clock: ReturnType<typeof manualClock>;
   let pushed: GoalSummary[];
+  let deleted: GoalSummary[];
   let publisher: GoalUpdatePublisher;
 
   beforeEach(async () => {
@@ -56,9 +57,11 @@ describe("GoalUpdatePublisher", () => {
     await service.start();
     clock = manualClock();
     pushed = [];
+    deleted = [];
     publisher = new GoalUpdatePublisher({
       subscribe: (listener) => service.subscribe(listener),
-      publish: (goal) => pushed.push(goal),
+      subscribeRemoved: (listener) => service.subscribeRemoved(listener),
+      publish: (goal, options) => (options?.deleted ? deleted : pushed).push(goal),
       clock,
       windowMs: 250,
     });
@@ -126,5 +129,30 @@ describe("GoalUpdatePublisher", () => {
     clock.advance(1_000);
     await service.cancel("g1");
     expect(calls).toBe(2);
+  });
+
+  test("every management change is pushed, and a deletion is pushed once with deleted set", async () => {
+    await service.create({ goalId: "g1", title: "T", objective: "", criteria: [] });
+    clock.advance(250);
+    await service.rename("g1", "Renamed");
+    clock.advance(250);
+    await service.setPriority("g1", "high");
+    clock.advance(250);
+    await service.cancel("g1");
+    clock.advance(250);
+    await service.archive("g1");
+    expect(pushed.map((g) => [g.title, g.priority, Boolean(g.archivedAt), g.status])).toEqual([
+      ["T", undefined, false, "planning"],
+      ["Renamed", undefined, false, "planning"],
+      ["Renamed", "high", false, "planning"],
+      ["Renamed", "high", false, "cancelled"],
+      ["Renamed", "high", true, "cancelled"],
+    ]);
+    await service.unarchive("g1");
+    // The unarchive is still waiting out its window when the goal is deleted; it is dropped.
+    await service.delete("g1");
+    clock.advance(250);
+    expect(pushed).toHaveLength(5);
+    expect(deleted.map((g) => g.id)).toEqual(["g1"]);
   });
 });

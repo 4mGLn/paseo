@@ -38,6 +38,7 @@ export interface GoalRow {
   id: string;
   title: string;
   status: string;
+  priority: string;
   tasks: string;
   criteria: string;
   elapsed: string;
@@ -53,6 +54,7 @@ export function toGoalRow(goal: Goal, now: number = Date.now()): GoalRow {
     id: goal.id,
     title: goal.title,
     status: goalStatusLabel(goal),
+    priority: goal.priority ?? "normal",
     tasks: `${done}/${goal.tasks.length}`,
     criteria: `${verified}/${goal.criteria.length}`,
     elapsed: formatDuration(goalElapsedMs(goal, now)),
@@ -63,6 +65,7 @@ export function toGoalRow(goal: Goal, now: number = Date.now()): GoalRow {
 }
 
 function goalStatusLabel(goal: Goal): string {
+  if (goal.archivedAt) return `${goal.status} (archived)`;
   if (goal.pausedAt) return `${goal.status} (paused)`;
   if (goal.acknowledgedAt) return `${goal.status} (acknowledged)`;
   return goal.status;
@@ -74,6 +77,7 @@ export const goalSchema: OutputSchema<GoalRow> = {
     { header: "ID", field: "id", width: 38 },
     { header: "TITLE", field: "title", width: 28 },
     { header: "STATUS", field: "status", width: 24 },
+    { header: "PRIORITY", field: "priority", width: 9 },
     { header: "TASKS", field: "tasks", width: 8 },
     { header: "CRITERIA", field: "criteria", width: 9 },
     { header: "ELAPSED", field: "elapsed", width: 9 },

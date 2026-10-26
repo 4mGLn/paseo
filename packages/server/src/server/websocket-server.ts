@@ -1080,9 +1080,11 @@ export class VoiceAssistantWebSocketServer {
     if (!goalService) return null;
     return new GoalUpdatePublisher({
       subscribe: (listener) => goalService.subscribe(listener),
-      publish: (goal) => {
+      subscribeRemoved: (listener) => goalService.subscribeRemoved(listener),
+      publish: (goal, options) => {
+        const payload = options?.deleted ? { goal, deleted: true } : { goal };
         for (const session of this.listSessions()) {
-          session.publish({ type: "goal.update", payload: { goal } });
+          session.publish({ type: "goal.update", payload });
         }
       },
     });
@@ -2096,6 +2098,7 @@ export class VoiceAssistantWebSocketServer {
               goalUpdates: true,
               goalAcknowledge: true,
               goalThinking: true,
+              goalManagement: true,
             }
           : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.
