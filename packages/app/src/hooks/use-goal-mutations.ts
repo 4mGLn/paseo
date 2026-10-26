@@ -24,6 +24,10 @@ export interface UseGoalMutationsResult {
   retry: (input: { goalId: string; taskId?: string }) => Promise<void>;
   pause: (goalId: string) => Promise<void>;
   resume: (goalId: string) => Promise<void>;
+  /** Dismiss an ended goal so it stops asking for attention. */
+  acknowledge: (goalId: string) => Promise<void>;
+  /** The goal a dismiss is in flight for. */
+  pendingAcknowledgeGoalId: string | null;
   isRejecting: boolean;
   isPausing: boolean;
   /** The task a retry is in flight for; "" for a whole-goal retry. */
@@ -133,6 +137,14 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
     [pauseAsync],
   );
 
+  const acknowledgeMutation = useMutation({
+    mutationFn: async (goalId: string): Promise<void> => {
+      const client = requireClient(serverId, unavailableMessage);
+      throwPayloadError(await client.goalAcknowledge({ goalId }));
+    },
+    onSettled: invalidate,
+  });
+
   let pendingChangeSetId: string | null = null;
   if (approveChangeSetMutation.isPending) {
     pendingChangeSetId = approveChangeSetMutation.variables?.changeSetId ?? null;
@@ -152,6 +164,10 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
     retry: retryMutation.mutateAsync,
     pause,
     resume,
+    acknowledge: acknowledgeMutation.mutateAsync,
+    pendingAcknowledgeGoalId: acknowledgeMutation.isPending
+      ? (acknowledgeMutation.variables ?? null)
+      : null,
     isRejecting: rejectPlanMutation.isPending,
     isPausing: pauseMutation.isPending,
     pendingRetryTaskId: retryMutation.isPending ? (retryMutation.variables?.taskId ?? "") : null,
