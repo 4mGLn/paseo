@@ -7,6 +7,8 @@ import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-
 
 // Goals have no push events yet, so the screen polls while it is mounted.
 const GOALS_POLL_MS = 5_000;
+/** How often the app-wide watcher polls for goals that need you. */
+export const GOALS_BACKGROUND_POLL_MS = 15_000;
 
 export const goalsQueryBaseKey = ["goals"] as const;
 
@@ -40,7 +42,10 @@ function toLoadState<T>(input: { isConnected: boolean; data: T | undefined }): G
 export function useGoalList(input: {
   serverId: string;
   enabled: boolean;
+  /** Defaults to the Goals screen's interval. */
+  pollMs?: number;
 }): GoalQueryResult<Goal[]> {
+  const pollMs = input.pollMs ?? GOALS_POLL_MS;
   const { t } = useTranslation();
   const client = useHostRuntimeClient(input.serverId);
   const isConnected = useHostRuntimeIsConnected(input.serverId);
@@ -60,8 +65,8 @@ export function useGoalList(input: {
     },
     enabled: shouldFetch,
     dataShape: "list",
-    staleTimeMs: GOALS_POLL_MS,
-    refetchInterval: shouldFetch ? GOALS_POLL_MS : false,
+    staleTimeMs: pollMs,
+    refetchInterval: shouldFetch ? pollMs : false,
   });
 
   return {

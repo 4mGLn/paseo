@@ -43,6 +43,7 @@ import { DesktopWindowControls } from "@/components/desktop/window-controls";
 import { SidebarModelProvider } from "@/components/sidebar/sidebar-model";
 import { WorkspacePinShortcutHandler } from "@/components/workspace-pin-shortcut-handler";
 import { WorkspaceRenameHost } from "@/components/workspace-rename-host";
+import { GoalAttentionWatcher } from "@/components/goals/goal-attention-watcher";
 import { GoalLaunchHost } from "@/components/goals/goal-launch-host";
 import { WorkspaceExplorerOpenGesture } from "@/mobile-panels/explorer-open-gesture";
 import { ProviderSettingsHost } from "@/components/provider-settings-host";
@@ -500,6 +501,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
         <HostConfirmationSheet />
         <ProviderSettingsHost />
         <GoalLaunchHost />
+        <GoalAttentionWatcher />
         <WorkspaceSetupDialog />
         <KeyboardShortcutsDialog />
         <AppDiagnosticHost />

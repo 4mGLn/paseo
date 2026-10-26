@@ -1,26 +1,32 @@
-import { useCallback, useState, type ReactElement } from "react";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft } from "lucide-react-native";
+import * as Clipboard from "expo-clipboard";
+import { ChevronLeft, Copy, Pause, Play } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
-import type { TFunction } from "i18next";
-import type { Goal, GoalEvent, Task } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalEvent } from "@getpaseo/protocol/goal/types";
 import { SettingsCard, SettingsSection } from "@/components/settings";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { StatusBadge } from "@/components/ui/status-badge";
-import {
-  canApproveGoalPlan,
-  GOAL_STATUS_BADGE,
-  goalEventSubject,
-  isGoalTerminal,
-  TASK_STATUS_BADGE,
-} from "@/goals/goal-derivation";
+import { useToast } from "@/contexts/toast-context";
+import { canApproveGoalPlan, isGoalTerminal } from "@/goals/goal-derivation";
+import { goalBadge } from "@/goals/goal-labels";
+import { goalControlsAvailable, goalGuidance, goalSteps } from "@/goals/goal-phase";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useGoalDetail } from "@/hooks/use-goals";
+import { useCompactTimeAgo } from "@/hooks/use-time-ago";
+import { useHostFeature } from "@/runtime/host-features";
 import { settingsStyles } from "@/styles/settings";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
+import { GoalActivity } from "./goal-activity";
+import { GoalChangeSetList } from "./goal-change-set-list";
+import { GoalFeedbackSheet } from "./goal-feedback-sheet";
+import { GoalProgressPanel } from "./goal-progress-panel";
+import { GoalStepper } from "./goal-stepper";
+import { GoalTaskList, OpenAgentButton } from "./goal-task-list";
 
 export function GoalDetail({
   serverId,
@@ -79,11 +85,55 @@ function GoalDetailContent({
   goal: Goal;
   events: GoalEvent[];
 }): ReactElement {
+  const steps = useMemo(() => goalSteps(goal), [goal]);
+  const hasControls = useHostFeature(serverId, "goalControls");
+  return (
+    <View>
+      <GoalSummary serverId={serverId} goal={goal} />
+      {steps ? (
+        <View style={styles.stepper}>
+          <GoalStepper steps={steps} />
+        </View>
+      ) : null}
+      <GoalGuidanceBanner goal={goal} />
+      {goal.config ? <GoalProgressPanel goal={goal} /> : null}
+      <GoalChangeSetList serverId={serverId} goal={goal} />
+      <GoalTaskList
+        serverId={serverId}
+        goal={goal}
+        canRetryTasks={goalControlsAvailable(goal, hasControls).canRetryTasks}
+      />
+      <GoalCriteria goal={goal} />
+      <GoalActivity goal={goal} events={events} />
+    </View>
+  );
+}
+
+function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): ReactElement {
   const { t } = useTranslation();
-  const { approvePlan, cancelGoal, isApproving, isCancelling } = useGoalMutations({ serverId });
+  const toast = useToast();
+  const mutations = useGoalMutations({ serverId });
+  const { approvePlan, cancelGoal, isApproving, isCancelling } = mutations;
   const [actionError, setActionError] = useState<string | null>(null);
+  const [isRejectOpen, setIsRejectOpen] = useState(false);
+  const hasControls = useHostFeature(serverId, "goalControls");
+  const controls = goalControlsAvailable(goal, hasControls);
   const showApprove = canApproveGoalPlan(goal.status);
   const showCancel = !isGoalTerminal(goal.status);
+  const badge = goalBadge(t, goal);
+  const created = useCompactTimeAgo(useMemo(() => new Date(goal.createdAt), [goal.createdAt]));
+  const lead = useMemo(
+    () =>
+      goal.leadAgentId ? { agentId: goal.leadAgentId, workspaceId: goal.leadWorkspaceId } : null,
+    [goal.leadAgentId, goal.leadWorkspaceId],
+  );
+  const meta = [t("goals.detail.created", { time: created })];
+  if (goal.integration) {
+    meta.push(t("goals.detail.branch", { branch: goal.integration.branch }));
+  }
+  if (goal.config) {
+    meta.push(goal.config.cwd);
+  }
 
   const handleApprove = useCallback(() => {
     setActionError(null);
@@ -106,128 +156,197 @@ function GoalDetailContent({
     });
   }, [cancelGoal, goal.id, t]);
 
+  const run = useCallback((action: Promise<void>) => {
+    setActionError(null);
+    action.catch((error: unknown) => setActionError(toErrorMessage(error)));
+  }, []);
+  const { rejectPlan, retry, pause, resume } = mutations;
+  const handlePause = useCallback(() => run(pause(goal.id)), [goal.id, pause, run]);
+  const handleResume = useCallback(() => run(resume(goal.id)), [goal.id, resume, run]);
+  const handleRetry = useCallback(() => run(retry({ goalId: goal.id })), [goal.id, retry, run]);
+  const openReject = useCallback(() => setIsRejectOpen(true), []);
+  const closeReject = useCallback(() => setIsRejectOpen(false), []);
+  const handleReject = useCallback(
+    (feedback: string) => {
+      setActionError(null);
+      rejectPlan({ goalId: goal.id, ...(feedback ? { feedback } : {}) })
+        .then(() => setIsRejectOpen(false))
+        .catch((error: unknown) => setActionError(toErrorMessage(error)));
+    },
+    [goal.id, rejectPlan],
+  );
+  const rejectCopy = useMemo(
+    () => ({
+      title: t("goals.detail.rejectPlanTitle"),
+      label: t("goals.detail.rejectPlanLabel"),
+      placeholder: t("goals.detail.rejectPlanPlaceholder"),
+      send: t("goals.detail.rejectPlanSend"),
+    }),
+    [t],
+  );
+
+  const handleCopyId = useCallback(() => {
+    void Clipboard.setStringAsync(goal.id);
+    toast.copied(t("goals.detail.goalId"));
+  }, [goal.id, t, toast]);
+
   return (
-    <View>
-      <View style={styles.summary}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title}>{goal.title}</Text>
-          <StatusBadge
-            label={t(`goals.status.${goal.status}`)}
-            variant={GOAL_STATUS_BADGE[goal.status]}
-          />
-        </View>
-        {goal.objective ? <Text style={styles.objective}>{goal.objective}</Text> : null}
-        {goal.failureReason ? <Text style={styles.error}>{goal.failureReason}</Text> : null}
-        {showApprove || showCancel ? (
-          <View style={styles.actions}>
-            {showApprove ? (
-              <Button
-                size="sm"
-                variant="default"
-                onPress={handleApprove}
-                loading={isApproving}
-                testID="goal-approve-plan"
-              >
-                {t("goals.detail.approvePlan")}
-              </Button>
-            ) : null}
-            {showCancel ? (
-              <Button
-                size="sm"
-                variant="outline"
-                onPress={handleCancel}
-                loading={isCancelling}
-                testID="goal-cancel"
-              >
-                {t("goals.detail.cancelGoal")}
-              </Button>
-            ) : null}
-          </View>
+    <View style={styles.summary}>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>{goal.title}</Text>
+        <StatusBadge label={badge.label} variant={badge.variant} />
+      </View>
+      {goal.objective ? <Text style={styles.objective}>{goal.objective}</Text> : null}
+      <Text style={styles.meta} numberOfLines={2}>
+        {meta.join(" · ")}
+      </Text>
+      <View style={styles.actions}>
+        {showApprove ? (
+          <Button
+            size="sm"
+            variant="default"
+            onPress={handleApprove}
+            loading={isApproving}
+            testID="goal-approve-plan"
+          >
+            {t("goals.detail.approvePlan")}
+          </Button>
         ) : null}
-        {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+        {controls.canRejectPlan ? (
+          <Button size="sm" variant="outline" onPress={openReject} testID="goal-reject-plan">
+            {t("goals.detail.rejectPlan")}
+          </Button>
+        ) : null}
+        {controls.canRetry ? (
+          <Button
+            size="sm"
+            variant="default"
+            onPress={handleRetry}
+            loading={mutations.pendingRetryTaskId === ""}
+            testID="goal-retry"
+          >
+            {t("goals.detail.retryGoal")}
+          </Button>
+        ) : null}
+        {controls.canPause ? (
+          <Button
+            size="sm"
+            variant="outline"
+            leftIcon={Pause}
+            onPress={handlePause}
+            loading={mutations.isPausing}
+            testID="goal-pause"
+          >
+            {t("goals.detail.pause")}
+          </Button>
+        ) : null}
+        {controls.canResume ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            leftIcon={Play}
+            onPress={handleResume}
+            loading={mutations.isPausing}
+            testID="goal-resume"
+          >
+            {t("goals.detail.resume")}
+          </Button>
+        ) : null}
+        {lead ? (
+          <OpenAgentButton
+            serverId={serverId}
+            agent={lead}
+            taskId="lead"
+            label={t("goals.detail.openLead")}
+          />
+        ) : null}
+        <Button
+          size="sm"
+          variant="ghost"
+          leftIcon={Copy}
+          onPress={handleCopyId}
+          testID="goal-copy-id"
+        >
+          {t("goals.detail.copyId")}
+        </Button>
+        {showCancel ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={handleCancel}
+            loading={isCancelling}
+            testID="goal-cancel"
+          >
+            {t("goals.detail.cancelGoal")}
+          </Button>
+        ) : null}
       </View>
-
-      <SettingsSection title={t("goals.detail.criteria")}>
-        <SettingsCard>
-          {goal.criteria.length === 0 ? (
-            <EmptyRow label={t("goals.detail.noCriteria")} />
-          ) : (
-            goal.criteria.map((criterion) => (
-              <View key={criterion.id} style={settingsStyles.row}>
-                <Text style={[settingsStyles.rowTitle, styles.rowText]}>{criterion.text}</Text>
-                <StatusBadge
-                  label={t(
-                    criterion.verifiedAt ? "goals.detail.verified" : "goals.detail.unverified",
-                  )}
-                  variant={criterion.verifiedAt ? "success" : "muted"}
-                />
-              </View>
-            ))
-          )}
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection title={t("goals.detail.tasks")}>
-        <SettingsCard>
-          {goal.tasks.length === 0 ? (
-            <EmptyRow label={t("goals.detail.noTasks")} />
-          ) : (
-            goal.tasks.map((task) => (
-              <View key={task.id} style={settingsStyles.row}>
-                <View style={settingsStyles.rowContent}>
-                  <Text style={settingsStyles.rowTitle}>{task.title}</Text>
-                  <Text style={settingsStyles.rowHint}>{formatTaskMeta(task, t)}</Text>
-                  {task.error ? <Text style={settingsStyles.rowError}>{task.error}</Text> : null}
-                </View>
-                <StatusBadge
-                  label={t(`goals.taskStatus.${task.status}`)}
-                  variant={TASK_STATUS_BADGE[task.status]}
-                />
-              </View>
-            ))
-          )}
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection title={t("goals.detail.history")}>
-        <SettingsCard>
-          {events.length === 0 ? (
-            <EmptyRow label={t("goals.detail.noEvents")} />
-          ) : (
-            events.map((event) => <GoalEventRow key={event.id} event={event} />)
-          )}
-        </SettingsCard>
-      </SettingsSection>
+      {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+      {isRejectOpen ? (
+        <GoalFeedbackSheet
+          copy={rejectCopy}
+          subject={goal.title}
+          isRequired={false}
+          isSending={mutations.isRejecting}
+          error={actionError}
+          onSend={handleReject}
+          onClose={closeReject}
+          testID="goal-reject-plan-sheet"
+        />
+      ) : null}
     </View>
   );
 }
 
-function formatTaskMeta(task: Task, t: TFunction): string {
-  const base = `${task.id} · ${task.kind}`;
-  if (task.dependsOn.length === 0) {
-    return base;
+function GoalGuidanceBanner({ goal }: { goal: Goal }): ReactElement {
+  const { t } = useTranslation();
+  const guidance = goalGuidance(goal);
+  const description = [t(`goals.guidance.${guidance.phase}.description`, guidance.params)];
+  if (guidance.phase === "failed" && goal.failureReason) {
+    description.unshift(goal.failureReason);
   }
-  return `${base} · ${t("goals.detail.dependsOn", { ids: task.dependsOn.join(", ") })}`;
-}
-
-function GoalEventRow({ event }: { event: GoalEvent }): ReactElement {
-  const subject = goalEventSubject(event);
   return (
-    <View style={settingsStyles.row}>
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{event.type}</Text>
-        {subject ? <Text style={settingsStyles.rowHint}>{subject}</Text> : null}
-      </View>
-      <Text style={styles.meta}>{new Date(event.at).toLocaleString()}</Text>
+    <View style={styles.banner} testID={`goal-guidance-${guidance.phase}`}>
+      <Alert
+        variant={guidance.tone}
+        title={t(`goals.guidance.${guidance.phase}.title`)}
+        description={description.join(" ")}
+      />
     </View>
   );
 }
 
-function EmptyRow({ label }: { label: string }): ReactElement {
+function GoalCriteria({ goal }: { goal: Goal }): ReactElement {
+  const { t } = useTranslation();
   return (
-    <View style={settingsStyles.row}>
-      <Text style={styles.meta}>{label}</Text>
-    </View>
+    <SettingsSection title={t("goals.detail.criteria")}>
+      <SettingsCard>
+        {goal.criteria.length === 0 ? (
+          <View style={settingsStyles.row}>
+            <Text style={styles.meta}>{t("goals.detail.noCriteria")}</Text>
+          </View>
+        ) : (
+          goal.criteria.map((criterion) => (
+            <View key={criterion.id} style={settingsStyles.row}>
+              <View style={settingsStyles.rowContent}>
+                <Text style={settingsStyles.rowTitle}>{criterion.text}</Text>
+                {criterion.evidence ? (
+                  <Text style={settingsStyles.rowHint} numberOfLines={4}>
+                    {criterion.evidence}
+                  </Text>
+                ) : null}
+              </View>
+              <StatusBadge
+                label={t(
+                  criterion.verifiedAt ? "goals.detail.verified" : "goals.detail.unverified",
+                )}
+                variant={criterion.verifiedAt ? "success" : "muted"}
+              />
+            </View>
+          ))
+        )}
+      </SettingsCard>
+    </SettingsSection>
   );
 }
 
@@ -263,16 +382,19 @@ const styles = StyleSheet.create((theme) => ({
   },
   actions: {
     flexDirection: "row",
-    gap: theme.spacing[3],
+    flexWrap: "wrap",
+    gap: theme.spacing[2],
     marginTop: theme.spacing[2],
+  },
+  stepper: {
+    marginBottom: theme.spacing[4],
+  },
+  banner: {
+    marginBottom: theme.spacing[6],
   },
   error: {
     color: theme.colors.palette.red[300],
     fontSize: theme.fontSize.sm,
-  },
-  rowText: {
-    flex: 1,
-    marginRight: theme.spacing[3],
   },
   meta: {
     color: theme.colors.foregroundMuted,

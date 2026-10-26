@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useMemo,
-  useSyncExternalStore,
-  type ReactElement,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -12,38 +6,31 @@ import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { Goal } from "@getpaseo/protocol/goal/types";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
-import { useProviderIcon } from "@/components/provider-icons";
 import { Button } from "@/components/ui/button";
-import { ComboboxItem } from "@/components/ui/combobox";
 import type { FieldControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
-import {
-  SelectField,
-  type SelectFieldDisplay,
-  type SelectFieldOption,
-  type SelectFieldRenderOptionInput,
-} from "@/components/ui/select-field";
 import { Switch } from "@/components/ui/switch";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { deriveGoalTitle } from "@/goals/goal-chat-prefill";
+import { goalFormMemoryFromConfig, prefillFromGoalFormMemory } from "@/goals/goal-form-memory";
 import type {
   GoalFormField,
   GoalFormIssue,
   GoalFormModel,
   GoalFormPrefill,
+  GoalFormSnapshot,
   GoalFormState,
-  GoalFormValues,
-  GoalPermissionPolicy,
 } from "@/goals/goal-form-model";
+import { settingsSummaryText } from "@/goals/goal-labels";
+import { GOAL_PRESET_IDS, type GoalSettingsChoice } from "@/goals/goal-settings";
 import { useGoalFormModel, useGoalFormProviderOptions } from "@/goals/use-goal-form-model";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
+import { useHostFeature } from "@/runtime/host-features";
+import { useGoalFormMemoryStore } from "@/stores/goal-form-memory-store";
 import { toErrorMessage } from "@/utils/error-messages";
-
-type ProvidersSnapshot = ReturnType<typeof useGoalFormProviderOptions>;
-type NumberValueKey = Extract<
-  keyof GoalFormValues,
-  "maxParallel" | "maxTasks" | "maxRuns" | "runTimeoutMinutes" | "goalTimeoutMinutes"
->;
+import { GoalFormAdvanced } from "./goal-form-advanced";
+import { ProviderSelect } from "./goal-form-fields";
 
 /**
  * Mount only while open: the caller renders this conditionally, so every open
@@ -63,7 +50,10 @@ export function GoalFormSheet({
   const { t } = useTranslation();
   const controlSize: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
   const { createGoal, isCreating } = useGoalMutations({ serverId });
-  const model = useGoalFormModel(prefill);
+  // Budget caps ship with the goal controls; a host without them would drop the caps silently.
+  const budgetSupported = useHostFeature(serverId, "goalControls");
+  const [snapshot] = useState(() => buildSnapshot({ serverId, prefill, budgetSupported }));
+  const model = useGoalFormModel(snapshot);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const providersSnapshot = useGoalFormProviderOptions({
     model,
@@ -74,11 +64,17 @@ export function GoalFormSheet({
 
   const handleSubmit = useCallback(async () => {
     if (!createInput) {
+      model.attemptSubmit();
       return;
     }
     model.setSubmitError(null);
     try {
       const goal = await createGoal(createInput);
+      if (createInput.config) {
+        useGoalFormMemoryStore
+          .getState()
+          .remember(serverId, goalFormMemoryFromConfig(createInput.config, state.values.settings));
+      }
       onClose();
       if (goal) {
         onCreated?.(goal);
@@ -86,7 +82,7 @@ export function GoalFormSheet({
     } catch (error) {
       model.setSubmitError(toErrorMessage(error));
     }
-  }, [createGoal, createInput, model, onClose, onCreated]);
+  }, [createGoal, createInput, model, onClose, onCreated, serverId, state.values.settings]);
 
   const handleSubmitPress = useCallback(() => {
     void handleSubmit();
@@ -109,7 +105,6 @@ export function GoalFormSheet({
           style={styles.footerButton}
           variant="default"
           onPress={handleSubmitPress}
-          disabled={!createInput}
           loading={isCreating}
           testID="goal-form-submit"
         >
@@ -117,7 +112,7 @@ export function GoalFormSheet({
         </Button>
       </View>
     ),
-    [createInput, handleSubmitPress, isCreating, onClose, t],
+    [handleSubmitPress, isCreating, onClose, t],
   );
 
   const setTitle = useCallback((value: string) => model.setValue("title", value), [model]);
@@ -127,6 +122,8 @@ export function GoalFormSheet({
     [model],
   );
   const setManaged = useCallback((value: boolean) => model.setValue("managed", value), [model]);
+  const titlePlaceholder =
+    deriveGoalTitle(state.values.objective) || t("goals.form.titlePlaceholder");
 
   return (
     <AdaptiveModalSheet
@@ -136,22 +133,17 @@ export function GoalFormSheet({
       footer={footer}
       testID="goal-form-sheet"
     >
-      <Field label={t("goals.form.titleLabel")}>
-        <FormTextInput
-          size={controlSize}
-          testID="goal-title-input"
-          accessibilityLabel={t("goals.form.titleLabel")}
-          initialValue={state.values.title}
-          onChangeText={setTitle}
-        />
-      </Field>
-      <Field label={t("goals.form.objectiveLabel")}>
+      <Field
+        label={t("goals.form.objectiveLabel")}
+        error={issueMessage(t, state.visibleIssues, "title")}
+      >
         <FormTextInput
           size={controlSize}
           testID="goal-objective-input"
           accessibilityLabel={t("goals.form.objectiveLabel")}
           initialValue={state.values.objective}
           onChangeText={setObjective}
+          placeholder={t("goals.form.objectivePlaceholder")}
           style={styles.multilineInput}
           multiline
           numberOfLines={4}
@@ -160,7 +152,7 @@ export function GoalFormSheet({
       </Field>
       <Field
         label={t("goals.form.criteriaLabel")}
-        error={issueMessage(t, state.issues, "criteria", t("goals.form.errors.criteriaRequired"))}
+        error={issueMessage(t, state.visibleIssues, "criteria")}
       >
         <FormTextInput
           size={controlSize}
@@ -173,6 +165,16 @@ export function GoalFormSheet({
           multiline
           numberOfLines={4}
           textAlignVertical="top"
+        />
+      </Field>
+      <Field label={t("goals.form.titleLabel")}>
+        <FormTextInput
+          size={controlSize}
+          testID="goal-title-input"
+          accessibilityLabel={t("goals.form.titleLabel")}
+          initialValue={state.values.title}
+          onChangeText={setTitle}
+          placeholder={titlePlaceholder}
         />
       </Field>
       <Field label={t("goals.form.managedLabel")}>
@@ -188,46 +190,68 @@ export function GoalFormSheet({
           model={model}
           state={state}
           serverId={serverId}
-          providersSnapshot={providersSnapshot}
+          providersLoading={providersSnapshot.isLoading || providersSnapshot.isFetching}
           size={controlSize}
         />
       ) : null}
+      <Outcome state={state} />
       {state.submitError ? <Text style={styles.submitError}>{state.submitError}</Text> : null}
     </AdaptiveModalSheet>
   );
 }
 
-/**
- * Only range errors and the missing criterion are shown inline: an empty required text field
- * or picker already reads as unfilled, and the disabled Create button says the rest.
- */
+function buildSnapshot(input: {
+  serverId: string;
+  prefill: GoalFormPrefill | undefined;
+  budgetSupported: boolean;
+}): GoalFormSnapshot {
+  // Read once: the form starts from your last goal and never rebuilds when memory changes.
+  const memory = useGoalFormMemoryStore.getState().byServer[input.serverId] ?? null;
+  return {
+    prefill: {
+      ...prefillFromGoalFormMemory(memory, { cwd: input.prefill?.cwd }),
+      ...input.prefill,
+    },
+    personalSettings: memory?.settings ?? null,
+    budgetSupported: input.budgetSupported,
+  };
+}
+
 function issueMessage(
   t: TFunction,
   issues: readonly GoalFormIssue[],
   field: GoalFormField,
-  requiredMessage?: string,
 ): string | null {
   const issue = issues.find((candidate) => candidate.field === field);
   if (!issue) {
     return null;
   }
-  if (issue.code === "range") {
-    return t("goals.form.errors.range", { min: issue.min, max: issue.max });
+  if (issue.code === "excludesRole") {
+    return t("goals.form.errors.excludesRole", { provider: issue.provider });
   }
-  return requiredMessage ?? null;
+  switch (field) {
+    case "title":
+      return t("goals.form.errors.titleRequired");
+    case "criteria":
+      return t("goals.form.errors.criteriaRequired");
+    case "cwd":
+      return t("goals.form.errors.cwdRequired");
+    default:
+      return t("goals.form.errors.providerRequired");
+  }
 }
 
 function ManagedGoalFields({
   model,
   state,
   serverId,
-  providersSnapshot,
+  providersLoading,
   size,
 }: {
   model: GoalFormModel;
   state: GoalFormState;
   serverId: string;
-  providersSnapshot: ProvidersSnapshot;
+  providersLoading: boolean;
   size: FieldControlSize;
 }): ReactElement {
   const { t } = useTranslation();
@@ -238,45 +262,23 @@ function ManagedGoalFields({
     (value: string) => model.setValue("defaultProvider", value),
     [model],
   );
-  const setReview = useCallback(
-    (value: string) => model.setValue("reviewProvider", value),
-    [model],
-  );
-  const setLeadModel = useCallback((value: string) => model.setValue("leadModel", value), [model]);
-  const setDefaultModel = useCallback(
-    (value: string) => model.setValue("defaultModel", value),
-    [model],
-  );
-  const setReviewModel = useCallback(
-    (value: string) => model.setValue("reviewModel", value),
-    [model],
-  );
   const setTestCommand = useCallback(
     (value: string) => model.setValue("testCommand", value),
     [model],
   );
-  const setAutoApprove = useCallback(
-    (value: boolean) => model.setValue("autoApprovePlan", value),
-    [model],
+  const toggleAdvanced = useCallback(
+    () => model.setAdvancedExpanded(!state.advancedExpanded),
+    [model, state.advancedExpanded],
   );
-  const setRequireApproval = useCallback(
-    (value: boolean) => model.setValue("requireHumanApproval", value),
-    [model],
-  );
-  const toggleLimits = useCallback(
-    () => model.setLimitsExpanded(!state.limitsExpanded),
-    [model, state.limitsExpanded],
-  );
-  const providersLoading = providersSnapshot.isLoading || providersSnapshot.isFetching;
-  const limitsAccessibilityState = useMemo(
-    () => ({ expanded: state.limitsExpanded }),
-    [state.limitsExpanded],
+  const advancedAccessibilityState = useMemo(
+    () => ({ expanded: state.advancedExpanded }),
+    [state.advancedExpanded],
   );
 
   return (
     <>
       {state.originAgentId ? <Text style={styles.note}>{t("goals.form.postsBack")}</Text> : null}
-      <Field label={t("goals.form.cwdLabel")}>
+      <Field label={t("goals.form.cwdLabel")} error={issueMessage(t, state.visibleIssues, "cwd")}>
         <FormTextInput
           size={size}
           testID="goal-cwd-input"
@@ -297,15 +299,6 @@ function ManagedGoalFields({
         size={size}
         testID="goal-lead-provider"
       />
-      <ModelSelect
-        label={t("goals.form.leadModelLabel")}
-        provider={values.leadProvider}
-        value={values.leadModel}
-        onChange={setLeadModel}
-        options={state.providerOptions}
-        size={size}
-        testID="goal-lead-model"
-      />
       <ProviderSelect
         label={t("goals.form.defaultProviderLabel")}
         value={values.defaultProvider}
@@ -316,36 +309,7 @@ function ManagedGoalFields({
         size={size}
         testID="goal-default-provider"
       />
-      <ModelSelect
-        label={t("goals.form.defaultModelLabel")}
-        provider={values.defaultProvider}
-        value={values.defaultModel}
-        onChange={setDefaultModel}
-        options={state.providerOptions}
-        size={size}
-        testID="goal-default-model"
-      />
-      <ProviderSelect
-        label={t("goals.form.reviewProviderLabel")}
-        value={values.reviewProvider}
-        onChange={setReview}
-        options={state.providerOptions}
-        serverId={serverId}
-        loading={providersLoading}
-        size={size}
-        emptyLabel={t("goals.form.sameAsLead")}
-        testID="goal-review-provider"
-      />
-      <ModelSelect
-        label={t("goals.form.reviewModelLabel")}
-        provider={values.reviewProvider}
-        value={values.reviewModel}
-        onChange={setReviewModel}
-        options={state.providerOptions}
-        size={size}
-        testID="goal-review-model"
-      />
-      <Field label={t("goals.form.testCommandLabel")}>
+      <Field label={t("goals.form.testCommandLabel")} hint={t("goals.form.testCommandHint")}>
         <FormTextInput
           size={size}
           testID="goal-test-command-input"
@@ -357,55 +321,38 @@ function ManagedGoalFields({
           autoCorrect={false}
         />
       </Field>
-      <Field label={t("goals.form.autoApproveLabel")}>
-        <Switch
-          value={values.autoApprovePlan}
-          onValueChange={setAutoApprove}
-          accessibilityLabel={t("goals.form.autoApproveLabel")}
-          testID="goal-auto-approve-switch"
-        />
-      </Field>
-      <Field label={t("goals.form.requireApprovalLabel")}>
-        <Switch
-          value={values.requireHumanApproval}
-          onValueChange={setRequireApproval}
-          accessibilityLabel={t("goals.form.requireApprovalLabel")}
-          testID="goal-require-approval-switch"
-        />
-      </Field>
-      <NumberField
-        model={model}
-        state={state}
-        field="maxParallel"
-        label={t("goals.form.maxParallelLabel")}
-        size={size}
-      />
+      <StylePicker model={model} state={state} size={size} />
       <View style={styles.disclosure}>
         <Button
           variant="ghost"
           size="sm"
-          leftIcon={state.limitsExpanded ? ChevronDown : ChevronRight}
-          onPress={toggleLimits}
-          accessibilityState={limitsAccessibilityState}
-          testID="goal-limits-toggle"
+          leftIcon={state.advancedExpanded ? ChevronDown : ChevronRight}
+          onPress={toggleAdvanced}
+          accessibilityState={advancedAccessibilityState}
+          testID="goal-advanced-toggle"
         >
-          {t("goals.form.limitsLabel")}
+          {t("goals.form.advanced")}
         </Button>
       </View>
-      {state.limitsExpanded ? <LimitFields model={model} state={state} size={size} /> : null}
+      {state.advancedExpanded ? (
+        <GoalFormAdvanced
+          model={model}
+          state={state}
+          serverId={serverId}
+          providersLoading={providersLoading}
+          size={size}
+        />
+      ) : null}
+      <View style={styles.summary} testID="goal-settings-summary">
+        <Text style={styles.summaryLabel}>{t("goals.form.summaryLabel")}</Text>
+        <Text style={styles.summaryText}>{settingsSummaryText(t, state.summary)}</Text>
+      </View>
     </>
   );
 }
 
-// docs/goals.md "Configuration": what the daemon uses when a limit is left blank.
-const LIMIT_DEFAULTS: Record<Exclude<NumberValueKey, "maxParallel">, string> = {
-  maxTasks: "25",
-  maxRuns: "60",
-  runTimeoutMinutes: "60",
-  goalTimeoutMinutes: "1440",
-};
-
-function LimitFields({
+/** Careful, Balanced, Turbo, your own last settings, and Custom once you edit any of them. */
+function StylePicker({
   model,
   state,
   size,
@@ -415,271 +362,59 @@ function LimitFields({
   size: FieldControlSize;
 }): ReactElement {
   const { t } = useTranslation();
-  const permissionOptions = useMemo<SegmentedControlOption<GoalPermissionPolicy>[]>(
-    () => [
-      { value: "fail", label: t("goals.form.permissionFail"), testID: "goal-permission-fail" },
-      { value: "wait", label: t("goals.form.permissionWait"), testID: "goal-permission-wait" },
-    ],
-    [t],
-  );
-  const setPermission = useCallback(
-    (value: GoalPermissionPolicy) => model.setValue("onPermissionRequest", value),
+  const hasPersonal = state.personalSettings !== null;
+  const isCustom = state.settingsChoice === "custom";
+  const options = useMemo<SegmentedControlOption<GoalSettingsChoice>[]>(() => {
+    const choices: GoalSettingsChoice[] = [...GOAL_PRESET_IDS];
+    if (hasPersonal) {
+      choices.push("mine");
+    }
+    if (isCustom) {
+      choices.push("custom");
+    }
+    return choices.map((choice) => ({
+      value: choice,
+      label: t(`goals.form.presets.${choice}`),
+      disabled: choice === "custom",
+      testID: `goal-preset-${choice}`,
+    }));
+  }, [hasPersonal, isCustom, t]);
+  const handleChange = useCallback(
+    (choice: GoalSettingsChoice) => {
+      if (choice !== "custom") {
+        model.chooseSettings(choice);
+      }
+    },
     [model],
   );
-
   return (
-    <>
-      <NumberField
-        model={model}
-        state={state}
-        field="maxTasks"
-        label={t("goals.form.maxTasksLabel")}
-        placeholder={LIMIT_DEFAULTS.maxTasks}
+    <Field
+      label={t("goals.form.styleLabel")}
+      hint={t(`goals.form.presetHints.${state.settingsChoice}`)}
+    >
+      <SegmentedControl
+        options={options}
+        value={state.settingsChoice}
+        onValueChange={handleChange}
         size={size}
-      />
-      <NumberField
-        model={model}
-        state={state}
-        field="maxRuns"
-        label={t("goals.form.maxRunsLabel")}
-        placeholder={LIMIT_DEFAULTS.maxRuns}
-        size={size}
-      />
-      <NumberField
-        model={model}
-        state={state}
-        field="runTimeoutMinutes"
-        label={t("goals.form.runTimeoutLabel")}
-        placeholder={LIMIT_DEFAULTS.runTimeoutMinutes}
-        size={size}
-      />
-      <NumberField
-        model={model}
-        state={state}
-        field="goalTimeoutMinutes"
-        label={t("goals.form.goalTimeoutLabel")}
-        placeholder={LIMIT_DEFAULTS.goalTimeoutMinutes}
-        size={size}
-      />
-      <Field label={t("goals.form.permissionLabel")}>
-        <SegmentedControl
-          options={permissionOptions}
-          value={state.values.onPermissionRequest}
-          onValueChange={setPermission}
-          size={size}
-          testID="goal-permission"
-        />
-      </Field>
-    </>
-  );
-}
-
-function NumberField({
-  model,
-  state,
-  field,
-  label,
-  placeholder,
-  size,
-}: {
-  model: GoalFormModel;
-  state: GoalFormState;
-  field: NumberValueKey;
-  label: string;
-  placeholder?: string;
-  size: FieldControlSize;
-}): ReactElement {
-  const { t } = useTranslation();
-  const handleChange = useCallback((value: string) => model.setValue(field, value), [field, model]);
-  return (
-    <Field label={label} error={issueMessage(t, state.issues, field)}>
-      <FormTextInput
-        size={size}
-        testID={`goal-${field}-input`}
-        accessibilityLabel={label}
-        initialValue={state.values[field]}
-        onChangeText={handleChange}
-        placeholder={placeholder}
-        keyboardType="number-pad"
+        testID="goal-preset"
       />
     </Field>
   );
 }
 
-function ProviderSelect({
-  label,
-  value,
-  onChange,
-  options,
-  serverId,
-  loading,
-  size,
-  emptyLabel,
-  testID,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: GoalFormState["providerOptions"];
-  serverId: string;
-  loading: boolean;
-  size: FieldControlSize;
-  /** When set, an extra first option that clears the selection. */
-  emptyLabel?: string;
-  testID: string;
-}): ReactElement {
+function Outcome({ state }: { state: GoalFormState }): ReactElement {
   const { t } = useTranslation();
-  const selectOptions = useMemo<SelectFieldOption<string>[]>(() => {
-    const providerOptions = options.map((option) => ({
-      id: option.id,
-      value: option.id,
-      label: option.label,
-      testID: `${testID}-option-${option.id}`,
-    }));
-    return emptyLabel
-      ? [
-          { id: "", value: "", label: emptyLabel, testID: `${testID}-option-none` },
-          ...providerOptions,
-        ]
-      : providerOptions;
-  }, [emptyLabel, options, testID]);
-  // The prefilled id stands in for its label until the providers snapshot arrives.
-  const selectedDisplay = useMemo<SelectFieldDisplay | null>(() => {
-    if (!value) {
-      return emptyLabel ? { label: emptyLabel } : null;
-    }
-    return { label: options.find((option) => option.id === value)?.label ?? value };
-  }, [emptyLabel, options, value]);
-  const handleChange = useCallback((next: string) => onChange(next), [onChange]);
-  const renderOption = useCallback(
-    (input: SelectFieldRenderOptionInput<string>) => (
-      <ProviderOptionItem {...input} serverId={serverId} />
-    ),
-    [serverId],
-  );
-  const triggerLeading = useMemo(
-    () => (value ? <ProviderGlyph provider={value} serverId={serverId} /> : undefined),
-    [serverId, value],
-  );
-
   return (
-    <SelectField
-      label={label}
-      value={emptyLabel || value ? value : null}
-      selectedDisplay={selectedDisplay}
-      options={selectOptions}
-      onChange={handleChange}
-      placeholder={t("goals.form.providerPlaceholder")}
-      emptyText={t("goals.form.providerEmpty")}
-      loading={loading}
-      searchable={false}
-      title={label}
-      size={size}
-      renderOption={renderOption}
-      triggerLeading={triggerLeading}
-      testID={testID}
-      triggerTestID={`${testID}-trigger`}
-    />
+    <View style={styles.summary} testID="goal-outcome">
+      <Text style={styles.summaryLabel}>{t("goals.form.outcomeLabel")}</Text>
+      {state.outcome.map((step) => (
+        <Text key={step} style={styles.summaryText}>
+          {t(`goals.form.outcome.${step}`)}
+        </Text>
+      ))}
+    </View>
   );
-}
-
-/**
- * The model for one provider picker. Hidden until a provider is chosen and lists models; the
- * empty option leaves the model to the provider's default.
- */
-function ModelSelect({
-  label,
-  provider,
-  value,
-  onChange,
-  options,
-  size,
-  testID,
-}: {
-  label: string;
-  provider: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: GoalFormState["providerOptions"];
-  size: FieldControlSize;
-  testID: string;
-}): ReactElement | null {
-  const { t } = useTranslation();
-  const models = useMemo(
-    () => options.find((option) => option.id === provider)?.models ?? [],
-    [options, provider],
-  );
-  const defaultLabel = t("goals.form.modelDefault");
-  const selectOptions = useMemo<SelectFieldOption<string>[]>(
-    () => [
-      { id: "", value: "", label: defaultLabel, testID: `${testID}-option-default` },
-      ...models.map((entry) => ({
-        id: entry.id,
-        value: entry.id,
-        label: entry.label,
-        ...(entry.description ? { description: entry.description } : {}),
-        testID: `${testID}-option-${entry.id}`,
-      })),
-    ],
-    [defaultLabel, models, testID],
-  );
-  // A prefilled model stands in for its label until the providers snapshot arrives.
-  const selectedDisplay = useMemo<SelectFieldDisplay>(
-    () =>
-      value
-        ? { label: models.find((entry) => entry.id === value)?.label ?? value }
-        : { label: defaultLabel },
-    [defaultLabel, models, value],
-  );
-  const handleChange = useCallback((next: string) => onChange(next), [onChange]);
-
-  if (!provider || (models.length === 0 && !value)) {
-    return null;
-  }
-  return (
-    <SelectField
-      label={label}
-      value={value}
-      selectedDisplay={selectedDisplay}
-      options={selectOptions}
-      onChange={handleChange}
-      placeholder={defaultLabel}
-      emptyText={t("goals.form.modelEmpty")}
-      searchable={models.length > 8}
-      title={label}
-      size={size}
-      testID={testID}
-      triggerTestID={`${testID}-trigger`}
-    />
-  );
-}
-
-function ProviderOptionItem({
-  option,
-  selected,
-  active,
-  onPress,
-  serverId,
-}: SelectFieldRenderOptionInput<string> & { serverId: string }): ReactElement {
-  const leadingSlot = useMemo<ReactNode>(
-    () => (option.value ? <ProviderGlyph provider={option.value} serverId={serverId} /> : null),
-    [option.value, serverId],
-  );
-  return (
-    <ComboboxItem
-      testID={option.testID}
-      label={option.label}
-      selected={selected}
-      active={active}
-      onPress={onPress}
-      leadingSlot={leadingSlot}
-    />
-  );
-}
-
-function ProviderGlyph({ provider, serverId }: { provider: string; serverId: string }) {
-  const Icon = useProviderIcon(provider, serverId);
-  return <Icon size={16} color={styles.providerIcon.color} />;
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -693,6 +428,21 @@ const styles = StyleSheet.create((theme) => ({
   disclosure: {
     alignItems: "flex-start",
   },
+  summary: {
+    gap: theme.spacing[1],
+    padding: theme.spacing[3],
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface2,
+  },
+  summaryLabel: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+  },
+  summaryText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
   footer: {
     flex: 1,
     flexDirection: "row",
@@ -704,8 +454,5 @@ const styles = StyleSheet.create((theme) => ({
   submitError: {
     color: theme.colors.palette.red[300],
     fontSize: theme.fontSize.sm,
-  },
-  providerIcon: {
-    color: theme.colors.foregroundMuted,
   },
 }));

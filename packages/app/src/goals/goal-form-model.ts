@@ -1,6 +1,24 @@
 import type { GoalConfig } from "@getpaseo/protocol/goal/types";
-
-export type GoalPermissionPolicy = "fail" | "wait";
+import { deriveGoalTitle } from "./goal-chat-prefill";
+import {
+  DAEMON_GOAL_SETTINGS,
+  GOAL_PRESETS,
+  NO_GOAL_BUDGET,
+  goalBudgetToLimits,
+  goalSettingsToConfig,
+  matchGoalSettingsChoice,
+  normalizeGoalSettings,
+  stepGoalBudget,
+  stepGoalSetting,
+  summarizeGoalSettings,
+  type GoalBudget,
+  type GoalBudgetKey,
+  type GoalNumberSetting,
+  type GoalPresetId,
+  type GoalSettings,
+  type GoalSettingsChoice,
+  type GoalSettingsSummaryPart,
+} from "./goal-settings";
 
 export interface GoalFormValues {
   title: string;
@@ -18,15 +36,17 @@ export interface GoalFormValues {
   reviewProvider: string;
   reviewModel: string;
   testCommand: string;
-  autoApprovePlan: boolean;
-  requireHumanApproval: boolean;
-  maxParallel: string;
-  maxTasks: string;
-  maxRuns: string;
-  runTimeoutMinutes: string;
-  goalTimeoutMinutes: string;
-  onPermissionRequest: GoalPermissionPolicy;
+  /** Empty means any registered provider. */
+  allowedProviders: string[];
+  settings: GoalSettings;
+  budget: GoalBudget;
 }
+
+/** The plain fields `setValue` edits; settings, budget and the allow-list have their own commands. */
+export type GoalFormTextKey = Exclude<
+  keyof GoalFormValues,
+  "settings" | "budget" | "allowedProviders"
+>;
 
 export interface GoalCreateInput {
   title: string;
@@ -35,18 +55,35 @@ export interface GoalCreateInput {
   config?: GoalConfig;
 }
 
-/** Values a caller seeds the form with, such as a chat the goal is started from. */
+/** Values a caller seeds the form with, such as a chat, a template or your last goal. */
 export interface GoalFormPrefill {
   title?: string;
   objective?: string;
+  criteriaText?: string;
   managed?: boolean;
   cwd?: string;
   /** A provider id, or "provider/model". */
   leadProvider?: string;
   /** A provider id, or "provider/model". */
   defaultProvider?: string;
+  /** A provider id, or "provider/model". */
+  reviewProvider?: string;
+  testCommand?: string;
+  allowedProviders?: string[];
+  /** Starts from a preset; wins over `settings`. */
+  preset?: GoalPresetId;
+  settings?: Partial<GoalSettings>;
+  budget?: GoalBudget;
   /** The chat the goal is started from; the daemon posts the outcome back there. */
   originAgentId?: string;
+}
+
+export interface GoalFormSnapshot {
+  prefill?: GoalFormPrefill;
+  /** Your remembered settings: the starting point when no preset is given, and the "Mine" choice. */
+  personalSettings?: GoalSettings | null;
+  /** The host enforces token and cost caps. Without it the budget is never sent. */
+  budgetSupported?: boolean;
 }
 
 export type GoalFormField =
@@ -55,40 +92,11 @@ export type GoalFormField =
   | "cwd"
   | "leadProvider"
   | "defaultProvider"
-  | "maxParallel"
-  | "maxTasks"
-  | "maxRuns"
-  | "runTimeoutMinutes"
-  | "goalTimeoutMinutes";
+  | "allowedProviders";
 
 export type GoalFormIssue =
   | { field: GoalFormField; code: "required" }
-  | { field: GoalFormField; code: "range"; min: number; max: number };
-
-type NumberField = Extract<
-  GoalFormField,
-  "maxParallel" | "maxTasks" | "maxRuns" | "runTimeoutMinutes" | "goalTimeoutMinutes"
->;
-
-/** Ranges from `GoalConfigSchema` (packages/protocol/src/goal/types.ts). */
-export const GOAL_NUMBER_RANGES: Record<NumberField, { min: number; max: number }> = {
-  maxParallel: { min: 1, max: 8 },
-  maxTasks: { min: 1, max: 100 },
-  maxRuns: { min: 1, max: 500 },
-  runTimeoutMinutes: { min: 1, max: 1440 },
-  goalTimeoutMinutes: { min: 1, max: 10080 },
-};
-
-const OPTIONAL_LIMIT_FIELDS = [
-  "maxTasks",
-  "maxRuns",
-  "runTimeoutMinutes",
-  "goalTimeoutMinutes",
-] as const satisfies readonly NumberField[];
-
-// docs/goals.md "Configuration": the CLI defaults for fields the form does not expose.
-const DEFAULT_MAX_PARALLEL = "2";
-const DEFAULT_MAX_ATTEMPTS = 2;
+  | { field: "allowedProviders"; code: "excludesRole"; provider: string };
 
 export const EMPTY_GOAL_FORM_VALUES: GoalFormValues = {
   title: "",
@@ -103,14 +111,9 @@ export const EMPTY_GOAL_FORM_VALUES: GoalFormValues = {
   reviewProvider: "",
   reviewModel: "",
   testCommand: "",
-  autoApprovePlan: false,
-  requireHumanApproval: false,
-  maxParallel: DEFAULT_MAX_PARALLEL,
-  maxTasks: "",
-  maxRuns: "",
-  runTimeoutMinutes: "",
-  goalTimeoutMinutes: "",
-  onPermissionRequest: "fail",
+  allowedProviders: [],
+  settings: DAEMON_GOAL_SETTINGS,
+  budget: NO_GOAL_BUDGET,
 };
 
 /** One acceptance criterion per non-blank line. */
@@ -121,28 +124,15 @@ export function parseGoalCriteria(text: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-/** A whole number, or null for blank or anything else. */
-function parseWholeNumber(raw: string): number | null {
-  const trimmed = raw.trim();
-  return /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : null;
-}
-
-function numberIssue(field: NumberField, raw: string, required: boolean): GoalFormIssue | null {
-  if (!raw.trim()) {
-    return required ? { field, code: "required" } : null;
-  }
-  const range = GOAL_NUMBER_RANGES[field];
-  const value = parseWholeNumber(raw);
-  if (value === null || value < range.min || value > range.max) {
-    return { field, code: "range", ...range };
-  }
-  return null;
+/** The title as sent: the one typed, or the objective's first line. */
+export function resolveGoalTitle(values: Pick<GoalFormValues, "title" | "objective">): string {
+  return values.title.trim() || deriveGoalTitle(values.objective);
 }
 
 /** Every reason the values cannot be submitted; empty when they can. */
 export function validateGoalForm(values: GoalFormValues): GoalFormIssue[] {
   const issues: GoalFormIssue[] = [];
-  if (!values.title.trim()) {
+  if (!resolveGoalTitle(values)) {
     issues.push({ field: "title", code: "required" });
   }
   if (!values.managed) {
@@ -156,10 +146,13 @@ export function validateGoalForm(values: GoalFormValues): GoalFormIssue[] {
       issues.push({ field, code: "required" });
     }
   }
-  for (const field of ["maxParallel", ...OPTIONAL_LIMIT_FIELDS] as const) {
-    const issue = numberIssue(field, values[field], field === "maxParallel");
-    if (issue) {
-      issues.push(issue);
+  if (values.allowedProviders.length > 0) {
+    const roles = [values.leadProvider, values.defaultProvider, values.reviewProvider];
+    const excluded = roles.find(
+      (provider) => provider.trim() && !values.allowedProviders.includes(provider),
+    );
+    if (excluded) {
+      issues.push({ field: "allowedProviders", code: "excludesRole", provider: excluded });
     }
   }
   return issues;
@@ -180,58 +173,84 @@ function splitProvider(value: string): { provider: string; model: string } {
     : { provider: value.slice(0, slash), model: value.slice(slash + 1) };
 }
 
-function buildLimits(values: GoalFormValues): GoalConfig["limits"] {
-  const limits: NonNullable<GoalConfig["limits"]> = {};
-  for (const field of OPTIONAL_LIMIT_FIELDS) {
-    const value = parseWholeNumber(values[field]);
-    if (value !== null) {
-      limits[field] = value;
-    }
-  }
-  return Object.keys(limits).length > 0 ? limits : undefined;
-}
-
 /**
- * The goal config exactly as `GoalConfigSchema` takes it, leaving out every optional field the
- * user did not set so the daemon applies its own default. Call only on values that validate.
+ * The goal config exactly as `GoalConfigSchema` takes it, leaving out every optional field equal
+ * to the daemon's default. Call only on values that validate.
  */
-function buildGoalConfig(values: GoalFormValues, originAgentId: string | null): GoalConfig {
+function buildGoalConfig(input: {
+  values: GoalFormValues;
+  originAgentId: string | null;
+  budgetSupported: boolean;
+}): GoalConfig {
+  const { values } = input;
   const reviewProvider = values.reviewProvider.trim()
     ? composeProvider(values.reviewProvider, values.reviewModel)
     : "";
   const testCommand = values.testCommand.trim();
-  const limits = buildLimits(values);
+  const settingsConfig = goalSettingsToConfig(values.settings);
+  const limits = {
+    ...settingsConfig.limits,
+    ...(input.budgetSupported ? goalBudgetToLimits(values.budget) : {}),
+  };
+  const hasLimits = Object.keys(limits).length > 0;
   return {
+    ...settingsConfig,
     cwd: values.cwd.trim(),
     leadProvider: composeProvider(values.leadProvider, values.leadModel),
     defaultProvider: composeProvider(values.defaultProvider, values.defaultModel),
-    maxParallel: parseWholeNumber(values.maxParallel) ?? Number(DEFAULT_MAX_PARALLEL),
-    maxAttempts: DEFAULT_MAX_ATTEMPTS,
-    autoApprovePlan: values.autoApprovePlan,
-    notifyLead: true,
+    ...(hasLimits ? { limits } : {}),
     ...(reviewProvider ? { reviewProvider } : {}),
     ...(testCommand ? { testCommand } : {}),
-    ...(values.requireHumanApproval ? { requireHumanApproval: true } : {}),
-    ...(limits ? { limits } : {}),
-    ...(values.onPermissionRequest === "wait" ? { onPermissionRequest: "wait" as const } : {}),
-    ...(originAgentId ? { originAgentId } : {}),
+    ...(values.allowedProviders.length > 0
+      ? { allowedProviders: [...values.allowedProviders] }
+      : {}),
+    ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
   };
 }
 
 /** Returns null while the form cannot be submitted (see `validateGoalForm`). */
 export function buildGoalCreateInput(
   values: GoalFormValues,
-  originAgentId: string | null = null,
+  options: { originAgentId?: string | null; budgetSupported?: boolean } = {},
 ): GoalCreateInput | null {
   if (validateGoalForm(values).length > 0) {
     return null;
   }
+  const config = values.managed
+    ? buildGoalConfig({
+        values,
+        originAgentId: options.originAgentId ?? null,
+        budgetSupported: options.budgetSupported ?? false,
+      })
+    : null;
   return {
-    title: values.title.trim(),
+    title: resolveGoalTitle(values),
     objective: values.objective.trim(),
     criteria: parseGoalCriteria(values.criteriaText),
-    ...(values.managed ? { config: buildGoalConfig(values, originAgentId) } : {}),
+    ...(config ? { config } : {}),
   };
+}
+
+/** What happens after Create, sentence by sentence, under `goals.form.outcome`. */
+export type GoalOutcomeStep =
+  | "manual"
+  | "planAuto"
+  | "planReview"
+  | "worktrees"
+  | "mergeAsk"
+  | "mergeReviewed"
+  | "branch";
+
+export function describeGoalOutcome(values: GoalFormValues): GoalOutcomeStep[] {
+  if (!values.managed) {
+    return ["manual"];
+  }
+  return [
+    values.settings.autoApprovePlan ? "planAuto" : "planReview",
+    "worktrees",
+    values.settings.requireHumanApproval ? "mergeAsk" : "mergeReviewed",
+    "branch",
+  ];
 }
 
 export interface GoalModelOption {
@@ -252,9 +271,19 @@ export interface GoalFormState {
   originAgentId: string | null;
   /** Providers registered on the host; empty until the providers snapshot arrives. */
   providerOptions: GoalProviderOption[];
-  limitsExpanded: boolean;
+  advancedExpanded: boolean;
+  personalSettings: GoalSettings | null;
+  budgetSupported: boolean;
+  /** Fields you have edited; their issues show right away. The rest show after Create. */
+  touched: readonly GoalFormField[];
+  submitAttempted: boolean;
   issues: GoalFormIssue[];
+  /** The issues to show now. */
+  visibleIssues: GoalFormIssue[];
   createInput: GoalCreateInput | null;
+  settingsChoice: GoalSettingsChoice;
+  summary: GoalSettingsSummaryPart[];
+  outcome: GoalOutcomeStep[];
   submitError: string | null;
 }
 
@@ -262,11 +291,19 @@ export interface GoalFormModel {
   getState: () => GoalFormState;
   subscribe: (listener: () => void) => () => void;
   close: () => void;
-  setValue: <Key extends keyof GoalFormValues>(key: Key, value: GoalFormValues[Key]) => void;
-  setLimitsExpanded: (expanded: boolean) => void;
+  setValue: <Key extends GoalFormTextKey>(key: Key, value: GoalFormValues[Key]) => void;
+  setSetting: <Key extends keyof GoalSettings>(key: Key, value: GoalSettings[Key]) => void;
+  stepSetting: (key: GoalNumberSetting, direction: 1 | -1) => void;
+  stepBudget: (key: GoalBudgetKey, direction: 1 | -1) => void;
+  /** Replaces every setting with a preset's, or with your remembered ones. */
+  chooseSettings: (choice: GoalPresetId | "mine") => void;
+  toggleAllowedProvider: (provider: string) => void;
+  setAdvancedExpanded: (expanded: boolean) => void;
+  /** Reveals every issue; the caller submits only when `createInput` is set. */
+  attemptSubmit: () => void;
   /**
-   * Late data: the host's registered providers. Drops a selected provider the host lacks, and a
-   * selected model its provider does not list.
+   * Late data: the host's registered providers. Drops selections the host lacks, then fills an
+   * empty Lead with the first allowed provider and empty workers with the Lead's.
    */
   applyProviderOptions: (options: readonly GoalProviderOption[]) => void;
   setSubmitError: (message: string | null) => void;
@@ -277,15 +314,25 @@ const MODEL_FIELD_BY_PROVIDER = {
   leadProvider: "leadModel",
   defaultProvider: "defaultModel",
   reviewProvider: "reviewModel",
-} as const satisfies Partial<Record<keyof GoalFormValues, keyof GoalFormValues>>;
+} as const satisfies Partial<Record<GoalFormTextKey, GoalFormTextKey>>;
 
 const PROVIDER_FIELDS = Object.keys(
   MODEL_FIELD_BY_PROVIDER,
 ) as (keyof typeof MODEL_FIELD_BY_PROVIDER)[];
 
-function isProviderField(key: keyof GoalFormValues): key is keyof typeof MODEL_FIELD_BY_PROVIDER {
+function isProviderField(key: GoalFormTextKey): key is keyof typeof MODEL_FIELD_BY_PROVIDER {
   return key in MODEL_FIELD_BY_PROVIDER;
 }
+
+const FIELD_OF_KEY: Partial<Record<GoalFormTextKey, GoalFormField>> = {
+  title: "title",
+  objective: "title",
+  criteriaText: "criteria",
+  cwd: "cwd",
+  leadProvider: "leadProvider",
+  defaultProvider: "defaultProvider",
+  reviewProvider: "allowedProviders",
+};
 
 /** Drops selections the host's provider list rules out; an empty list rules nothing out. */
 function reconcileWithOptions(
@@ -295,7 +342,12 @@ function reconcileWithOptions(
   if (options.length === 0) {
     return values;
   }
-  const next = { ...values };
+  const next = {
+    ...values,
+    allowedProviders: values.allowedProviders.filter((id) =>
+      options.some((option) => option.id === id),
+    ),
+  };
   for (const field of PROVIDER_FIELDS) {
     const modelField = MODEL_FIELD_BY_PROVIDER[field];
     const option = options.find((candidate) => candidate.id === next[field]);
@@ -309,42 +361,91 @@ function reconcileWithOptions(
       next[modelField] = "";
     }
   }
+  const firstAllowed = options.find(
+    (option) => next.allowedProviders.length === 0 || next.allowedProviders.includes(option.id),
+  );
+  if (!next.leadProvider) {
+    next.leadProvider = next.defaultProvider || (firstAllowed?.id ?? "");
+  }
+  if (!next.defaultProvider) {
+    next.defaultProvider = next.leadProvider;
+  }
   return next;
 }
 
-function withDerived(state: Omit<GoalFormState, "issues" | "createInput">): GoalFormState {
+type BaseState = Omit<
+  GoalFormState,
+  "issues" | "visibleIssues" | "createInput" | "settingsChoice" | "summary" | "outcome"
+>;
+
+function withDerived(state: BaseState): GoalFormState {
+  const issues = validateGoalForm(state.values);
   return {
     ...state,
-    issues: validateGoalForm(state.values),
-    createInput: buildGoalCreateInput(state.values, state.originAgentId),
+    issues,
+    visibleIssues: state.submitAttempted
+      ? issues
+      : issues.filter((issue) => state.touched.includes(issue.field)),
+    createInput: buildGoalCreateInput(state.values, {
+      originAgentId: state.originAgentId,
+      budgetSupported: state.budgetSupported,
+    }),
+    settingsChoice: matchGoalSettingsChoice(state.values.settings, state.personalSettings),
+    summary: summarizeGoalSettings(state.values.settings, {
+      hasTestCommand: state.values.testCommand.trim().length > 0,
+    }),
+    outcome: describeGoalOutcome(state.values),
   };
 }
 
-export function openGoalForm(snapshot: { prefill?: GoalFormPrefill }): GoalFormModel {
+function initialSettings(snapshot: GoalFormSnapshot): GoalSettings {
+  const prefill = snapshot.prefill ?? {};
+  if (prefill.preset) {
+    return GOAL_PRESETS[prefill.preset];
+  }
+  if (prefill.settings) {
+    return normalizeGoalSettings(prefill.settings);
+  }
+  return snapshot.personalSettings ?? DAEMON_GOAL_SETTINGS;
+}
+
+export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
   const prefill = snapshot.prefill ?? {};
   const listeners = new Set<() => void>();
   let closed = false;
   const lead = splitProvider(prefill.leadProvider ?? "");
   const fallback = splitProvider(prefill.defaultProvider ?? "");
+  const review = splitProvider(prefill.reviewProvider ?? "");
   let state = withDerived({
     values: {
       ...EMPTY_GOAL_FORM_VALUES,
       title: prefill.title ?? "",
       objective: prefill.objective ?? "",
+      criteriaText: prefill.criteriaText ?? "",
       managed: prefill.managed ?? false,
       cwd: prefill.cwd ?? "",
       leadProvider: lead.provider,
       leadModel: lead.model,
       defaultProvider: fallback.provider,
       defaultModel: fallback.model,
+      reviewProvider: review.provider,
+      reviewModel: review.model,
+      testCommand: prefill.testCommand ?? "",
+      allowedProviders: prefill.allowedProviders ?? [],
+      settings: initialSettings(snapshot),
+      budget: prefill.budget ?? NO_GOAL_BUDGET,
     },
     originAgentId: prefill.originAgentId ?? null,
     providerOptions: [],
-    limitsExpanded: false,
+    advancedExpanded: false,
+    personalSettings: snapshot.personalSettings ?? null,
+    budgetSupported: snapshot.budgetSupported ?? false,
+    touched: [],
+    submitAttempted: false,
     submitError: null,
   });
 
-  function publish(next: Omit<GoalFormState, "issues" | "createInput">): void {
+  function publish(next: BaseState): void {
     if (closed) {
       return;
     }
@@ -352,6 +453,14 @@ export function openGoalForm(snapshot: { prefill?: GoalFormPrefill }): GoalFormM
     for (const listener of listeners) {
       listener();
     }
+  }
+
+  function touch(field: GoalFormField | undefined): readonly GoalFormField[] {
+    return field && !state.touched.includes(field) ? [...state.touched, field] : state.touched;
+  }
+
+  function setSettings(settings: GoalSettings): void {
+    publish({ ...state, values: { ...state.values, settings } });
   }
 
   return {
@@ -374,10 +483,46 @@ export function openGoalForm(snapshot: { prefill?: GoalFormPrefill }): GoalFormM
       if (isProviderField(key) && value !== state.values[key]) {
         values[MODEL_FIELD_BY_PROVIDER[key]] = "";
       }
-      publish({ ...state, values, submitError: null });
+      publish({ ...state, values, touched: touch(FIELD_OF_KEY[key]), submitError: null });
     },
-    setLimitsExpanded(expanded) {
-      publish({ ...state, limitsExpanded: expanded });
+    setSetting(key, value) {
+      setSettings({ ...state.values.settings, [key]: value });
+    },
+    stepSetting(key, direction) {
+      setSettings({
+        ...state.values.settings,
+        [key]: stepGoalSetting(key, state.values.settings[key], direction),
+      });
+    },
+    stepBudget(key, direction) {
+      const budget = {
+        ...state.values.budget,
+        [key]: stepGoalBudget(key, state.values.budget[key], direction),
+      };
+      publish({ ...state, values: { ...state.values, budget } });
+    },
+    chooseSettings(choice) {
+      const settings = choice === "mine" ? state.personalSettings : GOAL_PRESETS[choice];
+      if (settings) {
+        setSettings(settings);
+      }
+    },
+    toggleAllowedProvider(provider) {
+      const current = state.values.allowedProviders;
+      const allowedProviders = current.includes(provider)
+        ? current.filter((id) => id !== provider)
+        : [...current, provider];
+      publish({
+        ...state,
+        values: { ...state.values, allowedProviders },
+        touched: touch("allowedProviders"),
+      });
+    },
+    setAdvancedExpanded(expanded) {
+      publish({ ...state, advancedExpanded: expanded });
+    },
+    attemptSubmit() {
+      publish({ ...state, submitAttempted: true });
     },
     applyProviderOptions(options) {
       publish({
