@@ -9,16 +9,9 @@ import { buildGoalsRoute } from "@/utils/host-routes";
 export function GoalLaunchHost() {
   const request = useGoalLaunchStore((state) => state.request);
   const close = useGoalLaunchStore((state) => state.close);
-  const serverId = request?.serverId ?? null;
-
-  const handleCreated = useCallback(
-    (goal: Goal) => {
-      if (serverId) {
-        router.push(buildGoalsRoute({ serverId, goalId: goal.id }));
-      }
-    },
-    [serverId],
-  );
+  const handleCreated = useCallback((goal: Goal, serverId: string) => {
+    router.push(buildGoalsRoute({ serverId, goalId: goal.id }));
+  }, []);
 
   if (!request) {
     return null;

@@ -1,11 +1,13 @@
 import { useCallback, useMemo, type ReactElement } from "react";
 import { Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
-import { ChevronRight } from "lucide-react-native";
+import { ChevronRight, Folder } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Goal, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { SettingsCard, SettingsSection } from "@/components/settings";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -21,6 +23,12 @@ import {
 } from "@/goals/goal-attention";
 import { goalBadge, rowUsageLabel } from "@/goals/goal-labels";
 import { goalListProgress, goalPercent } from "@/goals/goal-progress";
+import {
+  GOAL_PROJECT_FILTER_ALL,
+  describeGoalProject,
+  type GoalProjectFilterOption,
+  type GoalProjectOption,
+} from "@/goals/goal-projects";
 import { goalWaitingOnText } from "@/goals/goal-waiting-on";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { settingsStyles } from "@/styles/settings";
@@ -28,7 +36,9 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { GoalBar } from "./goal-bar";
 
 const ThemedChevronRight = withUnistyles(ChevronRight);
+const ThemedFolder = withUnistyles(Folder);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const folderIcon = <ThemedFolder size={ICON_SIZE.sm} uniProps={mutedColorMapping} />;
 
 /** Dismiss for list rows: offered only on hosts with `goalAcknowledge`. */
 export interface GoalListDismiss {
@@ -73,13 +83,93 @@ export function GoalListFilters({
   );
 }
 
+/** Narrows the list to one project; the caller shows it only when goals span more than one. */
+export function GoalProjectFilter({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly GoalProjectFilterOption[];
+  value: string;
+  onChange: (key: string) => void;
+}): ReactElement {
+  const { t } = useTranslation();
+  const size = useIsCompactFormFactor() ? "sm" : "xs";
+  const allLabel = t("goals.projectFilter.all");
+  const selected = options.find((option) => option.key === value);
+  const label = selected?.name ?? allLabel;
+  const selectAll = useCallback(() => onChange(GOAL_PROJECT_FILTER_ALL), [onChange]);
+  return (
+    <DropdownMenu>
+      <DropdownTrigger
+        size={size}
+        leading={folderIcon}
+        accessibilityRole="button"
+        accessibilityLabel={t("goals.projectFilter.label", { project: label })}
+        testID="goals-project-filter-trigger"
+      >
+        {label}
+      </DropdownTrigger>
+      <DropdownMenuContent
+        side="bottom"
+        align="start"
+        minWidth={240}
+        maxWidth={360}
+        testID="goals-project-filter-menu"
+      >
+        <DropdownMenuItem
+          selected={!selected}
+          onSelect={selectAll}
+          testID="goals-project-filter-all"
+        >
+          {allLabel}
+        </DropdownMenuItem>
+        {options.map((option) => (
+          <GoalProjectFilterItem
+            key={option.key}
+            option={option}
+            selected={option.key === selected?.key}
+            onChange={onChange}
+          />
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function GoalProjectFilterItem({
+  option,
+  selected,
+  onChange,
+}: {
+  option: GoalProjectFilterOption;
+  selected: boolean;
+  onChange: (key: string) => void;
+}): ReactElement {
+  const { t } = useTranslation();
+  const handleSelect = useCallback(() => onChange(option.key), [onChange, option.key]);
+  return (
+    <DropdownMenuItem
+      selected={selected}
+      description={option.path ?? undefined}
+      onSelect={handleSelect}
+      testID={`goals-project-filter-option-${option.key}`}
+    >
+      {t("goals.projectFilter.option", { project: option.name, n: option.count })}
+    </DropdownMenuItem>
+  );
+}
+
 export function GoalList({
   goals,
+  projects,
   filter,
   onSelect,
   dismiss,
 }: {
   goals: readonly GoalSummary[];
+  /** The host's projects, for naming each goal's directory. */
+  projects: readonly GoalProjectOption[];
   filter: GoalListFilter;
   onSelect: (goalId: string) => void;
   dismiss: GoalListDismiss | null;
@@ -103,6 +193,7 @@ export function GoalList({
         <GoalRowsSection
           title={showHeadings ? t("goals.sections.attention") : null}
           goals={sections.attention}
+          projects={projects}
           onSelect={onSelect}
           dismiss={dismiss}
         />
@@ -111,6 +202,7 @@ export function GoalList({
         <GoalRowsSection
           title={showHeadings ? t("goals.sections.others") : null}
           goals={sections.others}
+          projects={projects}
           onSelect={onSelect}
           dismiss={dismiss}
         />
@@ -122,18 +214,26 @@ export function GoalList({
 function GoalRowsSection({
   title,
   goals,
+  projects,
   onSelect,
   dismiss,
 }: {
   title: string | null;
   goals: readonly GoalSummary[];
+  projects: readonly GoalProjectOption[];
   onSelect: (goalId: string) => void;
   dismiss: GoalListDismiss | null;
 }): ReactElement {
   const card = (
     <SettingsCard>
       {goals.map((goal) => (
-        <GoalRow key={goal.id} goal={goal} onSelect={onSelect} dismiss={dismiss} />
+        <GoalRow
+          key={goal.id}
+          goal={goal}
+          projects={projects}
+          onSelect={onSelect}
+          dismiss={dismiss}
+        />
       ))}
     </SettingsCard>
   );
@@ -168,12 +268,42 @@ function GoalRowReason({ goal }: { goal: Goal }): ReactElement | null {
   );
 }
 
+/** The project a goal runs on, with its directory as the secondary part. */
+export function GoalProjectLine({
+  projects,
+  cwd,
+  testID,
+}: {
+  projects: readonly GoalProjectOption[];
+  cwd: string | null | undefined;
+  testID?: string;
+}): ReactElement | null {
+  const label = useMemo(() => describeGoalProject(projects, cwd), [cwd, projects]);
+  if (!label) {
+    return null;
+  }
+  return (
+    <Text
+      style={settingsStyles.rowHint}
+      numberOfLines={1}
+      ellipsizeMode="middle"
+      testID={testID}
+      accessibilityLabel={`${label.name}, ${label.path}`}
+    >
+      <Text style={styles.projectName}>{label.name}</Text>
+      {label.path !== label.name ? `  ${label.path}` : null}
+    </Text>
+  );
+}
+
 function GoalRow({
   goal,
+  projects,
   onSelect,
   dismiss,
 }: {
   goal: GoalSummary;
+  projects: readonly GoalProjectOption[];
   onSelect: (goalId: string) => void;
   dismiss: GoalListDismiss | null;
 }): ReactElement {
@@ -220,6 +350,11 @@ function GoalRow({
           <Text style={settingsStyles.rowTitle} numberOfLines={1}>
             {goal.title}
           </Text>
+          <GoalProjectLine
+            projects={projects}
+            cwd={goal.config?.cwd}
+            testID={`goal-row-project-${goal.id}`}
+          />
           <GoalRowReason goal={goal} />
           <Text style={settingsStyles.rowHint} numberOfLines={1}>
             {meta.join(" · ")}
@@ -270,6 +405,9 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     textAlign: "center",
+  },
+  projectName: {
+    color: theme.colors.foreground,
   },
   rowTrailing: {
     flexDirection: "row",
