@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   groupGoalTasks,
   latestTaskAgent,
+  latestTaskThinking,
   visibleChangeSets,
   type GoalTaskGroup,
 } from "./goal-tasks";
@@ -56,5 +57,20 @@ describe("visibleChangeSets", () => {
       ],
     });
     expect(visibleChangeSets(goal).map((c) => c.id)).toEqual(["held", "review", "merged"]);
+  });
+});
+
+describe("latestTaskThinking", () => {
+  it("reads the thinking of the task's latest run", () => {
+    const goal = makeGoal({
+      runs: [
+        makeRun("r1", "a", { thinking: "low" }),
+        makeRun("r2", "b", { thinking: "high" }),
+        makeRun("r3", "a", { thinking: "medium" }),
+      ],
+    });
+    expect(latestTaskThinking(goal, "a")).toBe("medium");
+    expect(latestTaskThinking(goal, "c")).toBeNull();
+    expect(latestTaskThinking(makeGoal({ runs: [makeRun("r1", "a")] }), "a")).toBeNull();
   });
 });

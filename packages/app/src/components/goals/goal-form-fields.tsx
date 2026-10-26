@@ -14,7 +14,8 @@ import {
   type SelectFieldRenderOptionInput,
 } from "@/components/ui/select-field";
 import { Switch } from "@/components/ui/switch";
-import type { GoalProviderOption } from "@/goals/goal-form-model";
+import { formatThinkingOptionLabel } from "@/agent-controls/labels";
+import type { GoalProviderOption, GoalThinkingOption } from "@/goals/goal-form-model";
 
 /** A setting row: label and one-line explanation on the left, its control on the right. */
 export function SettingRow({
@@ -245,6 +246,67 @@ export function ModelSelect({
       placeholder={defaultLabel}
       emptyText={t("goals.form.modelEmpty")}
       searchable={models.length > 8}
+      title={label}
+      size={size}
+      testID={testID}
+      triggerTestID={`${testID}-trigger`}
+    />
+  );
+}
+
+/**
+ * The thinking level for one role, from the levels its model offers. Hidden when the model
+ * offers none; the empty option leaves the model's default and sends nothing.
+ */
+export function ThinkingSelect({
+  label,
+  value,
+  onChange,
+  options,
+  size,
+  testID,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly GoalThinkingOption[];
+  size: FieldControlSize;
+  testID: string;
+}): ReactElement | null {
+  const { t } = useTranslation();
+  const defaultLabel = t("goals.form.thinkingDefault");
+  const selectOptions = useMemo<SelectFieldOption<string>[]>(
+    () => [
+      { id: "", value: "", label: defaultLabel, testID: `${testID}-option-default` },
+      ...options.map((option) => ({
+        id: option.id,
+        value: option.id,
+        label: formatThinkingOptionLabel(option),
+        ...(option.description ? { description: option.description } : {}),
+        testID: `${testID}-option-${option.id}`,
+      })),
+    ],
+    [defaultLabel, options, testID],
+  );
+  const selectedDisplay = useMemo<SelectFieldDisplay>(() => {
+    const option = options.find((entry) => entry.id === value);
+    return { label: option ? formatThinkingOptionLabel(option) : defaultLabel };
+  }, [defaultLabel, options, value]);
+  const handleChange = useCallback((next: string) => onChange(next), [onChange]);
+
+  if (options.length === 0) {
+    return null;
+  }
+  return (
+    <SelectField
+      label={label}
+      value={value}
+      selectedDisplay={selectedDisplay}
+      options={selectOptions}
+      onChange={handleChange}
+      placeholder={defaultLabel}
+      emptyText={t("goals.form.thinkingEmpty")}
+      searchable={options.length > 8}
       title={label}
       size={size}
       testID={testID}

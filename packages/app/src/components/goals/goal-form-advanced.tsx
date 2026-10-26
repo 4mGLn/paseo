@@ -26,6 +26,7 @@ import {
   SettingRow,
   Stepper,
   SwitchSetting,
+  ThinkingSelect,
 } from "./goal-form-fields";
 
 interface AdvancedProps {
@@ -88,6 +89,22 @@ function TeamSettings(props: AdvancedProps): ReactElement {
     (value: string) => model.setValue("reviewModel", value),
     [model],
   );
+  const setLeadThinking = useCallback(
+    (value: string) => model.setValue("leadThinking", value),
+    [model],
+  );
+  const setWorkerThinking = useCallback(
+    (value: string) => model.setValue("workerThinking", value),
+    [model],
+  );
+  const setReviewThinking = useCallback(
+    (value: string) => model.setValue("reviewThinking", value),
+    [model],
+  );
+  const setVerifyThinking = useCallback(
+    (value: string) => model.setValue("verifyThinking", value),
+    [model],
+  );
   const excludedIssue = state.visibleIssues.find((issue) => issue.code === "excludesRole");
 
   return (
@@ -127,6 +144,14 @@ function TeamSettings(props: AdvancedProps): ReactElement {
         size={size}
         testID="goal-lead-model"
       />
+      <ThinkingSelect
+        label={t("goals.form.leadThinkingLabel")}
+        value={values.leadThinking}
+        onChange={setLeadThinking}
+        options={state.thinkingOptions.lead}
+        size={size}
+        testID="goal-lead-thinking"
+      />
       <ModelSelect
         label={t("goals.form.defaultModelLabel")}
         provider={values.defaultProvider}
@@ -135,6 +160,14 @@ function TeamSettings(props: AdvancedProps): ReactElement {
         options={state.providerOptions}
         size={size}
         testID="goal-default-model"
+      />
+      <ThinkingSelect
+        label={t("goals.form.defaultThinkingLabel")}
+        value={values.workerThinking}
+        onChange={setWorkerThinking}
+        options={state.thinkingOptions.worker}
+        size={size}
+        testID="goal-worker-thinking"
       />
       <ProviderSelect
         label={t("goals.form.reviewProviderLabel")}
@@ -155,6 +188,22 @@ function TeamSettings(props: AdvancedProps): ReactElement {
         options={state.providerOptions}
         size={size}
         testID="goal-review-model"
+      />
+      <ThinkingSelect
+        label={t("goals.form.reviewThinkingLabel")}
+        value={values.reviewThinking}
+        onChange={setReviewThinking}
+        options={state.thinkingOptions.reviewer}
+        size={size}
+        testID="goal-review-thinking"
+      />
+      <ThinkingSelect
+        label={t("goals.form.verifyThinkingLabel")}
+        value={values.verifyThinking}
+        onChange={setVerifyThinking}
+        options={state.thinkingOptions.verifier}
+        size={size}
+        testID="goal-verify-thinking"
       />
     </>
   );
