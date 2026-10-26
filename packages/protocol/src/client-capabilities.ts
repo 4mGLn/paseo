@@ -50,6 +50,10 @@ export const CLIENT_CAPS = {
   // goal.resumed, goal.retried and usage.recorded from goal.inspect events for older
   // clients whose strict event union rejects them. Remove after 2027-04-26.
   goalControlEvents: "goal_control_events",
+  // COMPAT(goalAcknowledgeEvents): added in v0.13.0. The daemon omits goal.acknowledged
+  // from goal.inspect events for older clients whose strict event union rejects it.
+  // Remove after 2027-04-26.
+  goalAcknowledgeEvents: "goal_acknowledge_events",
   browserHost: "browser_host",
 } as const;
 

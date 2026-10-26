@@ -182,6 +182,21 @@ export async function runResumeCommand(
   }
 }
 
+export async function runAckCommand(
+  id: string,
+  options: GoalCommandOptions,
+  _command: Command,
+): Promise<SingleResult<GoalRow>> {
+  const client = await connectGoalClient(options.daemonTarget);
+  try {
+    return toResult(await client.goalAcknowledge({ goalId: id }));
+  } catch (error) {
+    throw toGoalCommandError("GOAL_ACK_FAILED", "acknowledge goal", error);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
 function toResult(payload: { goal: Parameters<typeof toGoalRow>[0] | null; error: string | null }) {
   if (payload.error || !payload.goal) {
     throw new Error(payload.error ?? "Daemon returned no goal");

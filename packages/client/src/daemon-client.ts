@@ -6662,6 +6662,39 @@ export class DaemonClient {
     });
   }
 
+  /** Dismiss an ended goal so it stops asking for attention. It does not block a retry. */
+  async goalAcknowledge(options: {
+    goalId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    if (this.lastServerInfoMessage?.features?.goalAcknowledge !== true) {
+      throw new Error("Update the host to dismiss goals.");
+    }
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.acknowledge.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.acknowledge.request",
+        goalId: options.goalId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /**
+   * Push goal.update messages to this connection until released. Each carries one
+   * goal as goal.list returns it. Keep polling goal.list as well: a push can be missed
+   * across a reconnect.
+   */
+  observeGoalUpdates(options?: {
+    signal?: AbortSignal;
+  }): OwnedSubscription<CorrelatedResponsePayload<"session.events.set_subscription.response">> {
+    if (this.lastServerInfoMessage?.features?.goalUpdates !== true) {
+      throw new Error("Update the host to receive goal updates.");
+    }
+    return this.observeEvents(["goal.update"], options);
+  }
+
   async scheduleCreate(options: CreateScheduleOptions): Promise<ScheduleCreatePayload> {
     return this.sendCorrelatedSessionRequest({
       requestId: options.requestId,

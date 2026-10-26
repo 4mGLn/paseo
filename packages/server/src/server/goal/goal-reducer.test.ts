@@ -495,6 +495,144 @@ describe("change set rules", () => {
   });
 });
 
+describe("stage times", () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
+  function timed(events: Record<string, unknown>[]): Goal[] {
+    const states: Goal[] = [];
+    let goal: Goal | null = null;
+    events.forEach((partial, index) => {
+      goal = applyGoalEvent(goal, { ...ev(goal, partial), at: at(index) });
+      states.push(goal);
+    });
+    return states;
+  }
+  const captured = {
+    type: "changeset.captured",
+    changeSetId: "cs1",
+    taskId: "a",
+    runId: "a-a1",
+    round: 0,
+    supersedes: null,
+    workspaceId: "ws",
+    cwd: "/w",
+    branch: "b",
+    baseCommit: "base",
+    headCommit: "head",
+    files: [],
+  };
+  const to = (status: string, extra: Record<string, unknown> = {}) => ({
+    type: "changeset.transitioned",
+    changeSetId: "cs1",
+    to: status,
+    ...extra,
+  });
+  // Managed, so the task's work must be captured before verification can start.
+  const managed = {
+    ...created,
+    config: {
+      cwd: "/repo",
+      leadProvider: "claude",
+      defaultProvider: "codex",
+      maxParallel: 1,
+      maxAttempts: 1,
+      autoApprovePlan: false,
+      notifyLead: false,
+    },
+  };
+  const events = [
+    managed, // 0
+    { type: "plan.proposed", tasks: [task("a")] }, // 1
+    { type: "plan.approved" }, // 2
+    { type: "task.started", taskId: "a" }, // 3
+    { type: "task.succeeded", taskId: "a" }, // 4
+    captured, // 5
+    to("in_review"), // 6
+    to("approved"), // 7
+    to("integrating"), // 8
+    to("approved"), // 9: a restart interrupted the merge
+    to("integrating"), // 10
+    to("integrated", { integratedCommit: "m1" }), // 11
+    { type: "criterion.verified", criterionId: "c1", evidence: "ok" }, // 12
+    { type: "goal.completed" }, // 13
+  ];
+
+  test("review, merge and verification are timed from the events that enter and leave them", () => {
+    const states = timed(events);
+    const done = states.at(-1);
+    expect(done?.changeSets[0]).toMatchObject({
+      reviewStartedAt: at(6),
+      reviewedAt: at(7),
+      mergeStartedAt: at(8),
+      mergedAt: at(11),
+    });
+    expect(done?.verifyStartedAt).toBe(at(11));
+    expect(done?.verifiedAt).toBe(at(12));
+    // Not set before the stage is reached.
+    expect(states[5]?.changeSets[0]?.reviewStartedAt).toBeUndefined();
+    expect(states[10]?.verifyStartedAt).toBeUndefined();
+  });
+
+  test("replaying the log gives the same times", () => {
+    const events2: GoalEvent[] = [];
+    let goal: Goal | null = null;
+    events.forEach((partial, index) => {
+      const event = { ...ev(goal, partial), at: at(index) };
+      events2.push(event);
+      goal = applyGoalEvent(goal, event);
+    });
+    expect(replayGoal(events2)).toEqual(goal);
+  });
+
+  test("a verdict held for a person ends the review", () => {
+    const states = timed([...events.slice(0, 7), to("awaiting_human"), to("approved")]);
+    expect(states.at(-1)?.changeSets[0]).toMatchObject({
+      reviewStartedAt: at(6),
+      reviewedAt: at(7),
+    });
+  });
+});
+
+describe("acknowledgement", () => {
+  test("only an ended goal is acknowledged, once; its status stays", () => {
+    expect(() => run([created, { type: "goal.acknowledged" }])).toThrow(/only an ended goal/);
+    const goal = run([created, { type: "goal.cancelled" }, { type: "goal.acknowledged" }]);
+    expect(goal.status).toBe("cancelled");
+    expect(goal.acknowledgedAt).toBe(AT);
+    expect(() =>
+      run([
+        created,
+        { type: "goal.cancelled" },
+        { type: "goal.acknowledged" },
+        { type: "goal.acknowledged" },
+      ]),
+    ).toThrow(/already acknowledged/);
+  });
+
+  test("a failed goal can still be retried after it was acknowledged, which clears the mark", () => {
+    const config = {
+      cwd: "/repo",
+      leadProvider: "claude",
+      defaultProvider: "codex",
+      maxParallel: 1,
+      maxAttempts: 1,
+      autoApprovePlan: false,
+      notifyLead: false,
+    };
+    const goal = run([
+      { ...created, config },
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.failed", taskId: "a", error: "boom" },
+      { type: "goal.failed", reason: "a failed" },
+      { type: "goal.acknowledged" },
+      { type: "goal.retried", taskIds: ["a"], reopen: true },
+    ]);
+    expect(goal.status).toBe("executing");
+    expect(goal.acknowledgedAt).toBeNull();
+  });
+});
+
 describe("notifications", () => {
   const queued = { type: "notification.queued", target: "origin", key: "goal-ended", text: "hi" };
   const attempted = (attempt: number, outcome: "delivered" | "failed", error?: string) => ({

@@ -12,10 +12,43 @@ export type GoalWaitingOnKind =
   | "verification"
   | "manual";
 
+/** Translation keys, one per phrase. `params` fill the placeholders a translation may use. */
+export type GoalWaitingOnKey =
+  | "goals.waitingOn.paused"
+  | "goals.waitingOn.planning"
+  | "goals.waitingOn.manualPlan"
+  | "goals.waitingOn.planApproval"
+  | "goals.waitingOn.manualTasks"
+  | "goals.waitingOn.changeSetApproval"
+  | "goals.waitingOn.runningTask"
+  | "goals.waitingOn.startingTask"
+  | "goals.waitingOn.review"
+  | "goals.waitingOn.merge"
+  | "goals.waitingOn.retry"
+  | "goals.waitingOn.verification";
+
+/**
+ * Placeholders for a translation. Lists come joined with ", " so a translation can
+ * use them as they are; `count` drives plural forms.
+ */
+export interface GoalWaitingOnParams {
+  /** Items the phrase is about: tasks or change sets. */
+  count?: number;
+  /** Ids of those items, joined. */
+  ids?: string;
+  /** Title of the first task, for a phrase that names one. */
+  title?: string;
+  /** Tasks as `id (title)`, joined. */
+  tasks?: string;
+}
+
 export interface GoalWaitingOn {
   kind: GoalWaitingOnKind;
-  /** A short phrase for display, such as "plan approval" or "running task t1 (Add tests)". */
+  /** A short English phrase for display, such as "plan approval" or "running task t1 (Add tests)". */
   label: string;
+  /** Translation key for the same phrase. */
+  key: GoalWaitingOnKey;
+  params: GoalWaitingOnParams;
 }
 
 /**
@@ -26,43 +59,95 @@ export function describeGoalWaitingOn(goal: Goal): GoalWaitingOn | null {
   if (goal.status === "completed" || goal.status === "failed" || goal.status === "cancelled") {
     return null;
   }
-  if (goal.pausedAt) return { kind: "paused", label: "resume (paused)" };
+  if (goal.pausedAt) return fixed("paused", "resume (paused)", "goals.waitingOn.paused");
   if (goal.status === "planning") {
     return goal.config
-      ? { kind: "planning", label: "the Lead's plan" }
-      : { kind: "manual", label: "a plan to be proposed" };
+      ? fixed("planning", "the Lead's plan", "goals.waitingOn.planning")
+      : fixed("manual", "a plan to be proposed", "goals.waitingOn.manualPlan");
   }
   if (goal.status === "awaiting_plan_approval") {
-    return { kind: "plan_approval", label: "plan approval" };
+    return fixed("plan_approval", "plan approval", "goals.waitingOn.planApproval");
   }
-  if (!goal.config) return { kind: "manual", label: "task updates recorded by hand" };
+  if (!goal.config) {
+    return fixed("manual", "task updates recorded by hand", "goals.waitingOn.manualTasks");
+  }
 
   const held = goal.changeSets.filter((c) => c.status === "awaiting_human");
   if (held.length > 0) {
-    return { kind: "change_set_approval", label: `change set approval: ${ids(held)}` };
+    return {
+      kind: "change_set_approval",
+      label: `change set approval: ${ids(held)}`,
+      key: "goals.waitingOn.changeSetApproval",
+      params: { count: held.length, ids: ids(held) },
+    };
   }
   const running = goal.tasks.filter((t) => t.status === "running");
   if (running.length > 0) {
     return {
       kind: "running",
       label: `running ${plural(running.length, "task")} ${tasks(running)}`,
+      key: "goals.waitingOn.runningTask",
+      params: taskParams(running),
     };
   }
   const reviewing = goal.changeSets.filter(
     (c) => c.status === "captured" || c.status === "in_review",
   );
-  if (reviewing.length > 0) return { kind: "review", label: `review of ${ids(reviewing)}` };
+  if (reviewing.length > 0) {
+    return {
+      kind: "review",
+      label: `review of ${ids(reviewing)}`,
+      key: "goals.waitingOn.review",
+      params: { count: reviewing.length, ids: ids(reviewing) },
+    };
+  }
   const merging = goal.changeSets.filter(
     (c) => c.status === "approved" || c.status === "integrating",
   );
-  if (merging.length > 0) return { kind: "merge", label: `merge of ${ids(merging)}` };
+  if (merging.length > 0) {
+    return {
+      kind: "merge",
+      label: `merge of ${ids(merging)}`,
+      key: "goals.waitingOn.merge",
+      params: { count: merging.length, ids: ids(merging) },
+    };
+  }
   const failed = goal.tasks.filter((t) => t.status === "failed");
-  if (failed.length > 0) return { kind: "retry", label: `retry of ${tasks(failed)}` };
+  if (failed.length > 0) {
+    return {
+      kind: "retry",
+      label: `retry of ${tasks(failed)}`,
+      key: "goals.waitingOn.retry",
+      params: taskParams(failed),
+    };
+  }
   if (goal.tasks.length > 0 && goal.tasks.every((t) => t.status === "succeeded")) {
-    return { kind: "verification", label: "verification of the acceptance criteria" };
+    return fixed(
+      "verification",
+      "verification of the acceptance criteria",
+      "goals.waitingOn.verification",
+    );
   }
   const pending = goal.tasks.filter((t) => t.status === "pending");
-  return { kind: "running", label: `starting ${plural(pending.length, "task")} ${tasks(pending)}` };
+  return {
+    kind: "running",
+    label: `starting ${plural(pending.length, "task")} ${tasks(pending)}`,
+    key: "goals.waitingOn.startingTask",
+    params: taskParams(pending),
+  };
+}
+
+function fixed(kind: GoalWaitingOnKind, label: string, key: GoalWaitingOnKey): GoalWaitingOn {
+  return { kind, label, key, params: {} };
+}
+
+function taskParams(items: Task[]): GoalWaitingOnParams {
+  return {
+    count: items.length,
+    ids: ids(items),
+    title: items[0]?.title ?? "",
+    tasks: tasks(items),
+  };
 }
 
 function ids(items: { id: string }[]): string {

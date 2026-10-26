@@ -34,6 +34,7 @@ paseo goal pause <id>             # start no new worker runs
 paseo goal resume <id>
 paseo goal retry <id>             # retry failed tasks; reopens a failed goal
 paseo goal cancel <id>
+paseo goal ack <id>               # dismiss an ended goal
 ```
 
 `paseo goal ls` shows each goal's progress, elapsed time, reported usage and what it is waiting on. `paseo goal inspect` shows the same per task.
@@ -60,7 +61,7 @@ The result is the integration branch and its worktree. Nothing is merged into yo
 - **No early completion.** The reducer refuses `goal.completed` while a change set is neither integrated nor superseded, an implement task's work was never captured, or a criterion is unverified. A managed goal needs at least one criterion.
 - **Your checkout is never touched.** Every agent, including the Lead, works in its own worktree. The integration branch is separate from your branches. Every worktree waits for its `paseo.json` setup to finish (up to 5 minutes) before an agent or a merge uses it. Worktrees start from the commit that was checked out in `cwd` when the goal was created, recorded as `baseCommit`, so a goal started on a feature branch builds on it.
 - **Restarts lose nothing.** State is an append-only event log. After a restart, interrupted runs are closed out as interrupted and run again, and an interrupted run does not use up an attempt. A daemon that keeps crashing is bounded by `maxRuns`. A test restarts the daemon after each event of a full scenario and requires the goal to finish.
-- **Every notification has a recorded outcome.** A message to the Lead (a task failed for good, the goal completed) or to the originating chat (how the goal ended) is recorded before it is sent, with its text, and each attempt is recorded as delivered or failed. A failed attempt is retried after 5 seconds, then 30, 120 and 300, five attempts in all; after the fifth failure the notification stays `failed` with its last error. Delivered means the agent layer accepted the prompt, not that anyone read it. Notifications are the only events accepted after a goal has ended.
+- **Every notification has a recorded outcome.** A message to the Lead (a task failed for good, the goal completed) or to the originating chat (how the goal ended) is recorded before it is sent, with its text, and each attempt is recorded as delivered or failed. A failed attempt is retried after 5 seconds, then 30, 120 and 300, five attempts in all; after the fifth failure the notification stays `failed` with its last error. Delivered means the agent layer accepted the prompt, not that anyone read it. Notifications and an acknowledgement are the only events accepted after a goal has ended.
 - **Duplicates do nothing.** An event id is recorded once. Resending a request with the same `eventId` returns the existing result. The CLI does not send an `eventId`.
 
 ## Control a running goal
@@ -68,8 +69,19 @@ The result is the integration branch and its worktree. Nothing is merged into yo
 - **Pause.** `paseo goal pause` stops new worker runs from starting. Runs already going finish and are recorded; their reviews, merges and rework scheduling continue. Nothing new starts, and the goal is neither verified nor failed for being stuck until you resume. Planning and plan approval still happen. Time, run and budget limits keep counting. The pause is an event, so it holds across restarts: interrupted runs are closed out and wait as pending tasks.
 - **Retry.** `paseo goal retry <id> [--task <taskId>]` returns failed or cancelled tasks to pending. Their earlier failed runs stop counting against `maxAttempts`, so each gets a full set of attempts again; the run limit, time limit and budgets do not reset. On a live goal you can name one task. A failed goal is reopened to executing and every failed and cancelled task is retried, because one left behind would fail the goal again at once. A failed goal is not reopened when a change set was rejected (the goal can no longer complete), the run limit, deadline or a budget is used up, or nothing failed (planning or verification failures). Retry also waits until the failed goal's stopping agents have ended. After reopening, change sets are picked up where the failure left them, as after a restart, and the chat that started the goal is told about its next ending as well.
 - **Cancel** is final.
+- **Acknowledge.** `paseo goal ack <id>` (`goal.acknowledge`) dismisses an ended goal so it stops asking for attention. It records a `goal.acknowledged` event and sets `acknowledgedAt`, so the mark survives a restart. It changes nothing else: the status stays, and a failed goal can still be retried. A retry that reopens the goal clears the mark, so its next ending needs attention again. A live goal cannot be acknowledged; acknowledging twice returns the goal unchanged.
 
-The app gates these on `server_info.features.goalControls`. `describeGoalWaitingOn` in `packages/protocol/src/goal/waiting-on.ts` names what a live goal is waiting on (plan approval, a held change set, running tasks, review, merge, retry, verification, or a pause); the CLI and the app both use it.
+Gate each on its own `server_info.features` flag: `goalControls` for pause, resume, retry and plan rejection, `goalAcknowledge` for acknowledge, `goalBudgets` before sending `limits.maxTotalTokens`, `limits.maxCostUsd` or `limits.deadlineAt` (an older daemon drops them silently), and `goalUpdates` for pushes.
+
+`describeGoalWaitingOn` in `packages/protocol/src/goal/waiting-on.ts` names what a live goal is waiting on (plan approval, a held change set, running tasks, review, merge, retry, verification, or a pause); the CLI and the app both use it. It returns an English `label` for the CLI and a translation `key` (`goals.waitingOn.*`) with `params` (`count`, `ids`, `title`, `tasks`) for the app. Use `count` for plural forms.
+
+## Watching goals
+
+`goal.list` returns every goal with its `usage` and a `progress` count (`tasksTotal`, `tasksDone`, `tasksFailed`, `tasksRunning`), enough for a list row without `goal.inspect`. `summarizeGoalProgress` in `packages/protocol/src/goal/progress.ts` computes the same counts for a daemon that predates `progress`.
+
+To be told about changes, subscribe to the `goal.update` session event (`session.events.set_subscription.request` with `events: ["goal.update"]`, or `observeGoalUpdates()` in the client). Each `goal.update` carries one goal in the shape `goal.list` returns. The first change to a goal is sent at once; changes in the next 250 ms are folded into one push of the latest state. Only connections that subscribed get it, and only with the `automation.manage` permission. Keep polling `goal.list` as well, at a slower rate: a push missed across a reconnect is not replayed.
+
+The reducer records when each stage started and ended, from the events alone, so replay gives the same times and older logs gain them too. A change set carries `reviewStartedAt` and `reviewedAt` (left `in_review` with a verdict), `mergeStartedAt` (first entered `integrating`) and `mergedAt`. The goal carries `verifyStartedAt`, the moment every task succeeded and every change set settled, and `verifiedAt`, when the last criterion was verified. Each is absent until its stage is reached.
 
 ## Usage and budgets
 
@@ -176,24 +188,26 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 
 ## Where the tests are
 
-| File                               | What it proves                                                                                                                                          |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `goal/goal-reducer.test.ts`        | State machine, change set transition table, completion guards                                                                                           |
-| `goal/goal-manager.test.ts`        | Planning, scheduling, retries, cancellation, recovery of runs, notification delivery and its retries across restarts                                    |
-| `goal/change-set-pipeline.test.ts` | Capture, review, rework, integration, verification, crash windows                                                                                       |
-| `goal/limits-and-policy.test.ts`   | Time and run limits, backoff, permission policy, provider boundaries, read-only roles                                                                   |
-| `goal/recovery-matrix.test.ts`     | A restart after every event of a full run finishes the goal                                                                                             |
-| `goal/log-compat.test.ts`          | Logs from earlier phases replay; unknown logs are set aside                                                                                             |
-| `goal/goal-controls.test.ts`       | Reject plan, pause and resume, retry and reopen, usage totals and budgets, across restarts                                                              |
-| `goal/review-fixes.test.ts`        | Regressions from independent review: restarts, stuck turns, base commit, external cancel, backoff slots, test-command runner, integration head, quoting |
-| `goal/goal-ports.test.ts`          | The permission wait loop and turn-end detection                                                                                                         |
-| `goal/git-ops.test.ts`             | Capture, merge, conflict abort and reset on real repositories                                                                                           |
-| `goal.e2e.test.ts`                 | A real daemon on real worktrees: full runs, conflicts, failing tests, restarts, renames                                                                 |
+| File                                 | What it proves                                                                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `goal/goal-reducer.test.ts`          | State machine, change set transition table, completion guards                                                                                           |
+| `goal/goal-manager.test.ts`          | Planning, scheduling, retries, cancellation, recovery of runs, notification delivery and its retries across restarts                                    |
+| `goal/change-set-pipeline.test.ts`   | Capture, review, rework, integration, verification, crash windows                                                                                       |
+| `goal/limits-and-policy.test.ts`     | Time and run limits, backoff, permission policy, provider boundaries, read-only roles                                                                   |
+| `goal/recovery-matrix.test.ts`       | A restart after every event of a full run finishes the goal                                                                                             |
+| `goal/log-compat.test.ts`            | Logs from earlier phases replay; unknown logs are set aside                                                                                             |
+| `goal/goal-controls.test.ts`         | Reject plan, pause and resume, retry and reopen, usage totals and budgets, across restarts                                                              |
+| `goal/goal-update-publisher.test.ts` | `goal.update` pushes: sent at once, bursts folded per goal, stopped cleanly                                                                             |
+| `goal/review-fixes.test.ts`          | Regressions from independent review: restarts, stuck turns, base commit, external cancel, backoff slots, test-command runner, integration head, quoting |
+| `goal/goal-ports.test.ts`            | The permission wait loop and turn-end detection                                                                                                         |
+| `goal/git-ops.test.ts`               | Capture, merge, conflict abort and reset on real repositories                                                                                           |
+| `goal.e2e.test.ts`                   | A real daemon on real worktrees: full runs, conflicts, failing tests, restarts, renames                                                                 |
 
 ## Changing goals
 
 - Add fields and event types; never change or remove the meaning of an existing one. Old logs must still replay, and the compat test must cover the change.
 - Put every rule the Manager relies on in the reducer. The Manager can then be wrong without corrupting a goal.
 - Use commits, not branch names, for anything stored. Paseo can rename a worktree's branch.
-- Keep new RPCs under the `goal.*` namespace and gated on `server_info.features.goals`, or `goalControls` for the controls.
-- A new event type breaks an older client's strict event union. `goal-session.ts` leaves such types out of `goal.inspect` for clients without the matching capability (`goal_control_events` covers `goal.paused`, `goal.resumed`, `goal.retried` and `usage.recorded`); add yours there.
+- Keep new RPCs under the `goal.*` namespace and gated on `server_info.features.goals`, or on the flag added with them.
+- A new event type breaks an older client's strict event union. `goal-session.ts` leaves such types out of `goal.inspect` for clients without the matching capability (`goal_control_events` covers `goal.paused`, `goal.resumed`, `goal.retried` and `usage.recorded`; `goal_acknowledge_events` covers `goal.acknowledged`); add yours there.
+- A new push message must reach only clients that asked for it. Deliver it as a session event subscription, as `goal.update` is, and return false for it in `legacyWantsEvent` in `session.ts`.

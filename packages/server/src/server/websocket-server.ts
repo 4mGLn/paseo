@@ -12,6 +12,7 @@ import { HOST_ROUTE_OPCODE } from "@getpaseo/protocol/binary-frames/index";
 import { DaemonLinkEndpoint, VirtualHostSocket } from "./connected-hosts/index.js";
 import { ConnectedHosts } from "./connected-hosts/index.js";
 import type { GoalService } from "./goal/goal-service.js";
+import { GoalUpdatePublisher } from "./goal/goal-update-publisher.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -566,6 +567,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly goalService: GoalService | undefined;
+  private readonly goalUpdates: GoalUpdatePublisher | null;
   private readonly scheduleService: ScheduleService;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
@@ -746,6 +748,7 @@ export class VoiceAssistantWebSocketServer {
     this.workspaceRegistry = workspaceRegistry ?? createNoopWorkspaceRegistry();
     this.workspaceLabelService = workspaceLabelService ?? null;
     this.goalService = goalService;
+    this.goalUpdates = this.createGoalUpdatePublisher(goalService);
     const requiredServices = requireWebSocketServices({
       scheduleService,
       checkoutDiffManager,
@@ -1028,6 +1031,21 @@ export class VoiceAssistantWebSocketServer {
     this.sendMessageToSockets(this.sessions.keys(), message);
   }
 
+  /** Sessions deliver goal.update only to connections that subscribed to it. */
+  private createGoalUpdatePublisher(
+    goalService: GoalService | undefined,
+  ): GoalUpdatePublisher | null {
+    if (!goalService) return null;
+    return new GoalUpdatePublisher({
+      subscribe: (listener) => goalService.subscribe(listener),
+      publish: (goal) => {
+        for (const session of this.listSessions()) {
+          session.publish({ type: "goal.update", payload: { goal } });
+        }
+      },
+    });
+  }
+
   public listSessions(): Session[] {
     return Array.from(
       new Set(
@@ -1138,6 +1156,7 @@ export class VoiceAssistantWebSocketServer {
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    this.goalUpdates?.stop();
     await this.agentMessages.close();
     await this.connectedHosts.close();
     this.unsubscribeSpeechReadiness?.();
@@ -1965,7 +1984,15 @@ export class VoiceAssistantWebSocketServer {
         directorySync: true,
         // COMPAT(workspaceLabels): added in v0.5.0, remove after 2027-08-14.
         ...(this.workspaceLabelService ? { workspaceLabels: true } : {}),
-        ...(this.goalService ? { goals: true, goalControls: true } : {}),
+        ...(this.goalService
+          ? {
+              goals: true,
+              goalControls: true,
+              goalBudgets: true,
+              goalUpdates: true,
+              goalAcknowledge: true,
+            }
+          : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.
         workspaceSetupRun: true,
         workspaceSetupObservation: true,

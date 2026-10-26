@@ -112,4 +112,14 @@ describe("goal progress formatting", () => {
       waitingOn: "resume (paused)",
     });
   });
+
+  test("an acknowledged ended goal says so in its status", () => {
+    const row = toGoalRow({
+      ...goal,
+      status: "failed",
+      acknowledgedAt: "2026-01-01T00:07:00.000Z",
+    });
+    expect(row.status).toBe("failed (acknowledged)");
+    expect(row.waitingOn).toBe("-");
+  });
 });

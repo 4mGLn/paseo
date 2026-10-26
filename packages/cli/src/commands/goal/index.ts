@@ -7,6 +7,7 @@ import { runLsCommand } from "./ls.js";
 import { runChangesCommand } from "./changes.js";
 import { runNotificationsCommand } from "./notifications.js";
 import {
+  runAckCommand,
   runApproveChangeSetCommand,
   runApproveCommand,
   runCancelCommand,
@@ -169,6 +170,15 @@ export function createGoalCommand(): Command {
       .argument("<changeset>", "Change set ID")
       .requiredOption("--message <text>", "What must change"),
   ).action(withOutput(runRequestChangesCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("ack")
+      .description(
+        "Dismiss an ended goal so it stops asking for attention; a failed goal can still be retried",
+      )
+      .argument("<id>", "Goal ID"),
+  ).action(withOutput(runAckCommand));
 
   addJsonAndDaemonHostOptions(
     goal.command("cancel").description("Cancel a goal").argument("<id>", "Goal ID"),

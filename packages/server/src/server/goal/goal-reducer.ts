@@ -109,15 +109,63 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
   if (event.seq !== goal.lastSeq + 1) {
     throw new GoalTransitionError(event.type, `expected seq ${goal.lastSeq + 1}, got ${event.seq}`);
   }
+  if (event.type === "goal.acknowledged") {
+    return { ...acknowledge(goal, event), lastSeq: event.seq, updatedAt: event.at };
+  }
   // A goal's outcome is sent as it ends, so its notifications outlive it, and a
-  // failed goal can be reopened by a retry. Nothing else reaches an ended goal.
+  // failed goal can be reopened by a retry. Nothing else reaches an ended goal
+  // except an acknowledgement, handled above.
   const reopening = event.type === "goal.retried" && goal.status === "failed";
   if (isTerminalGoalStatus(goal.status) && !event.type.startsWith("notification.") && !reopening) {
     throw new GoalTransitionError(event.type, `goal is ${goal.status}`);
   }
 
-  const next = applyToLiveGoal(goal, event);
+  const next = withVerificationTimes(applyToLiveGoal(goal, event), event);
   return { ...next, lastSeq: event.seq, updatedAt: event.at };
+}
+
+/** A person dismissed an ended goal. Only the mark changes; a failed goal can still be retried. */
+function acknowledge(goal: Goal, event: GoalEvent): Goal {
+  if (!isTerminalGoalStatus(goal.status)) {
+    throw new GoalTransitionError(
+      event.type,
+      `goal is ${goal.status}; only an ended goal can be acknowledged`,
+    );
+  }
+  if (goal.acknowledgedAt) {
+    throw new GoalTransitionError(event.type, "goal is already acknowledged");
+  }
+  return { ...goal, acknowledgedAt: event.at };
+}
+
+/**
+ * Verification has no start event: it starts once every task succeeded and every
+ * change set settled, and ends with the last criterion verified. Derived from the
+ * event times alone, so replay gives the same answer.
+ */
+function withVerificationTimes(goal: Goal, event: GoalEvent): Goal {
+  if (goal.status !== "executing" && goal.status !== "completed") return goal;
+  let next = goal;
+  if (!next.verifyStartedAt && readyToVerify(next)) {
+    next = { ...next, verifyStartedAt: event.at };
+  }
+  if (
+    !next.verifiedAt &&
+    event.type === "criterion.verified" &&
+    next.criteria.every((c) => c.verifiedAt)
+  ) {
+    next = { ...next, verifiedAt: event.at };
+  }
+  return next;
+}
+
+function readyToVerify(goal: Goal): boolean {
+  return (
+    goal.tasks.length > 0 &&
+    goal.tasks.every((t) => t.status === "succeeded") &&
+    (!goal.config || goal.tasks.every((t) => t.kind !== "implement" || t.captured)) &&
+    goal.changeSets.every((c) => c.status === "integrated" || c.status === "superseded")
+  );
 }
 
 export function replayGoal(events: readonly GoalEvent[]): Goal | null {
@@ -536,6 +584,7 @@ function transitionChangeSet(
   }
   const next: ChangeSet = {
     ...current,
+    ...stageTimes(current, event.to, event.at),
     status: event.to,
     findings: event.findings ?? current.findings,
     testSummary: event.testSummary ?? current.testSummary,
@@ -553,6 +602,19 @@ function transitionChangeSet(
         ? { ...goal.integration, headCommit: event.integratedCommit as string }
         : goal.integration,
   };
+}
+
+/** Times a change set entered and left review and merge; the first entry into merging counts. */
+function stageTimes(
+  current: ChangeSet,
+  to: ChangeSetStatus,
+  at: string,
+): Partial<Pick<ChangeSet, "reviewStartedAt" | "reviewedAt" | "mergeStartedAt" | "mergedAt">> {
+  if (to === "in_review") return { reviewStartedAt: at };
+  if (current.status === "in_review") return { reviewedAt: at };
+  if (to === "integrating" && !current.mergeStartedAt) return { mergeStartedAt: at };
+  if (to === "integrated") return { mergedAt: at };
+  return {};
 }
 
 const EMPTY_USAGE: UsageTotals = {
@@ -829,6 +891,8 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
     status: "executing",
     failureReason: reopen ? null : goal.failureReason,
     ...(reopen ? { reopens: (goal.reopens ?? 0) + 1 } : {}),
+    // A reopened goal that ends again needs attention again.
+    ...(reopen && goal.acknowledgedAt ? { acknowledgedAt: null } : {}),
     tasks: goal.tasks.map((t) =>
       retried.has(t.id)
         ? { ...t, status: "pending", error: null, forgivenFailures: failedRuns(t.id) }

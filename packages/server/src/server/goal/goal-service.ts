@@ -8,7 +8,7 @@ import type {
 } from "@getpaseo/protocol/goal/types";
 import type { GoalEventLog } from "./event-log.js";
 import type { GoalConfigValidator } from "./goal-config-validation.js";
-import type { GoalStore } from "./goal-store.js";
+import type { GoalStore, GoalStoreListener } from "./goal-store.js";
 
 /** Client ids are namespaced so they cannot collide with the Manager's own event ids. */
 function clientEventId(type: string, target: string, eventId: string): string {
@@ -64,6 +64,11 @@ export class GoalService {
 
   list(): Goal[] {
     return this.store.list();
+  }
+
+  /** Called after each event is recorded; returns the unsubscribe. */
+  subscribe(listener: GoalStoreListener): () => void {
+    return this.store.subscribe(listener);
   }
 
   async inspect(goalId: string): Promise<GoalInspection> {
@@ -216,6 +221,23 @@ export class GoalService {
       reopen,
       target: taskId ?? "",
     });
+  }
+
+  /**
+   * A person dismisses an ended goal, so it stops asking for attention. It changes
+   * nothing else: a failed goal can still be retried, and a reopened goal that ends
+   * again needs a new acknowledgement. Acknowledging twice returns the goal unchanged.
+   */
+  async acknowledge(goalId: string, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.acknowledged", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const goal = this.requireGoal(goalId);
+    if (goal.status !== "completed" && goal.status !== "failed" && goal.status !== "cancelled") {
+      throw new Error(`Goal ${goalId} is ${goal.status}; only an ended goal can be acknowledged`);
+    }
+    if (goal.acknowledgedAt) return goal;
+    return this.dispatch(goalId, eventId, { type: "goal.acknowledged" });
   }
 
   private async dispatch(
