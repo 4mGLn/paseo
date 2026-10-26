@@ -3,8 +3,9 @@ import { Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
 import { ChevronRight } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import type { Goal } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { SettingsCard, SettingsSection } from "@/components/settings";
+import { Button } from "@/components/ui/button";
 import { PressHighlight } from "@/components/ui/press-highlight";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -12,12 +13,15 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import {
   GOAL_LIST_FILTERS,
   buildGoalListSections,
+  canAcknowledgeGoal,
   countGoalsByFilter,
   goalAttention,
+  isBlockedOnUser,
   type GoalListFilter,
 } from "@/goals/goal-attention";
-import { goalBadge } from "@/goals/goal-labels";
-import { countGoalTasks, goalPercent } from "@/goals/goal-progress";
+import { goalBadge, rowUsageLabel } from "@/goals/goal-labels";
+import { goalListProgress, goalPercent } from "@/goals/goal-progress";
+import { goalWaitingOnText } from "@/goals/goal-waiting-on";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { settingsStyles } from "@/styles/settings";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -26,12 +30,19 @@ import { GoalBar } from "./goal-bar";
 const ThemedChevronRight = withUnistyles(ChevronRight);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
+/** Dismiss for list rows: offered only on hosts with `goalAcknowledge`. */
+export interface GoalListDismiss {
+  onDismiss: (goalId: string) => void;
+  /** The goal a dismiss is in flight for. */
+  pendingGoalId: string | null;
+}
+
 export function GoalListFilters({
   goals,
   filter,
   onChange,
 }: {
-  goals: readonly Goal[];
+  goals: readonly GoalSummary[];
   filter: GoalListFilter;
   onChange: (filter: GoalListFilter) => void;
 }): ReactElement {
@@ -66,10 +77,12 @@ export function GoalList({
   goals,
   filter,
   onSelect,
+  dismiss,
 }: {
-  goals: readonly Goal[];
+  goals: readonly GoalSummary[];
   filter: GoalListFilter;
   onSelect: (goalId: string) => void;
+  dismiss: GoalListDismiss | null;
 }): ReactElement {
   const { t } = useTranslation();
   const sections = useMemo(() => buildGoalListSections(goals, filter), [filter, goals]);
@@ -91,6 +104,7 @@ export function GoalList({
           title={showHeadings ? t("goals.sections.attention") : null}
           goals={sections.attention}
           onSelect={onSelect}
+          dismiss={dismiss}
         />
       ) : null}
       {sections.others.length > 0 ? (
@@ -98,6 +112,7 @@ export function GoalList({
           title={showHeadings ? t("goals.sections.others") : null}
           goals={sections.others}
           onSelect={onSelect}
+          dismiss={dismiss}
         />
       ) : null}
     </View>
@@ -108,15 +123,17 @@ function GoalRowsSection({
   title,
   goals,
   onSelect,
+  dismiss,
 }: {
   title: string | null;
-  goals: readonly Goal[];
+  goals: readonly GoalSummary[];
   onSelect: (goalId: string) => void;
+  dismiss: GoalListDismiss | null;
 }): ReactElement {
   const card = (
     <SettingsCard>
       {goals.map((goal) => (
-        <GoalRow key={goal.id} goal={goal} onSelect={onSelect} />
+        <GoalRow key={goal.id} goal={goal} onSelect={onSelect} dismiss={dismiss} />
       ))}
     </SettingsCard>
   );
@@ -126,20 +143,49 @@ function GoalRowsSection({
   return <SettingsSection title={title}>{card}</SettingsSection>;
 }
 
+/** The reason line: a failure, or what a live goal waits on, warning-colored when it waits on you. */
+function GoalRowReason({ goal }: { goal: Goal }): ReactElement | null {
+  const { t } = useTranslation();
+  const attention = goalAttention(goal);
+  if (attention === "failed") {
+    return (
+      <Text style={styles.attentionDanger} numberOfLines={1}>
+        {t("goals.attention.failed")}
+      </Text>
+    );
+  }
+  const waiting = goalWaitingOnText(t, goal);
+  if (!waiting) {
+    return null;
+  }
+  return (
+    <Text
+      style={isBlockedOnUser(attention) ? styles.attentionWarning : styles.reasonMuted}
+      numberOfLines={1}
+    >
+      {waiting}
+    </Text>
+  );
+}
+
 function GoalRow({
   goal,
   onSelect,
+  dismiss,
 }: {
-  goal: Goal;
+  goal: GoalSummary;
   onSelect: (goalId: string) => void;
+  dismiss: GoalListDismiss | null;
 }): ReactElement {
   const { t } = useTranslation();
-  const counts = countGoalTasks(goal);
+  const progress = goalListProgress(goal);
   const percent = goalPercent(goal);
-  const attention = goalAttention(goal);
   const badge = goalBadge(t, goal);
+  const usage = rowUsageLabel(t, goal);
   const updated = useCompactTimeAgo(useMemo(() => new Date(goal.updatedAt), [goal.updatedAt]));
   const handlePress = useCallback(() => onSelect(goal.id), [goal.id, onSelect]);
+  const onDismiss = dismiss?.onDismiss;
+  const handleDismiss = useCallback(() => onDismiss?.(goal.id), [goal.id, onDismiss]);
   const rowStyle = useCallback(
     ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
       settingsStyles.row,
@@ -150,45 +196,68 @@ function GoalRow({
   );
 
   const tasksLabel =
-    counts.total === 0
+    progress.tasksTotal === 0
       ? t("goals.row.noPlan")
-      : t("goals.row.tasks", { done: counts.done, total: counts.total });
-  const meta = [tasksLabel, t("goals.row.updated", { time: updated })].join(" · ");
-  const showBar = goal.config !== null && counts.total > 0;
+      : t("goals.row.tasks", { done: progress.tasksDone, total: progress.tasksTotal });
+  const meta = [tasksLabel, t("goals.row.updated", { time: updated })];
+  if (goal.acknowledgedAt) {
+    meta.push(t("goals.row.dismissed"));
+  }
+  const showBar = goal.config !== null && progress.tasksTotal > 0;
+  // Only a failure asks for attention among ended goals, so only it carries Dismiss in the list.
+  const showDismiss = dismiss !== null && goal.status === "failed" && canAcknowledgeGoal(goal);
 
+  // Dismiss sits under the pressable row, not inside it: a button inside a button is invalid on web.
   return (
-    <PressHighlight
-      style={rowStyle}
-      onPress={handlePress}
-      accessibilityRole="button"
-      testID={`goal-row-${goal.id}`}
-    >
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
-          {goal.title}
-        </Text>
-        {attention ? (
-          <Text
-            style={attention === "failed" ? styles.attentionDanger : styles.attentionWarning}
-            numberOfLines={1}
-          >
-            {t(`goals.attention.${attention}`)}
+    <View>
+      <PressHighlight
+        style={rowStyle}
+        onPress={handlePress}
+        accessibilityRole="button"
+        testID={`goal-row-${goal.id}`}
+      >
+        <View style={settingsStyles.rowContent}>
+          <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+            {goal.title}
           </Text>
-        ) : null}
-        <Text style={settingsStyles.rowHint} numberOfLines={1}>
-          {meta}
-        </Text>
-        {showBar ? (
-          <View style={styles.bar}>
-            <GoalBar fraction={percent / 100} tone={percent === 100 ? "success" : "neutral"} />
-          </View>
-        ) : null}
-      </View>
-      <View style={styles.rowTrailing}>
-        <StatusBadge label={badge.label} variant={badge.variant} />
-        <ThemedChevronRight size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-      </View>
-    </PressHighlight>
+          <GoalRowReason goal={goal} />
+          <Text style={settingsStyles.rowHint} numberOfLines={1}>
+            {meta.join(" · ")}
+          </Text>
+          {usage ? (
+            <Text
+              style={settingsStyles.rowHint}
+              numberOfLines={1}
+              testID={`goal-row-usage-${goal.id}`}
+            >
+              {usage}
+            </Text>
+          ) : null}
+          {showBar ? (
+            <View style={styles.bar}>
+              <GoalBar fraction={percent / 100} tone={percent === 100 ? "success" : "neutral"} />
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.rowTrailing}>
+          <StatusBadge label={badge.label} variant={badge.variant} />
+          <ThemedChevronRight size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
+        </View>
+      </PressHighlight>
+      {showDismiss ? (
+        <View style={styles.rowActions}>
+          <Button
+            variant="outline"
+            size="sm"
+            onPress={handleDismiss}
+            loading={dismiss.pendingGoalId === goal.id}
+            testID={`goal-row-dismiss-${goal.id}`}
+          >
+            {t("goals.detail.dismiss")}
+          </Button>
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -207,6 +276,11 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
+  rowActions: {
+    flexDirection: "row",
+    paddingHorizontal: theme.spacing[4],
+    paddingBottom: theme.spacing[4],
+  },
   rowHovered: {
     backgroundColor: theme.colors.surface2,
   },
@@ -220,6 +294,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   attentionDanger: {
     color: theme.colors.statusDanger,
+    fontSize: theme.fontSize.sm,
+    marginTop: theme.spacing[1],
+  },
+  reasonMuted: {
+    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     marginTop: theme.spacing[1],
   },

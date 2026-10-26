@@ -11,9 +11,11 @@ import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/contexts/toast-context";
+import { canAcknowledgeGoal } from "@/goals/goal-attention";
 import { canApproveGoalPlan, isGoalTerminal } from "@/goals/goal-derivation";
 import { goalBadge } from "@/goals/goal-labels";
 import { goalControlsAvailable, goalGuidance, goalSteps } from "@/goals/goal-phase";
+import { goalWaitingOnDetail } from "@/goals/goal-waiting-on";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useGoalDetail } from "@/hooks/use-goals";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
@@ -117,11 +119,19 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
   const [actionError, setActionError] = useState<string | null>(null);
   const [isRejectOpen, setIsRejectOpen] = useState(false);
   const hasControls = useHostFeature(serverId, "goalControls");
+  const canAcknowledge = useHostFeature(serverId, "goalAcknowledge");
   const controls = goalControlsAvailable(goal, hasControls);
+  const showDismiss = canAcknowledge && canAcknowledgeGoal(goal);
   const showApprove = canApproveGoalPlan(goal.status);
   const showCancel = !isGoalTerminal(goal.status);
   const badge = goalBadge(t, goal);
   const created = useCompactTimeAgo(useMemo(() => new Date(goal.createdAt), [goal.createdAt]));
+  const acknowledged = useCompactTimeAgo(
+    useMemo(
+      () => new Date(goal.acknowledgedAt ?? goal.createdAt),
+      [goal.acknowledgedAt, goal.createdAt],
+    ),
+  );
   const lead = useMemo(
     () =>
       goal.leadAgentId ? { agentId: goal.leadAgentId, workspaceId: goal.leadWorkspaceId } : null,
@@ -133,6 +143,9 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
   }
   if (goal.config) {
     meta.push(goal.config.cwd);
+  }
+  if (goal.acknowledgedAt) {
+    meta.push(t("goals.detail.dismissed", { time: acknowledged }));
   }
 
   const handleApprove = useCallback(() => {
@@ -160,10 +173,11 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
     setActionError(null);
     action.catch((error: unknown) => setActionError(toErrorMessage(error)));
   }, []);
-  const { rejectPlan, retry, pause, resume } = mutations;
+  const { rejectPlan, retry, pause, resume, acknowledge } = mutations;
   const handlePause = useCallback(() => run(pause(goal.id)), [goal.id, pause, run]);
   const handleResume = useCallback(() => run(resume(goal.id)), [goal.id, resume, run]);
   const handleRetry = useCallback(() => run(retry({ goalId: goal.id })), [goal.id, retry, run]);
+  const handleDismiss = useCallback(() => run(acknowledge(goal.id)), [acknowledge, goal.id, run]);
   const openReject = useCallback(() => setIsRejectOpen(true), []);
   const closeReject = useCallback(() => setIsRejectOpen(false), []);
   const handleReject = useCallback(
@@ -226,6 +240,17 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
             testID="goal-retry"
           >
             {t("goals.detail.retryGoal")}
+          </Button>
+        ) : null}
+        {showDismiss ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={handleDismiss}
+            loading={mutations.pendingAcknowledgeGoalId === goal.id}
+            testID="goal-dismiss"
+          >
+            {t("goals.detail.dismiss")}
           </Button>
         ) : null}
         {controls.canPause ? (
@@ -305,12 +330,17 @@ function GoalGuidanceBanner({ goal }: { goal: Goal }): ReactElement {
   if (guidance.phase === "failed" && goal.failureReason) {
     description.unshift(goal.failureReason);
   }
+  // The phase explains the stage; the waiting line names the tasks or changes it is on.
+  const waiting = goalWaitingOnDetail(t, goal);
+  if (waiting) {
+    description.push(waiting);
+  }
   return (
     <View style={styles.banner} testID={`goal-guidance-${guidance.phase}`}>
       <Alert
         variant={guidance.tone}
         title={t(`goals.guidance.${guidance.phase}.title`)}
-        description={description.join(" ")}
+        description={description.join("\n")}
       />
     </View>
   );

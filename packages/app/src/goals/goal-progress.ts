@@ -1,4 +1,13 @@
-import type { AgentRun, ChangeSetStatus, Goal, Task } from "@getpaseo/protocol/goal/types";
+import { summarizeGoalProgress } from "@getpaseo/protocol/goal/progress";
+import type {
+  AgentRun,
+  ChangeSet,
+  ChangeSetStatus,
+  Goal,
+  GoalProgressSummary,
+  GoalSummary,
+  Task,
+} from "@getpaseo/protocol/goal/types";
 import { DAEMON_GOAL_SETTINGS } from "./goal-settings";
 
 type ProgressGoal = Pick<
@@ -13,6 +22,8 @@ type ProgressGoal = Pick<
   | "config"
   | "pausedAt"
   | "usage"
+  | "verifyStartedAt"
+  | "verifiedAt"
 >;
 
 const ENDED: ReadonlySet<Goal["status"]> = new Set(["completed", "failed", "cancelled"]);
@@ -101,6 +112,11 @@ export function countGoalTasks(goal: Pick<Goal, "tasks">): GoalTaskCounts {
   return counts;
 }
 
+/** Task counts for a list row: the host's summary, or the same counts for a host without it. */
+export function goalListProgress(goal: GoalSummary): GoalProgressSummary {
+  return goal.progress ?? summarizeGoalProgress(goal);
+}
+
 /** Time since the goal was created; frozen at its last update once it has ended. Never negative. */
 export function goalElapsedMs(goal: ProgressGoal, now: number): number {
   const start = parseTime(goal.createdAt);
@@ -140,9 +156,115 @@ export type GoalEstimate =
   | { kind: "estimating"; samples: number }
   | { kind: "range"; lowMs: number; highMs: number };
 
+/** How long one stage took, or ran so far when it has not ended. Null before it starts. */
+function stageMs(start: string | undefined, end: string | undefined, now: number): number | null {
+  const from = parseTime(start);
+  if (from === null) {
+    return null;
+  }
+  const to = parseTime(end) ?? now;
+  return Math.max(0, to - from);
+}
+
+export interface StageSamples {
+  /** Finished reviews, from `reviewStartedAt` to `reviewedAt`. */
+  review: number[];
+  /** Finished merges, from `mergeStartedAt` to `mergedAt`. */
+  merge: number[];
+}
+
+/** Durations of the reviews and merges that finished. Empty for daemons that predate stage times. */
+export function stageSamples(goal: Pick<Goal, "changeSets">): StageSamples {
+  const review: number[] = [];
+  const merge: number[] = [];
+  for (const changeSet of goal.changeSets) {
+    if (changeSet.reviewStartedAt && changeSet.reviewedAt) {
+      const ms = stageMs(changeSet.reviewStartedAt, changeSet.reviewedAt, 0);
+      if (ms !== null && ms > 0) review.push(ms);
+    }
+    if (changeSet.mergeStartedAt && changeSet.mergedAt) {
+      const ms = stageMs(changeSet.mergeStartedAt, changeSet.mergedAt, 0);
+      if (ms !== null && ms > 0) merge.push(ms);
+    }
+  }
+  return { review, merge };
+}
+
+const IN_REVIEW: ReadonlySet<ChangeSetStatus> = new Set(["captured", "in_review"]);
+const BEFORE_MERGE: ReadonlySet<ChangeSetStatus> = new Set([
+  "captured",
+  "in_review",
+  "awaiting_human",
+  "changes_requested",
+  "conflicted",
+  "test_failed",
+]);
+const MERGING: ReadonlySet<ChangeSetStatus> = new Set(["approved", "integrating"]);
+
+interface Tail {
+  lowMs: number;
+  highMs: number;
+}
+
+/** The least time spent on a stage among the items in it: the one started last ends last. */
+function leastSpent(starts: (string | undefined)[], now: number): number {
+  const spent = starts
+    .map((start) => stageMs(start, undefined, now))
+    .filter((ms): ms is number => ms !== null);
+  return spent.length === 0 ? 0 : Math.min(...spent);
+}
+
 /**
- * Time left, as a range from the fastest and slowest finished tasks spread over the goal's
- * parallelism. Review, merge and verification are not sampled, so the range is a floor.
+ * Review, merge and verification still ahead after the last task's run, from the stage times
+ * this goal already recorded. Reviews run beside the workers, so only the last one lengthens
+ * the goal; verification is one agent turn like a review and is sized from review times.
+ * Without samples a stage adds nothing, which keeps the estimate a floor.
+ */
+function stageTail(goal: ProgressGoal, now: number, hasOpenImplement: boolean): Tail {
+  const samples = stageSamples(goal);
+  const tail: Tail = { lowMs: 0, highMs: 0 };
+  const add = (durations: number[], spent: number) => {
+    if (durations.length === 0) {
+      return;
+    }
+    tail.lowMs += Math.max(0, Math.min(...durations) - spent);
+    tail.highMs += Math.max(0, Math.max(...durations) - spent);
+  };
+  const live = goal.changeSets.filter((changeSet) => changeSet.status !== "superseded");
+  const reviewing = live.filter((changeSet) => IN_REVIEW.has(changeSet.status));
+  if (hasOpenImplement) {
+    add(samples.review, 0);
+  } else if (reviewing.length > 0) {
+    add(
+      samples.review,
+      leastSpent(
+        reviewing.map((changeSet) => changeSet.reviewStartedAt),
+        now,
+      ),
+    );
+  }
+  const merging = live.filter((changeSet) => MERGING.has(changeSet.status));
+  if (hasOpenImplement || live.some((changeSet) => BEFORE_MERGE.has(changeSet.status))) {
+    add(samples.merge, 0);
+  } else if (merging.length > 0) {
+    add(
+      samples.merge,
+      leastSpent(
+        merging.map((changeSet) => changeSet.mergeStartedAt),
+        now,
+      ),
+    );
+  }
+  if (goal.criteria.length > 0 && !goal.verifiedAt) {
+    add(samples.review, leastSpent([goal.verifyStartedAt], now));
+  }
+  return tail;
+}
+
+/**
+ * Time left, as a range: the fastest and slowest finished tasks spread over the goal's
+ * parallelism, then the review, merge and verification still ahead, sized from the stage times
+ * this goal recorded. A host without stage times leaves those out, so read the range as a floor.
  */
 export function estimateRemaining(goal: ProgressGoal, now: number): GoalEstimate {
   if (ENDED.has(goal.status) || !goal.config || goal.tasks.length === 0) {
@@ -163,10 +285,15 @@ export function estimateRemaining(goal: ProgressGoal, now: number): GoalEstimate
   const open = goal.tasks.filter(
     (task) => task.status === "pending" || task.status === "running" || task.status === "failed",
   );
-  if (open.length === 0) {
-    return { kind: "range", lowMs: 0, highMs: 0 };
-  }
-  const parallel = Math.max(1, Math.min(goal.config.maxParallel, DAEMON_WORKER_LIMIT, open.length));
+  const tail = stageTail(
+    goal,
+    now,
+    open.some((task) => task.kind === "implement"),
+  );
+  const parallel = Math.max(
+    1,
+    Math.min(goal.config.maxParallel, DAEMON_WORKER_LIMIT, Math.max(1, open.length)),
+  );
   let lowWork = 0;
   let highWork = 0;
   for (const task of open) {
@@ -176,8 +303,8 @@ export function estimateRemaining(goal: ProgressGoal, now: number): GoalEstimate
   }
   return {
     kind: "range",
-    lowMs: roundEstimate(lowWork / parallel, "down"),
-    highMs: roundEstimate(highWork / parallel, "up"),
+    lowMs: roundEstimate(lowWork / parallel + tail.lowMs, "down"),
+    highMs: roundEstimate(highWork / parallel + tail.highMs, "up"),
   };
 }
 
@@ -270,6 +397,16 @@ export function burnRatePerHour(used: number | null, elapsedMs: number): number 
   return (Math.max(0, used) / elapsedMs) * 3_600_000;
 }
 
+export type TimelineStageKind = "review" | "merge";
+
+/** A review or merge window of one of the task's change sets, on the same span as its bar. */
+export interface TimelineStage {
+  kind: TimelineStageKind;
+  offset: number;
+  width: number;
+  durationMs: number;
+}
+
 export interface TaskTimelineBar {
   taskId: string;
   /** Where the task's first run started, 0 to 1 across the goal's span. */
@@ -279,6 +416,53 @@ export interface TaskTimelineBar {
   durationMs: number | null;
   attempts: number;
   reworkRound: number | null;
+  /** Review and merge windows, in time order; empty for hosts without stage times. */
+  stages: TimelineStage[];
+}
+
+/** Places a window that started at `start` and lasted `durationMs` on a span. */
+function placeOnSpan(
+  start: number,
+  durationMs: number,
+  goalStart: number,
+  span: number,
+): { offset: number; width: number } {
+  const clamp = (value: number) => Math.min(1, Math.max(0, value));
+  const offset = clamp((start - goalStart) / span);
+  return { offset, width: Math.min(1 - offset, clamp(durationMs / span)) };
+}
+
+function changeSetStages(
+  changeSets: readonly ChangeSet[],
+  now: number,
+  goalStart: number,
+  span: number,
+): TimelineStage[] {
+  const stages: TimelineStage[] = [];
+  const push = (
+    kind: TimelineStageKind,
+    start: string | undefined,
+    end: string | undefined,
+    isOpen: boolean,
+  ) => {
+    const from = parseTime(start);
+    // A window that has neither ended nor is still going was cut short; leave it out.
+    if (from === null || (!end && !isOpen)) {
+      return;
+    }
+    const durationMs = stageMs(start, end, now) ?? 0;
+    stages.push({ kind, durationMs, ...placeOnSpan(from, durationMs, goalStart, span) });
+  };
+  for (const changeSet of changeSets) {
+    push(
+      "review",
+      changeSet.reviewStartedAt,
+      changeSet.reviewedAt,
+      changeSet.status === "in_review",
+    );
+    push("merge", changeSet.mergeStartedAt, changeSet.mergedAt, changeSet.status === "integrating");
+  }
+  return stages.sort((a, b) => a.offset - b.offset);
 }
 
 /**
@@ -296,6 +480,7 @@ export function buildTaskTimeline(goal: ProgressGoal, now: number): TaskTimeline
     const durationMs = taskDurationMs(goal, task, now);
     const offset = starts.length === 0 ? 0 : clamp((Math.min(...starts) - goalStart) / span);
     const width = durationMs === null ? 0 : Math.min(1 - offset, clamp(durationMs / span));
+    const changeSets = goal.changeSets.filter((changeSet) => changeSet.taskId === task.id);
     return {
       taskId: task.id,
       offset,
@@ -303,8 +488,30 @@ export function buildTaskTimeline(goal: ProgressGoal, now: number): TaskTimeline
       durationMs,
       attempts: task.attempts,
       reworkRound: task.rework?.round ?? null,
+      stages: changeSetStages(changeSets, now, goalStart, span),
     };
   });
+}
+
+export interface VerificationBar {
+  offset: number;
+  width: number;
+  durationMs: number;
+  isRunning: boolean;
+}
+
+/** The verification window on the goal's span, once it has started. */
+export function buildVerificationBar(goal: ProgressGoal, now: number): VerificationBar | null {
+  const from = parseTime(goal.verifyStartedAt);
+  if (from === null) {
+    return null;
+  }
+  const goalStart = parseTime(goal.createdAt) ?? now;
+  const span = Math.max(1, goalElapsedMs(goal, now));
+  const isRunning = !goal.verifiedAt && !ENDED.has(goal.status);
+  const end = goal.verifiedAt ?? (isRunning ? undefined : goal.updatedAt);
+  const durationMs = stageMs(goal.verifyStartedAt, end, now) ?? 0;
+  return { durationMs, isRunning, ...placeOnSpan(from, durationMs, goalStart, span) };
 }
 
 export interface GoalUsageStatus {

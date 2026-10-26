@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildGoalListSections,
+  canAcknowledgeGoal,
   countGoalsBlockedOnUser,
   countGoalsByFilter,
   findNewGoalAttention,
@@ -30,6 +31,52 @@ describe("goalAttention", () => {
 
   it("ignores a held change set once the goal has ended", () => {
     expect(goalAttention({ ...changeReview, status: "cancelled" })).toBeNull();
+  });
+
+  it("stops asking about a dismissed failure, and asks again once retry clears the mark", () => {
+    const dismissed = { ...failed, acknowledgedAt: "2026-10-22T00:00:00Z" };
+    expect(goalAttention(dismissed)).toBeNull();
+    expect(goalAttention({ ...dismissed, acknowledgedAt: null })).toBe("failed");
+  });
+});
+
+describe("canAcknowledgeGoal", () => {
+  it("offers dismiss only for ended goals not dismissed yet", () => {
+    expect(canAcknowledgeGoal(failed)).toBe(true);
+    expect(canAcknowledgeGoal(completed)).toBe(true);
+    expect(canAcknowledgeGoal(running)).toBe(false);
+    expect(canAcknowledgeGoal({ ...failed, acknowledgedAt: "2026-10-22T00:00:00Z" })).toBe(false);
+  });
+});
+
+describe("dismissed failures in the list", () => {
+  const dismissed = makeGoal({
+    id: "dismissed",
+    status: "failed",
+    acknowledgedAt: "2026-10-22T00:00:00Z",
+  });
+
+  it("leaves Needs you but stays under All and Done", () => {
+    expect(countGoalsByFilter([failed, dismissed])).toEqual({
+      needs_you: 1,
+      running: 0,
+      done: 2,
+      all: 2,
+    });
+    const sections = buildGoalListSections([failed, dismissed], "all");
+    expect(sections.attention.map((goal) => goal.id)).toEqual(["failed"]);
+    expect(sections.others.map((goal) => goal.id)).toEqual(["dismissed"]);
+  });
+
+  it("does not toast when a failure is dismissed, and toasts when it fails again", () => {
+    const before = snapshotGoalAttention([failed]);
+    const acked = { ...failed, acknowledgedAt: "2026-10-22T00:00:00Z" };
+    expect(findNewGoalAttention(before, [acked])).toEqual([]);
+    const reopened = { ...acked, status: "executing" as const, acknowledgedAt: null };
+    const failedAgain = { ...reopened, status: "failed" as const };
+    expect(
+      findNewGoalAttention(snapshotGoalAttention([reopened]), [failedAgain]).map((t) => t.kind),
+    ).toEqual(["failed"]);
   });
 });
 

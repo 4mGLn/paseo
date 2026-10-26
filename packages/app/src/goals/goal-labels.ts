@@ -4,7 +4,13 @@ import type { StatusBadgeVariant } from "@/components/ui/status-badge";
 import { formatDuration } from "@/utils/time";
 import { goalAttention } from "./goal-attention";
 import { GOAL_STATUS_BADGE } from "./goal-derivation";
-import type { BudgetStatus, GoalEstimate } from "./goal-progress";
+import {
+  formatCompactCount,
+  formatUsd,
+  goalUsageStatus,
+  type BudgetStatus,
+  type GoalEstimate,
+} from "./goal-progress";
 import type { DurationParts, GoalSettingsSummaryPart } from "./goal-settings";
 
 export function durationLabel(t: TFunction, parts: DurationParts): string {
@@ -76,4 +82,38 @@ export function budgetLabel(
     case "limited":
       return t("goals.progress.usedOf", { used: format(status.used), limit: format(status.limit) });
   }
+}
+
+/** A budget in a list row: the amount, against its cap when one is set. */
+function compactBudgetLabel(
+  t: TFunction,
+  status: BudgetStatus,
+  format: (value: number) => string,
+): string {
+  switch (status.kind) {
+    case "not_reported":
+      return t("goals.row.notReported");
+    case "unlimited":
+      return format(status.used);
+    case "limited":
+      return t("goals.progress.usedOf", { used: format(status.used), limit: format(status.limit) });
+  }
+}
+
+/** Tokens and cost for a managed goal's list row; null for a manual goal, which runs nothing. */
+export function rowUsageLabel(t: TFunction, goal: Pick<Goal, "usage" | "config">): string | null {
+  if (!goal.config) {
+    return null;
+  }
+  const usage = goalUsageStatus(goal);
+  if (usage.tokens.kind === "not_reported" && usage.cost.kind === "not_reported") {
+    return t("goals.row.usageNotReported");
+  }
+  const tokens = compactBudgetLabel(t, usage.tokens, formatCompactCount);
+  // Most providers report tokens without cost; a bare $0.00 would read as free.
+  const noCost = usage.cost.kind === "unlimited" && usage.cost.used === 0;
+  if (noCost) {
+    return t("goals.row.tokensOnly", { tokens });
+  }
+  return t("goals.row.usage", { tokens, cost: compactBudgetLabel(t, usage.cost, formatUsd) });
 }

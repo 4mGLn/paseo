@@ -312,6 +312,11 @@ export const en = {
       tasks: "{{done}}/{{total}} tasks",
       noPlan: "No plan yet",
       updated: "Updated {{time}}",
+      dismissed: "Dismissed",
+      usage: "Tokens {{tokens}} · Cost {{cost}}",
+      tokensOnly: "Tokens {{tokens}}",
+      usageNotReported: "Usage not reported",
+      notReported: "not reported",
     },
     filters: {
       needs_you: "Needs you",
@@ -334,6 +339,32 @@ export const en = {
       plan_review: "Plan waiting for your approval",
       change_review: "Changes waiting for your approval",
       failed: "Failed",
+    },
+    waitingOn: {
+      paused: "Paused until you resume it",
+      planning: "Waiting for the Lead's plan",
+      manualPlan: "Waiting for a plan to be proposed",
+      planApproval: "Waiting for your plan approval",
+      manualTasks: "Waiting for task updates recorded by hand",
+      changeSetApproval: "Waiting for your approval of {{count}} changes: {{ids}}",
+      changeSetApproval_one: "Waiting for your approval of {{ids}}",
+      changeSetApproval_other: "Waiting for your approval of {{count}} changes: {{ids}}",
+      runningTask: "Running {{count}} tasks: {{ids}}",
+      runningTask_one: "Running {{title}}",
+      runningTask_other: "Running {{count}} tasks: {{ids}}",
+      startingTask: "Starting {{count}} tasks: {{ids}}",
+      startingTask_one: "Starting {{title}}",
+      startingTask_other: "Starting {{count}} tasks: {{ids}}",
+      review: "Reviewing {{count}} changes: {{ids}}",
+      review_one: "Reviewing {{ids}}",
+      review_other: "Reviewing {{count}} changes: {{ids}}",
+      merge: "Merging {{count}} changes: {{ids}}",
+      merge_one: "Merging {{ids}}",
+      merge_other: "Merging {{count}} changes: {{ids}}",
+      retry: "Waiting to retry {{count}} tasks: {{ids}}",
+      retry_one: "Waiting to retry {{title}}",
+      retry_other: "Waiting to retry {{count}} tasks: {{ids}}",
+      verification: "Verifying the acceptance criteria",
     },
     status: {
       planning: "Planning",
@@ -448,6 +479,8 @@ export const en = {
       usedNoLimit: "{{used}}, no limit",
       partialUsage: "From {{reported}} of {{total}} agent turns",
       burnRate: "{{rate}} per hour",
+      verification: "Verification",
+      verificationRunning: "{{time}} so far",
     },
     duration: {
       seconds: "{{n}} s",
@@ -510,6 +543,10 @@ export const en = {
       showRaw: "Show raw",
       hideRaw: "Hide raw",
       showAllActivity: "Show all activity",
+      dismiss: "Dismiss",
+      dismissed: "Dismissed {{time}}",
+      reviewTime: "Review {{time}}",
+      mergeTime: "Merge {{time}}",
     },
     events: {
       repeated: "×{{n}}",
@@ -547,12 +584,14 @@ export const en = {
       goalPaused: "Goal paused",
       goalResumed: "Goal resumed",
       goalRetried: "Retrying {{subject}}",
+      goalAcknowledged: "Dismissed",
     },
     toasts: {
       plan_review: "Plan ready for review: {{title}}",
       change_review: "Changes waiting for approval: {{title}}",
       failed: "Goal failed: {{title}}",
       several: "{{n}} goals need you",
+      waiting: "{{title}}: {{waiting}}",
     },
     templates: {
       fix_bug: {
@@ -3623,6 +3662,13 @@ type TranslationResourcesBase = WidenStringLeaves<typeof en>;
 type PluralCategory = "zero" | "one" | "two" | "few" | "many" | "other";
 type DurationPluralKey = `${"days" | "hours" | "minutes"}_${PluralCategory}`;
 type AgoPluralKey = `${"daysAgo" | "hoursAgo" | "minutesAgo"}_${PluralCategory}`;
+type WaitingOnPluralKey = `${
+  | "changeSetApproval"
+  | "runningTask"
+  | "startingTask"
+  | "review"
+  | "merge"
+  | "retry"}_${PluralCategory}`;
 
 // i18next plural categories differ by locale, so locale catalogs may add the
 // explicit v4 suffixes they need while retaining the canonical fallback keys.
@@ -3632,5 +3678,9 @@ export type TranslationResources = TranslationResourcesBase & {
       Partial<Record<DurationPluralKey, string>>;
     timing: TranslationResourcesBase["providerUsage"]["timing"] &
       Partial<Record<AgoPluralKey, string>>;
+  };
+  goals: TranslationResourcesBase["goals"] & {
+    waitingOn: TranslationResourcesBase["goals"]["waitingOn"] &
+      Partial<Record<WaitingOnPluralKey, string>>;
   };
 };

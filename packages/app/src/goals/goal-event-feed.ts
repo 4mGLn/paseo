@@ -160,7 +160,7 @@ function describeOutcomeEvent(event: GoalEvent, goal: FeedGoal): Described | nul
   }
 }
 
-/** How the goal itself moved: ended, paused, resumed or retried. */
+/** How the goal itself moved: ended, paused, resumed, retried or dismissed. */
 function describeGoalEndEvent(event: GoalEvent, goal: FeedGoal): Described | null {
   switch (event.type) {
     case "goal.completed":
@@ -179,6 +179,8 @@ function describeGoalEndEvent(event: GoalEvent, goal: FeedGoal): Described | nul
         tone: "default",
         subject: event.taskIds.map((taskId) => taskTitle(goal, taskId)).join(", "),
       };
+    case "goal.acknowledged":
+      return { key: "goalAcknowledged", tone: "default", subject: null };
     default:
       return null;
   }

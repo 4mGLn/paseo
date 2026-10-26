@@ -7,7 +7,7 @@ export type GoalListFilter = "needs_you" | "running" | "done" | "all";
 
 export const GOAL_LIST_FILTERS: readonly GoalListFilter[] = ["needs_you", "running", "done", "all"];
 
-type AttentionInput = Pick<Goal, "status" | "changeSets">;
+type AttentionInput = Pick<Goal, "status" | "changeSets" | "acknowledgedAt">;
 
 const DONE_STATUSES: ReadonlySet<GoalStatus> = new Set(["completed", "failed", "cancelled"]);
 
@@ -21,13 +21,19 @@ export function goalAttention(goal: AttentionInput): GoalAttentionKind | null {
   if (goal.status === "awaiting_plan_approval") {
     return "plan_review";
   }
+  // A dismissed failure stops asking; a retry that reopens the goal clears the mark.
   if (goal.status === "failed") {
-    return "failed";
+    return goal.acknowledgedAt ? null : "failed";
   }
   if (goal.status === "executing" && awaitingChangeSetIds(goal).length > 0) {
     return "change_review";
   }
   return null;
+}
+
+/** An ended goal that has not been dismissed yet; the daemon refuses to acknowledge a live one. */
+export function canAcknowledgeGoal(goal: Pick<Goal, "status" | "acknowledgedAt">): boolean {
+  return DONE_STATUSES.has(goal.status) && !goal.acknowledgedAt;
 }
 
 /** Plans and changes held for your approval. Failures are listed, but do not count here. */
