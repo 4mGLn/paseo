@@ -54,6 +54,13 @@ export function createGoalCommand(): Command {
         "--verify-provider <provider[/model]>",
         "Provider, optionally with a model, for the verifier (default: the review provider)",
       )
+      .option("--lead-thinking <id>", "Thinking option for the Lead (default: the model's)")
+      .option(
+        "--worker-thinking <id>",
+        "Thinking option for tasks on --provider; a task's own thinking wins (default: the model's)",
+      )
+      .option("--review-thinking <id>", "Thinking option for the reviewer (default: the model's)")
+      .option("--verify-thinking <id>", "Thinking option for the verifier (default: the model's)")
       .option(
         "--branch-prefix <prefix>",
         "Integration branch is <prefix>/<goalId> (default paseo-goal)",

@@ -1,4 +1,6 @@
 import type { Command } from "commander";
+import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
+import type { Goal, Task } from "@getpaseo/protocol/goal/types";
 import type { ListResult, OutputSchema } from "../../output/index.js";
 import { formatDuration, formatUsage, taskTimes, taskUsage } from "./progress.js";
 import { connectGoalClient, toGoalCommandError, type GoalCommandOptions } from "./shared.js";
@@ -11,6 +13,7 @@ interface GoalTaskRow {
   rework: string;
   dependsOn: string;
   provider: string;
+  thinking: string;
   elapsed: string;
   usage: string;
   title: string;
@@ -26,11 +29,22 @@ const taskSchema: OutputSchema<GoalTaskRow> = {
     { header: "REWORK", field: "rework", width: 7 },
     { header: "DEPENDS ON", field: "dependsOn", width: 16 },
     { header: "PROVIDER", field: "provider", width: 10 },
+    { header: "THINKING", field: "thinking", width: 9 },
     { header: "ELAPSED", field: "elapsed", width: 9 },
     { header: "USAGE", field: "usage", width: 30 },
     { header: "TITLE", field: "title", width: 36 },
   ],
 };
+
+/** What the task's last run started with, else what the goal asks for, else "-". */
+function taskThinking(goal: Goal, task: Task): string {
+  const run = goal.runs.findLast((r) => r.taskId === task.id);
+  return (
+    run?.thinking ??
+    (goal.config ? goalRoleThinking(goal.config, "worker", task) : undefined) ??
+    "-"
+  );
+}
 
 export async function runInspectCommand(
   id: string,
@@ -57,6 +71,7 @@ export async function runInspectCommand(
           rework: task.rework ? `${task.rework.reason} #${task.rework.round}` : "-",
           dependsOn: task.dependsOn.join(",") || "-",
           provider: task.provider ?? "-",
+          thinking: taskThinking(goal, task),
           elapsed: startedAt
             ? formatDuration((endedAt ? Date.parse(endedAt) : now) - Date.parse(startedAt))
             : "-",

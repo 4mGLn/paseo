@@ -12,6 +12,7 @@ import type { BoundCreateAgentCommand } from "../agent/create-agent/create.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../worktree-session.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { ManagerAgentPort, ManagerWorkspacePort, TurnResult } from "./goal-manager.js";
+import type { GoalModelCatalog } from "./goal-thinking.js";
 
 interface DirectoryWorkspaceInput {
   cwd: string;
@@ -134,6 +135,8 @@ export interface GoalPortDeps {
   archiveWorkspace: (workspaceId: string) => Promise<void>;
   /** Resolves when the workspace's setup scripts have finished. */
   waitForWorkspaceSetup: (workspaceId: string) => Promise<void>;
+  /** Model catalog that per-task thinking ids are checked against. */
+  modelCatalog?: GoalModelCatalog;
 }
 
 /** A setup that never finishes must not hold a goal up forever. */
@@ -180,11 +183,17 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
         workspaceId: input.workspaceId,
         title: input.title,
         labels: input.labels,
+        ...(input.thinking ? { thinking: input.thinking } : {}),
         unattended: true,
         promptFailure: "return-error",
         notifyOnFinish: false,
       });
-      return { agentId: created.snapshot.id };
+      // What the provider reports once the session is up, else what was asked for.
+      const thinking =
+        created.snapshot.runtimeInfo?.thinkingOptionId ??
+        created.snapshot.config.thinkingOptionId ??
+        input.thinking;
+      return { agentId: created.snapshot.id, ...(thinking ? { thinking } : {}) };
     },
 
     async runTurn(agentId, prompt, options): Promise<TurnResult> {
@@ -213,6 +222,8 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
     },
 
     knownProviders: () => deps.agentManager.getRegisteredProviderIds(),
+
+    ...(deps.modelCatalog ? { modelCatalog: deps.modelCatalog } : {}),
 
     async cancel(agentId) {
       await deps.cancelAgentRun(agentId);

@@ -10,7 +10,9 @@ import type {
   Task,
 } from "@getpaseo/protocol/goal/types";
 import { DEFAULT_GOAL_BRANCH_PREFIX } from "@getpaseo/protocol/goal/config-bounds";
+import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { GitPort } from "./git-ops.js";
+import { thinkingInput } from "./goal-thinking.js";
 import type { ManagerAgentPort, ManagerWorkspacePort, TurnResult } from "./goal-manager.js";
 import {
   ReplyParseError,
@@ -404,6 +406,7 @@ export class ChangeSetPipeline {
     if (!config) return null;
     const { agentId } = await this.agents.createAgent({
       provider: config.reviewProvider ?? config.leadProvider,
+      ...thinkingInput(goalRoleThinking(config, "reviewer")),
       cwd: cs.cwd,
       workspaceId: cs.workspaceId,
       title: `Review: ${task.title}`,
@@ -589,6 +592,7 @@ export class ChangeSetPipeline {
           kind: "implement",
           dependsOn: [],
           ...(original.provider ? { provider: original.provider } : {}),
+          ...(original.thinking ? { thinking: original.thinking } : {}),
         },
         rework: { changeSetId: cs.id, reason, round },
       });
@@ -750,6 +754,7 @@ export class ChangeSetPipeline {
     if (!workspace) return null;
     const { agentId } = await this.agents.createAgent({
       provider: verifierProvider(config),
+      ...thinkingInput(goalRoleThinking(config, "verifier")),
       cwd: workspace.cwd,
       workspaceId: workspace.workspaceId,
       title: `Verify: ${goal.title}`,

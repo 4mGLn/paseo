@@ -175,13 +175,20 @@ describe("workspace port", () => {
 });
 
 describe("agent port", () => {
-  function setup() {
+  function setup(reported: { runtime?: string | null; config?: string } = {}) {
     const calls: Record<string, unknown>[] = [];
     const deps = {
       logger: pino({ level: "silent" }),
       createAgent: async (input: Record<string, unknown>) => {
         calls.push(input);
-        return { snapshot: { id: "agent-1" } };
+        return {
+          snapshot: {
+            id: "agent-1",
+            config: { thinkingOptionId: reported.config ?? input.thinking },
+            runtimeInfo:
+              reported.runtime === undefined ? undefined : { thinkingOptionId: reported.runtime },
+          },
+        };
       },
     } as unknown as GoalPortDeps;
     return { port: createGoalAgentPort(deps), calls };
@@ -203,5 +210,23 @@ describe("agent port", () => {
     await port.createAgent({ ...base, provider: "claude" });
     expect(calls[0]).toMatchObject({ provider: "claude", config: { provider: "claude" } });
     expect(calls[0]?.config).not.toHaveProperty("model");
+  });
+
+  test("a thinking id is passed to the create path the way a chat's is", async () => {
+    const { port, calls } = setup();
+    const created = await port.createAgent({ ...base, provider: "codex", thinking: "high" });
+    expect(calls[0]).toMatchObject({ thinking: "high" });
+    expect(created).toEqual({ agentId: "agent-1", thinking: "high" });
+  });
+
+  test("without a thinking id nothing is passed, and the agent reports what it runs with", async () => {
+    const { port, calls } = setup({ runtime: "medium" });
+    const created = await port.createAgent({ ...base, provider: "codex" });
+    expect(calls[0]).not.toHaveProperty("thinking");
+    expect(created).toEqual({ agentId: "agent-1", thinking: "medium" });
+    const silent = setup();
+    expect(await silent.port.createAgent({ ...base, provider: "codex" })).toEqual({
+      agentId: "agent-1",
+    });
   });
 });
