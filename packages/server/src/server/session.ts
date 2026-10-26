@@ -1096,6 +1096,7 @@ export class Session {
       host: {
         emit: (msg) => this.emit(msg),
         supportsGoalControlEvents: () => this.supports(CLIENT_CAPS.goalControlEvents),
+        supportsGoalAcknowledgeEvents: () => this.supports(CLIENT_CAPS.goalAcknowledgeEvents),
       },
       goalService,
       logger: this.sessionLogger,
@@ -9561,6 +9562,7 @@ function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubs
     case "activity_log":
     case "hub.execution.agent.update":
     case "hub.execution.agent.stream":
+    case "goal.update":
       return message.type;
     case "status":
       switch (message.payload.status) {
@@ -9597,6 +9599,10 @@ function legacyWantsEvent(
       return capabilities.has(CLIENT_CAPS.providerSubagents);
     // Old apps parse outbound messages strictly and do not know this type.
     case "agent.background_work.update":
+      return false;
+    // COMPAT(goalUpdates): added in v0.13.0. Delivered only to explicit subscribers, so a
+    // client that never asked for it is never sent a type it may not parse.
+    case "goal.update":
       return false;
     default:
       return true;
