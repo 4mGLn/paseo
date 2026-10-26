@@ -29,7 +29,10 @@ describe("GoalSession", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  async function openSession(controlEvents?: boolean): Promise<GoalSession> {
+  async function openSession(
+    controlEvents?: boolean,
+    acknowledgeEvents?: boolean,
+  ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
     await service.start();
@@ -37,6 +40,9 @@ describe("GoalSession", () => {
       host: {
         emit: (msg) => emitted.push(msg),
         ...(controlEvents === undefined ? {} : { supportsGoalControlEvents: () => controlEvents }),
+        ...(acknowledgeEvents === undefined
+          ? {}
+          : { supportsGoalAcknowledgeEvents: () => acknowledgeEvents }),
       },
       goalService: service,
       logger: pino({ level: "silent" }),
@@ -222,4 +228,105 @@ describe("GoalSession", () => {
       expect(inspected.payload.events.map((e) => e.type)).toEqual(expected);
     });
   }
+
+  test("goal.list carries task progress next to each goal", async () => {
+    const session = await openSession();
+    await send(session, {
+      type: "goal.create.request",
+      requestId: "r1",
+      goalId: "g1",
+      title: "T",
+      objective: "",
+      criteria: [],
+    });
+    await send(session, {
+      type: "goal.propose_plan.request",
+      requestId: "r2",
+      goalId: "g1",
+      tasks: [task("a"), task("b", ["a"])],
+    });
+    await send(session, { type: "goal.list.request", requestId: "r3" });
+    const list = emitted.find((m) => m.type === "goal.list.response") as {
+      payload: { goals: { progress: unknown }[] };
+    };
+    expect(list.payload.goals[0]?.progress).toEqual({
+      tasksTotal: 2,
+      tasksDone: 0,
+      tasksFailed: 0,
+      tasksRunning: 0,
+    });
+  });
+
+  test("acknowledges an ended goal once, refuses a live one, and keeps the mark across a restart", async () => {
+    const session = await openSession();
+    await send(session, {
+      type: "goal.create.request",
+      requestId: "r1",
+      goalId: "g1",
+      title: "T",
+      objective: "",
+      criteria: [],
+    });
+    await send(session, { type: "goal.acknowledge.request", requestId: "r2", goalId: "g1" });
+    await send(session, { type: "goal.cancel.request", requestId: "r3", goalId: "g1" });
+    await send(session, {
+      type: "goal.acknowledge.request",
+      requestId: "r4",
+      goalId: "g1",
+      eventId: "e1",
+    });
+    await send(session, {
+      type: "goal.acknowledge.request",
+      requestId: "r5",
+      goalId: "g1",
+      eventId: "e1",
+    });
+    await send(session, { type: "goal.acknowledge.request", requestId: "r6", goalId: "g1" });
+
+    const error = emitted.find((m) => m.type === "rpc_error") as {
+      payload: { requestId: string; error: string };
+    };
+    expect(error.payload.requestId).toBe("r2");
+    expect(error.payload.error).toMatch(/only an ended goal/);
+    const acks = emitted.filter((m) => m.type === "goal.acknowledge.response") as {
+      payload: { goal: { status: string; acknowledgedAt: string | null } };
+    }[];
+    expect(acks).toHaveLength(3);
+    const first = acks[0]?.payload.goal.acknowledgedAt;
+    expect(first).toBeTruthy();
+    expect(acks.map((a) => a.payload.goal.acknowledgedAt)).toEqual([first, first, first]);
+    expect(acks[0]?.payload.goal.status).toBe("cancelled");
+
+    const restarted = await openSession();
+    await send(restarted, { type: "goal.inspect.request", requestId: "r7", goalId: "g1" });
+    const inspected = emitted.findLast((m) => m.type === "goal.inspect.response") as {
+      payload: { events: { type: string }[]; goal: { acknowledgedAt: string | null } };
+    };
+    expect(inspected.payload.goal.acknowledgedAt).toBe(first);
+    expect(inspected.payload.events.map((e) => e.type)).toEqual([
+      "goal.created",
+      "goal.cancelled",
+      "goal.acknowledged",
+    ]);
+  });
+
+  test("omits goal.acknowledged from inspect for clients without the capability", async () => {
+    const session = await openSession(true, false);
+    await send(session, {
+      type: "goal.create.request",
+      requestId: "r1",
+      goalId: "g1",
+      title: "T",
+      objective: "",
+      criteria: [],
+    });
+    await send(session, { type: "goal.cancel.request", requestId: "r2", goalId: "g1" });
+    await send(session, { type: "goal.acknowledge.request", requestId: "r3", goalId: "g1" });
+    await send(session, { type: "goal.inspect.request", requestId: "r4", goalId: "g1" });
+    const inspected = emitted.find((m) => m.type === "goal.inspect.response") as {
+      payload: { events: { type: string }[]; goal: { acknowledgedAt: string | null } };
+    };
+    expect(inspected.payload.goal.acknowledgedAt).toBeTruthy();
+    expect(inspected.payload.events.map((e) => e.type)).toEqual(["goal.created", "goal.cancelled"]);
+  });
 });

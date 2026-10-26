@@ -90,6 +90,9 @@ import {
   GoalPauseResponseSchema,
   GoalResumeRequestSchema,
   GoalResumeResponseSchema,
+  GoalAcknowledgeRequestSchema,
+  GoalAcknowledgeResponseSchema,
+  GoalUpdateMessageSchema,
   GoalCreateResponseSchema,
   GoalListResponseSchema,
   GoalInspectResponseSchema,
@@ -3286,6 +3289,9 @@ export const SessionEventSubscriptionSchema = z.enum([
   "activity_log",
   "hub.execution.agent.update",
   "hub.execution.agent.stream",
+  // COMPAT(goalUpdates): send only to daemons with server_info.features.goalUpdates;
+  // older daemons reject the subscription request.
+  "goal.update",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -3553,6 +3559,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   GoalRetryRequestSchema,
   GoalPauseRequestSchema,
   GoalResumeRequestSchema,
+  GoalAcknowledgeRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -3906,6 +3913,16 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(goalControls): added in v0.13.0, remove gate after 2027-10-26.
         // goal.reject_plan, goal.retry, goal.pause and goal.resume.
         goalControls: z.boolean().optional(),
+        // COMPAT(goalBudgets): added in v0.13.0, remove gate after 2027-10-26.
+        // Honours limits.maxTotalTokens, limits.maxCostUsd and limits.deadlineAt. Older
+        // daemons drop those limits silently, so send them only when this is set.
+        goalBudgets: z.boolean().optional(),
+        // COMPAT(goalUpdates): added in v0.13.0, remove gate after 2027-10-26.
+        // Accepts "goal.update" in session.events.set_subscription and pushes goal.update.
+        goalUpdates: z.boolean().optional(),
+        // COMPAT(goalAcknowledge): added in v0.13.0, remove gate after 2027-10-26.
+        // goal.acknowledge.
+        goalAcknowledge: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
@@ -7347,6 +7364,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   GoalRetryResponseSchema,
   GoalPauseResponseSchema,
   GoalResumeResponseSchema,
+  GoalAcknowledgeResponseSchema,
+  GoalUpdateMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);
@@ -7851,6 +7870,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.timelineReplacementInvalidation]: z.boolean().optional(),
       [CLIENT_CAPS.timelineNotifications]: z.boolean().optional(),
       [CLIENT_CAPS.goalControlEvents]: z.boolean().optional(),
+      [CLIENT_CAPS.goalAcknowledgeEvents]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()
