@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/app",
-  "version": "0.13.1-mgln-dev",
+  "version": "0.13.2-mgln-dev",
   "private": true,
   "main": "index.ts",
   "scripts": {

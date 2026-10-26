@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/highlight",
-  "version": "0.13.1-mgln-dev",
+  "version": "0.13.2-mgln-dev",
   "files": [
     "dist",
     "!dist/**/*.map",
