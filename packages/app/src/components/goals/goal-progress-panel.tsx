@@ -7,6 +7,7 @@ import { SettingsCard, SettingsSection } from "@/components/settings";
 import { isGoalTerminal } from "@/goals/goal-derivation";
 import { budgetLabel, estimateLabel } from "@/goals/goal-labels";
 import {
+  buildVerificationBar,
   burnRatePerHour,
   countGoalTasks,
   estimateRemaining,
@@ -48,6 +49,7 @@ export function GoalProgressPanel({ goal }: { goal: Goal }): ReactElement {
   const elapsedMs = goalElapsedMs(goal, now);
   const estimate = estimateLabel(t, estimateRemaining(goal, now));
   const deadline = goalDeadline(goal, now);
+  const verification = buildVerificationBar(goal, now);
   const usage = goalUsageStatus(goal);
   const tokenRate =
     usage.tokens.kind === "not_reported" ? null : burnRatePerHour(usage.tokens.used, elapsedMs);
@@ -105,6 +107,25 @@ export function GoalProgressPanel({ goal }: { goal: Goal }): ReactElement {
                 deadline.kind === "running" ? deadline.usedFraction : 1,
                 deadline.kind === "overdue",
               )}
+            />
+          </MetricRow>
+        ) : null}
+        {verification ? (
+          <MetricRow
+            label={t("goals.progress.verification")}
+            value={
+              verification.isRunning
+                ? t("goals.progress.verificationRunning", {
+                    time: formatMinutes(verification.durationMs),
+                  })
+                : formatDuration(verification.durationMs)
+            }
+            testID="goal-progress-verification"
+          >
+            <GoalBar
+              fraction={verification.width}
+              offset={verification.offset}
+              tone={goal.verifiedAt ? "success" : "neutral"}
             />
           </MetricRow>
         ) : null}

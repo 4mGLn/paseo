@@ -35,6 +35,14 @@ describe("describeGoalEvent", () => {
     ).toMatchObject({ key: "runInterrupted", subject: "Add tests" });
   });
 
+  it("tells a dismissed goal", () => {
+    expect(describeGoalEvent(event({ type: "goal.acknowledged" }), goal)).toEqual({
+      key: "goalAcknowledged",
+      tone: "default",
+      subject: null,
+    });
+  });
+
   it("falls back to the id for something it cannot find", () => {
     expect(describeGoalEvent(event({ type: "task.retried", taskId: "gone" }), goal)).toMatchObject({
       subject: "gone",
