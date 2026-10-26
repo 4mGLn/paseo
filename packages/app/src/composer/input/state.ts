@@ -1,8 +1,16 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { MessagePayload } from "@/composer/types";
+import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+import type { MessagePayload, TextReplacement } from "@/composer/types";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 
-export type SendBehavior = "interrupt" | "queue";
+export type SendBehavior = ActiveTurnBehavior | "queue";
+
+export function resolveActiveSendBehavior(
+  sendBehavior: SendBehavior,
+  hasPendingPermission: boolean,
+): SendBehavior {
+  return sendBehavior === "queue" && hasPendingPermission ? "interrupt" : sendBehavior;
+}
 
 interface ComposerSurfaceState {
   opacity: 0 | 1;
@@ -44,6 +52,44 @@ interface SendActionContext {
   onQueue: ((payload: MessagePayload) => void) | undefined;
   handleSendMessage: () => void;
   handleQueueMessage: () => void;
+}
+
+interface DictationTranscriptContext {
+  value: string;
+  defaultSendBehavior: SendBehavior;
+  isAgentRunning: boolean;
+  onQueue: ((payload: MessagePayload) => void) | undefined;
+  onSubmit: (payload: MessagePayload) => void;
+  replaceText: (text: string) => void;
+  attachments: MessagePayload["attachments"];
+  cwd: string;
+  autoSend: boolean;
+}
+
+export function applyDictationTranscript(text: string, ctx: DictationTranscriptContext): void {
+  if (!text) return;
+  const shouldPad = ctx.value.length > 0 && !/\s$/.test(ctx.value);
+  const nextValue = `${ctx.value}${shouldPad ? " " : ""}${text}`;
+
+  if (!ctx.autoSend) {
+    ctx.replaceText(nextValue);
+    return;
+  }
+
+  ctx.replaceText(nextValue);
+
+  if (ctx.defaultSendBehavior === "queue" && ctx.isAgentRunning && ctx.onQueue) {
+    ctx.onQueue({ text: nextValue, attachments: ctx.attachments, cwd: ctx.cwd });
+    ctx.replaceText("");
+    return;
+  }
+
+  ctx.onSubmit({
+    text: nextValue,
+    attachments: ctx.attachments,
+    cwd: ctx.cwd,
+    forceSend: ctx.isAgentRunning || undefined,
+  });
 }
 
 interface MessageInputKeyboardActions {
@@ -145,4 +191,40 @@ export async function stopRealtimeVoice(ctx: StopRealtimeVoiceContext): Promise<
   }
 
   await ctx.voice.stopVoice();
+}
+
+/**
+ * Offset that aligns a glyph's visible ink with the Send arrow's ink when both sit in
+ * equal controls on the same right rail. In Lucide's 24px viewBox ArrowUp ends at
+ * x19 while Maximize2/Minimize2 end at x21, so equal boxes leave the fullscreen
+ * glyphs visibly past the arrow.
+ */
+export function resolveGlyphRailOffset(input: {
+  controlSize: number;
+  sendIconSize: number;
+  glyphIconSize: number;
+}): number {
+  const arrowInkInset =
+    (input.controlSize - input.sendIconSize) / 2 + (5 * input.sendIconSize) / 24;
+  const glyphInkInset =
+    (input.controlSize - input.glyphIconSize) / 2 + (3 * input.glyphIconSize) / 24;
+  return arrowInkInset - glyphInkInset;
+}
+
+export function resolveComposerSurfaceText(
+  liveText: string,
+  replacement: TextReplacement,
+  appliedReplacementKey: string,
+): string {
+  return replacement.key === appliedReplacementKey ? liveText : replacement.text;
+}
+
+/** A retained caret must fit the text the remounted editor shows. */
+export function resolveRetainedSelection(
+  retained: { start: number; end: number },
+  textLength: number,
+): { start: number; end: number } {
+  const end = Math.min(Math.max(retained.end, 0), textLength);
+  const start = Math.min(Math.max(retained.start, 0), end);
+  return { start, end };
 }

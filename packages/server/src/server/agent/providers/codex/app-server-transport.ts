@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import readline from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import type { Logger } from "pino";
 import { z } from "zod";
 
@@ -19,7 +19,7 @@ interface JsonRpcRequest {
 interface JsonRpcResponse {
   id: number;
   result?: unknown;
-  error?: { message?: string };
+  error?: { message?: string; code?: string | number; data?: unknown };
 }
 
 interface JsonRpcNotification {
@@ -33,11 +33,24 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+export class CodexAppServerRpcError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | number | undefined,
+    readonly data: unknown,
+  ) {
+    super(message);
+    this.name = "CodexAppServerRpcError";
+  }
+}
+
 type RequestHandler = (params: unknown, requestId: number) => unknown;
 type NotificationHandler = (method: string, params: unknown) => void;
+type UnexpectedTerminationHandler = (error: Error) => void;
 
 export interface CodexThreadForkParams {
   threadId: string;
+  beforeTurnId?: string | null;
   path?: string | null;
   model?: string | null;
   modelProvider?: string | null;
@@ -154,11 +167,45 @@ function readProviderTurnId(params: unknown): string | undefined {
   return isRecord(turn) && typeof turn.id === "string" ? turn.id : undefined;
 }
 
+/**
+ * Splits stdout into lines on "\n" only. `node:readline` additionally treats U+2028 and U+2029
+ * as line terminators, but Codex emits those characters raw inside JSON strings, so readline
+ * would cut a single JSON-RPC message into pieces that fail to parse.
+ */
+function createNewlineLineReader(
+  input: NodeJS.ReadableStream,
+  onLine: (line: string) => void,
+): { close(): void } {
+  const decoder = new StringDecoder("utf8");
+  // Text after the last "\n", kept as parts and joined once its line ends, so a large line
+  // arriving in many chunks is scanned and copied once instead of once per chunk.
+  let unterminated: string[] = [];
+  const onData = (chunk: Buffer | string): void => {
+    const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+    let lineStart = 0;
+    let index = text.indexOf("\n");
+    while (index !== -1) {
+      unterminated.push(text.slice(lineStart, index));
+      const line = unterminated.join("");
+      unterminated = [];
+      onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+      lineStart = index + 1;
+      index = text.indexOf("\n", lineStart);
+    }
+    if (lineStart < text.length) {
+      unterminated.push(text.slice(lineStart));
+    }
+  };
+  input.on("data", onData);
+  return { close: () => void input.off("data", onData) };
+}
+
 export class CodexAppServerClient {
-  private readonly rl: readline.Interface;
+  private readonly stdoutLineReader: { close(): void };
   private readonly pending = new Map<number, PendingRequest>();
   private readonly requestHandlers = new Map<string, RequestHandler>();
   private notificationHandler: NotificationHandler | null = null;
+  private unexpectedTerminationHandler: UnexpectedTerminationHandler | null = null;
   private nextId = 1;
   private disposed = false;
   private stderrBuffer = "";
@@ -168,8 +215,7 @@ export class CodexAppServerClient {
     private readonly logger: Logger,
     private readonly getTraceContext: () => CodexAppServerTraceContext = () => ({}),
   ) {
-    this.rl = readline.createInterface({ input: child.stdout });
-    this.rl.on("line", (line) => {
+    this.stdoutLineReader = createNewlineLineReader(child.stdout, (line) => {
       void this.handleLine(line).catch((error) => {
         this.logger.warn({ error, line }, "Failed to handle Codex app-server stdout line");
       });
@@ -184,12 +230,7 @@ export class CodexAppServerClient {
 
     child.on("error", (err) => {
       this.logger.error({ err }, "Codex app-server child process error");
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(err);
-      }
-      this.pending.clear();
-      this.disposed = true;
+      this.handleUnexpectedTermination(err);
     });
 
     child.on("exit", (code, signal) => {
@@ -198,13 +239,12 @@ export class CodexAppServerClient {
           ? "Codex app-server exited"
           : `Codex app-server exited with code ${code ?? "null"} and signal ${signal ?? "null"}`;
       const error = new Error(`${message}\n${this.stderrBuffer}`.trim());
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(error);
-      }
-      this.pending.clear();
-      this.disposed = true;
+      this.handleUnexpectedTermination(error);
     });
+  }
+
+  setUnexpectedTerminationHandler(handler: UnexpectedTerminationHandler): void {
+    this.unexpectedTerminationHandler = handler;
   }
 
   setNotificationHandler(handler: NotificationHandler): void {
@@ -249,9 +289,10 @@ export class CodexAppServerClient {
   }
 
   async dispose(): Promise<void> {
-    if (this.disposed) return;
     this.disposed = true;
-    this.rl.close();
+    this.unexpectedTerminationHandler = null;
+    this.stdoutLineReader.close();
+    this.rejectPending(new Error("Codex app-server client is closed"));
     try {
       this.child.stdin.end();
     } catch {
@@ -268,11 +309,35 @@ export class CodexAppServerClient {
       },
     });
     if (result === "kill-timeout") {
-      this.logger.warn(
-        { timeoutMs: APP_SERVER_FORCE_SHUTDOWN_TIMEOUT_MS },
-        "Codex app-server did not report exit after SIGKILL",
-      );
+      throw new Error("Codex app-server did not report exit after SIGKILL");
     }
+  }
+
+  private handleUnexpectedTermination(error: Error): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.stdoutLineReader.close();
+    this.rejectPending(error);
+    const handler = this.unexpectedTerminationHandler;
+    this.unexpectedTerminationHandler = null;
+    if (!handler) {
+      return;
+    }
+    try {
+      handler(error);
+    } catch (handlerError) {
+      this.logger.warn({ err: handlerError }, "Codex app-server termination handler threw");
+    }
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
   }
 
   private writeJsonRpcResponse(response: JsonRpcResponse): void {
@@ -309,7 +374,13 @@ export class CodexAppServerClient {
         clearTimeout(pending.timer);
         this.pending.delete(id);
         if (raw.error) {
-          pending.reject(new Error(raw.error.message ?? "Unknown error"));
+          pending.reject(
+            new CodexAppServerRpcError(
+              raw.error.message ?? "Unknown error",
+              raw.error.code,
+              raw.error.data,
+            ),
+          );
         } else {
           pending.resolve(raw.result);
         }

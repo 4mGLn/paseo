@@ -1,21 +1,19 @@
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import {
-  __resetMaterializedImageAttachmentDirForTests,
-  materializeProviderImage,
-} from "./provider-image-output.js";
+let materializeProviderImage: typeof import("./provider-image-output.js").materializeProviderImage;
 
 describe.skipIf(process.platform === "win32")("materializeProviderImage", () => {
   const originalPaseoHome = process.env.PASEO_HOME;
   let testHome: string | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     testHome = mkdtempSync(path.join(os.tmpdir(), "paseo-provider-images-posix-"));
     process.env.PASEO_HOME = testHome;
-    __resetMaterializedImageAttachmentDirForTests();
+    vi.resetModules();
+    ({ materializeProviderImage } = await import("./provider-image-output.js"));
   });
 
   afterEach(() => {
@@ -28,7 +26,6 @@ describe.skipIf(process.platform === "win32")("materializeProviderImage", () => 
       rmSync(testHome, { recursive: true, force: true });
       testHome = null;
     }
-    __resetMaterializedImageAttachmentDirForTests();
   });
 
   test("writes image attachments under a private directory in the paseo home", () => {

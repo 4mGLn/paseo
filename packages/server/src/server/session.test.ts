@@ -1,3 +1,12 @@
+import {
+  createWorkspaceRuntimeStore,
+  type WorkspaceRuntimeStore,
+} from "./workspace-runtime-store/index.js";
+import { createAgentMessageDeliveryStub } from "./test-utils/session-stubs.js";
+import {
+  createMessageReceiptsStub,
+  createTestCreationService,
+} from "./test-utils/session-stubs.js";
 import { execSync } from "child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -18,12 +27,14 @@ import {
   FileTransferOpcode,
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import { isSessionRpcAllowed, Session } from "./session.js";
+import { Session } from "./session.js";
+import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentManagerEvent } from "./agent/agent-manager.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
+import { WorkspaceLabelError, type WorkspaceLabelService } from "./workspace-labels/index.js";
 import { createPersistedProjectRecord } from "./workspace-registry.js";
 import { deriveProjectKey } from "./project-key.js";
 import type { SessionOptions } from "./session.js";
@@ -33,14 +44,14 @@ import {
   asAgentManager,
   asAgentStorage,
   asDownloadTokenStore,
-  asPushTokenStore,
-  asChatService,
+  asPushNotifications,
   asScheduleService,
-  asLoopService,
   asCheckoutDiffManager,
   asGitHubService,
   asWorkspaceGitService,
   asDaemonConfigStore,
+  findByType,
+  createProviderSnapshot,
   createProviderSnapshotManagerStub,
 } from "./test-utils/session-stubs.js";
 import { isPlatform } from "../test-utils/platform.js";
@@ -201,8 +212,11 @@ const agentResponseMocks = vi.hoisted(() => ({
 }));
 
 const spawnMocks = vi.hoisted(() => ({
-  execCommand: vi.fn(),
   spawnWorkspaceScript: vi.fn(),
+}));
+
+const gitCommandMocks = vi.hoisted(() => ({
+  runGitCommand: vi.fn(),
 }));
 
 const paseoWorktreeServiceMocks = vi.hoisted(() => ({
@@ -253,11 +267,11 @@ vi.mock("./paseo-worktree-service.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../utils/spawn.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../utils/spawn.js")>();
+vi.mock("../utils/run-git-command.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils/run-git-command.js")>();
   return {
     ...actual,
-    execCommand: spawnMocks.execCommand,
+    runGitCommand: gitCommandMocks.runGitCommand,
   };
 });
 
@@ -279,7 +293,10 @@ vi.mock("./worktree-bootstrap.js", async (importOriginal) => {
 });
 
 interface SessionForTestOptions {
-  scopes?: readonly string[];
+  workspaceRuntimeStore?: WorkspaceRuntimeStore;
+  sendToSource?: SessionOptions["onMessageToSource"];
+  clientId?: string;
+  permissions?: readonly DaemonPermission[];
   agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
   agentStorage?: { [K in keyof SessionOptions["agentStorage"]]?: unknown };
   github?: Partial<ForgeService & GitHubService>;
@@ -290,7 +307,6 @@ interface SessionForTestOptions {
     getSnapshot?: ReturnType<typeof vi.fn>;
     suggestBranchesForCwd?: ReturnType<typeof vi.fn>;
     listStashes?: ReturnType<typeof vi.fn>;
-    peekSnapshot?: ReturnType<typeof vi.fn>;
     validateBranchRef?: ReturnType<typeof vi.fn>;
     hasLocalBranch?: ReturnType<typeof vi.fn>;
     resolveRepoRemoteUrl?: ReturnType<typeof vi.fn>;
@@ -307,6 +323,7 @@ interface SessionForTestOptions {
   getDaemonTcpPort?: () => number | null;
   getDaemonTcpHost?: () => string | null;
   providerSnapshotManager?: ProviderSnapshotManager;
+  hubExecutionAgents?: SessionOptions["hubExecutionAgents"];
   stt?: SessionOptions["stt"];
   voice?: SessionOptions["voice"];
   paseoHome?: string;
@@ -314,9 +331,13 @@ interface SessionForTestOptions {
   daemonVersion?: SessionOptions["daemonVersion"];
   daemonRuntimeConfig?: SessionOptions["daemonRuntimeConfig"];
   downloadTokenStore?: SessionOptions["downloadTokenStore"];
+  pushNotifications?: SessionOptions["pushNotifications"];
   messages?: unknown[];
   targetedMessages?: Array<{ source: object; message: SessionOutboundMessage }>;
   binaryMessages?: Uint8Array[];
+  pluginRuntime?: SessionOptions["pluginRuntime"];
+  orchestrationSkills?: SessionOptions["orchestrationSkills"];
+  workspaceLabelService?: WorkspaceLabelService;
 }
 
 function createSessionForTest(options: SessionForTestOptions = {}): Session {
@@ -336,7 +357,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     getSnapshot: vi.fn(),
     suggestBranchesForCwd: vi.fn(),
     listStashes: vi.fn(),
-    peekSnapshot: vi.fn(),
+
     validateBranchRef: vi.fn(),
     hasLocalBranch: vi.fn(),
     resolveRepoRemoteUrl: vi.fn(),
@@ -352,21 +373,29 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
   const messages = options.messages ?? [];
 
   const sessionOptions: SessionOptions = {
-    clientId: "test-client",
+    workspaceRuntimeStore: options.workspaceRuntimeStore ?? createWorkspaceRuntimeStore(),
+    messageReceipts: createMessageReceiptsStub(),
+    agentMessages: createAgentMessageDeliveryStub(),
+    creationService: createTestCreationService(),
+    clientId: options.clientId ?? "test-client",
     onMessage: (message) => messages.push(message),
     ...(options.targetedMessages
       ? {
           onMessageToSource: (source: object, message: SessionOutboundMessage) =>
             options.targetedMessages?.push({ source, message }),
         }
-      : {}),
+      : {
+          onMessageToSource: (_source: object, message: SessionOutboundMessage) =>
+            messages.push(message),
+        }),
     onBinaryMessage: createBinaryMessageHandler(options.binaryMessages),
     logger,
     downloadTokenStore: options.downloadTokenStore ?? asDownloadTokenStore(),
-    pushTokenStore: asPushTokenStore(),
+    pushNotifications: options.pushNotifications ?? asPushNotifications(),
     paseoHome: options.paseoHome ?? "/tmp/paseo-home",
     agentManager: asAgentManager({
       listAgents: vi.fn(() => []),
+      listProviderSubagentActivity: vi.fn(() => []),
       subscribe: vi.fn(() => () => {}),
       ...options.agentManager,
     }),
@@ -390,9 +419,8 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
       get: vi.fn(),
       list: vi.fn().mockResolvedValue([]),
     },
-    chatService: asChatService(),
+    workspaceLabelService: options.workspaceLabelService,
     scheduleService: asScheduleService(),
-    loopService: asLoopService(),
     checkoutDiffManager: asCheckoutDiffManager(checkoutDiffManager),
     github: asGitHubService(github),
     workspaceGitService: asWorkspaceGitService(workspaceGitService),
@@ -403,11 +431,14 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
       })),
       onChange: vi.fn(() => () => {}),
     }),
+    pluginRuntime: options.pluginRuntime,
+    orchestrationSkills: options.orchestrationSkills,
     stt: options.stt ?? null,
     tts: null,
     terminalManager: options.terminalManager ?? null,
     providerSnapshotManager:
       options.providerSnapshotManager ?? createProviderSnapshotManagerStub().manager,
+    hubExecutionAgents: options.hubExecutionAgents,
     serviceProxy: options.serviceProxy,
     scriptRuntimeStore: options.scriptRuntimeStore,
     getDaemonTcpPort: options.getDaemonTcpPort,
@@ -416,16 +447,357 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     serverId: options.serverId,
     daemonVersion: options.daemonVersion,
     daemonRuntimeConfig: options.daemonRuntimeConfig,
-    scopes: options.scopes ?? ["*"],
+    permissions: options.permissions ?? OWNER_PERMISSIONS,
   };
+  if (options.sendToSource) sessionOptions.onMessageToSource = options.sendToSource;
   return new Session(sessionOptions);
 }
 
-describe("session authorization scopes", () => {
-  test("rejects an RPC outside an exact grant with the generic RPC error", async () => {
+test("routes host-scoped agent skills requests through the daemon owner", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const status = {
+    state: "up-to-date" as const,
+    ops: [],
+    available: ["paseo"],
+    installed: ["paseo"],
+    selection: { mode: "all" as const },
+  };
+  const orchestrationSkills: NonNullable<SessionOptions["orchestrationSkills"]> = {
+    getStatus: vi.fn(async () => status),
+    reconcile: vi.fn(async () => status),
+    uninstall: vi.fn(async () => status),
+    saveSelection: vi.fn(async () => ({ ...status, confirmationRequired: null })),
+    importLegacySelectionIfUnset: vi.fn(async (selection) => ({
+      imported: true,
+      selection,
+    })),
+    autoUpdate: vi.fn(async () => status),
+  };
+  const session = createSessionForTest({ messages, orchestrationSkills });
+
+  await session.handleMessage({
+    type: "agent.skills.save_selection.request",
+    requestId: "save-skills",
+    selection: { mode: "custom", skills: ["paseo"] },
+    confirmedRemovals: ["paseo-loop"],
+  });
+
+  expect(orchestrationSkills.saveSelection).toHaveBeenCalledWith(
+    { mode: "custom", skills: ["paseo"] },
+    ["paseo-loop"],
+  );
+  expect(messages).toContainEqual({
+    type: "agent.skills.save_selection.response",
+    payload: { requestId: "save-skills", ...status, confirmationRequired: null },
+  });
+});
+
+test("routes plugin requests and releases its owned catalog subscription on cleanup", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const listeners = new Set<(pluginId: string) => void>();
+  const releasePluginSubscription = vi.fn((listener: (pluginId: string) => void) => {
+    listeners.delete(listener);
+  });
+  const plugin = {
+    id: "example",
+    path: "/plugins/example",
+    enabled: true,
+    status: "running" as const,
+  };
+  const pluginRuntime: NonNullable<SessionOptions["pluginRuntime"]> = {
+    before: async (_name, request) => {
+      return request;
+    },
+    emit: () => {},
+    listPlugins: async () => [plugin],
+    getLogs: () => [
+      {
+        sequence: 1,
+        timestamp: "2026-08-16T12:00:00.000Z",
+        stream: "stdout",
+        message: "ready",
+      },
+    ],
+    installDirectory: async () => plugin,
+    inspectDirectory: async () => ({ id: "example" }),
+    reloadPlugin: async () => plugin,
+    enablePlugin: async () => plugin,
+    disablePlugin: async () => ({ ...plugin, enabled: false, status: "disabled" }),
+    removePlugin: async () => undefined,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => releasePluginSubscription(listener);
+    },
+    catalog: () => [{ id: "example", clientBundle: "bundle" }],
+    invokePluginRpc: async () => ({ ok: true }),
+    listUsageReports: async () => [],
+    listLegacyUsage: async () => ({ fetchedAt: "2026-01-01T00:00:00.000Z", providers: [] }),
+  };
+  const session = createSessionForTest({ messages, pluginRuntime });
+
+  await session.handleMessage({
+    type: "session.events.set_subscription.request",
+    requestId: "catalog",
+    events: ["status.plugin_catalog_changed"],
+  });
+  messages.length = 0;
+  await session.handleMessage({ type: "plugin.list.request", requestId: "list" });
+  await session.handleMessage({
+    type: "plugin.logs.get.request",
+    requestId: "logs",
+    pluginId: "example",
+  });
+  await session.handleMessage({
+    type: "plugin.directory.install.request",
+    requestId: "install",
+    path: "/plugins/example",
+  });
+  await session.handleMessage({
+    type: "plugin.reload.request",
+    requestId: "reload",
+    pluginId: "example",
+  });
+  await session.handleMessage({
+    type: "plugin.disable.request",
+    requestId: "disable",
+    pluginId: "example",
+  });
+  await session.handleMessage({
+    type: "plugin.remove.request",
+    requestId: "remove",
+    pluginId: "example",
+  });
+  for (const listener of listeners) listener("example");
+
+  expect(messages.map((message) => message.type)).toEqual([
+    "plugin.list.response",
+    "plugin.logs.get.response",
+    "plugin.directory.install.response",
+    "plugin.reload.response",
+    "plugin.disable.response",
+    "plugin.remove.response",
+    "status",
+  ]);
+  expect(messages.at(-1)).toEqual({
+    type: "status",
+    payload: { status: "plugin_catalog_changed", pluginId: "example" },
+  });
+  await session.cleanup();
+  expect(listeners.size).toBe(0);
+  expect(releasePluginSubscription).toHaveBeenCalledOnce();
+});
+
+describe("workspace label subscriptions", () => {
+  type LabelSubscription = Awaited<ReturnType<WorkspaceLabelService["subscribe"]>>;
+  type LabelChange = Parameters<Parameters<WorkspaceLabelService["subscribe"]>[0]["onChange"]>[0];
+
+  function labelSubscription(requestId: string): LabelSubscription {
+    return {
+      snapshot: {
+        labels: [],
+        sync: {
+          mode: "snapshot",
+          generation: `generation-${requestId}`,
+          headSeq: 0,
+          removals: [],
+        },
+      },
+      unsubscribe: vi.fn(),
+    };
+  }
+
+  function labelListRequest(requestId: string) {
+    return {
+      type: "workspace.label.list.request" as const,
+      requestId,
+      subscribe: { subscriptionId: `subscription-${requestId}` },
+    };
+  }
+
+  test("an overlapping request cannot reactivate its superseded subscription", async () => {
+    const first = deferred<LabelSubscription>();
+    const callbacks: Array<(change: LabelChange) => void> = [];
+    const service = {
+      subscribe: async (input: Parameters<WorkspaceLabelService["subscribe"]>[0]) => {
+        callbacks.push(input.onChange);
+        return callbacks.length === 1 ? first.promise : labelSubscription("b");
+      },
+    } as unknown as WorkspaceLabelService;
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, workspaceLabelService: service });
+
+    const requestA = session.handleMessage(labelListRequest("a"));
+    await Promise.resolve();
+    await session.handleMessage(labelListRequest("b"));
+    const firstSubscription = labelSubscription("a");
+    first.resolve(firstSubscription);
+    await requestA;
+
+    expect(firstSubscription.unsubscribe).toHaveBeenCalledOnce();
+    callbacks[0]?.({
+      kind: "remove",
+      name: "Old",
+      generation: "generation-a",
+      seq: 1,
+    });
+    callbacks[1]?.({
+      kind: "remove",
+      name: "Current",
+      generation: "generation-b",
+      seq: 1,
+    });
+    expect(messages.filter((message) => message.type === "workspace.label.update")).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ name: "Current" }) }),
+    ]);
+  });
+
+  test("a superseded failure cannot clear the current subscription or survive cleanup", async () => {
+    const first = deferred<LabelSubscription>();
+    const callbacks: Array<(change: LabelChange) => void> = [];
+    const current = labelSubscription("b");
+    const service = {
+      subscribe: async (input: Parameters<WorkspaceLabelService["subscribe"]>[0]) => {
+        callbacks.push(input.onChange);
+        return callbacks.length === 1 ? first.promise : current;
+      },
+    } as unknown as WorkspaceLabelService;
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, workspaceLabelService: service });
+
+    const requestA = session.handleMessage(labelListRequest("a"));
+    await Promise.resolve();
+    await session.handleMessage(labelListRequest("b"));
+    first.reject(new Error("old request failed"));
+    await requestA;
+
+    callbacks[1]?.({
+      kind: "remove",
+      name: "Current",
+      generation: "generation-b",
+      seq: 1,
+    });
+    expect(messages.filter((message) => message.type === "workspace.label.update")).toHaveLength(1);
+    await session.cleanup();
+    expect(current.unsubscribe).toHaveBeenCalledOnce();
+    callbacks[1]?.({
+      kind: "remove",
+      name: "After cleanup",
+      generation: "generation-b",
+      seq: 2,
+    });
+    expect(messages.filter((message) => message.type === "workspace.label.update")).toHaveLength(1);
+  });
+});
+
+describe("workspace label editing", () => {
+  test("answers one edit with the label it produced and the assignments it rewrote", async () => {
+    const calls: unknown[] = [];
+    const service = {
+      update: async (input: unknown) => {
+        calls.push(input);
+        return { label: { name: "Priority", color: "sky" }, affectedWorkspaceCount: 3 };
+      },
+    } as unknown as WorkspaceLabelService;
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, workspaceLabelService: service });
+
+    await session.handleMessage({
+      type: "workspace.label.update.request",
+      requestId: "request-edit",
+      name: "Urgent",
+      newName: "Priority",
+      color: "sky",
+    });
+
+    expect(calls).toEqual([
+      expect.objectContaining({ name: "Urgent", newName: "Priority", color: "sky" }),
+    ]);
+    expect(messages).toEqual([
+      {
+        type: "workspace.label.update.response",
+        payload: {
+          requestId: "request-edit",
+          label: { name: "Priority", color: "sky" },
+          affectedWorkspaceCount: 3,
+        },
+      },
+    ]);
+  });
+
+  test("reports a name collision as a coded error and emits no response", async () => {
+    const service = {
+      update: async () => {
+        throw new WorkspaceLabelError("label_name_taken", "A label with that name already exists");
+      },
+    } as unknown as WorkspaceLabelService;
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({ messages, workspaceLabelService: service });
+
+    await session.handleMessage({
+      type: "workspace.label.update.request",
+      requestId: "request-collision",
+      name: "Urgent",
+      newName: "Waiting",
+      color: "teal",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "rpc_error",
+        payload: {
+          requestId: "request-collision",
+          requestType: "workspace.label.update.request",
+          code: "label_name_taken",
+          error: "A label with that name already exists",
+        },
+      },
+    ]);
+  });
+});
+
+describe("session authorization permissions", () => {
+  test("routes named-agent validation through the session source", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const providers = createProviderSnapshotManagerStub();
+    providers.validateAgentConfiguration.mockResolvedValue([
+      { path: ["model"], message: "Model is unavailable" },
+    ]);
+    const session = createSessionForTest({
+      messages,
+      providerSnapshotManager: providers.manager,
+      hubExecutionAgents: {
+        create: vi.fn(),
+        control: vi.fn(),
+        subscribe: vi.fn(() => () => undefined),
+        invalidateAuthority: vi.fn(),
+      },
+    });
+
+    await session.handleMessage({
+      type: "hub.execution.agent.validate.request",
+      requestId: "validate-agent",
+      provider: "codex",
+      model: "missing",
+    });
+
+    expect(providers.validateAgentConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "codex", model: "missing" }),
+    );
+    expect(messages).toContainEqual({
+      type: "hub.execution.agent.validate.response",
+      payload: {
+        requestId: "validate-agent",
+        valid: false,
+        issues: [{ path: ["model"], message: "Model is unavailable" }],
+        error: null,
+      },
+    });
+  });
+
+  test("rejects an operation without its semantic permission", async () => {
     const messages: SessionOutboundMessage[] = [];
     const session = createSessionForTest({
-      scopes: ["hub.execution.agent.create.request"],
+      permissions: ["hub.execute"],
       messages,
     });
 
@@ -444,32 +816,16 @@ describe("session authorization scopes", () => {
     ]);
   });
 
-  test.each([
-    ["*", "ping"],
-    ["hub.execution.*", "hub.execution.agent.create.request"],
-    ["hub.execution.agent.create.request", "hub.execution.agent.create.request"],
-  ])("scope %s authorizes %s", (scope, requestType) => {
-    expect(isSessionRpcAllowed([scope], requestType)).toBe(true);
-  });
-
-  test.each([
-    ["hub.execution.*", "hub.management.daemon.get_status.request"],
-    ["hub.execution.agent.create.request", "hub.execution.agent.update"],
-    ["hub.execution.*", "hub.executions.agent.create.request"],
-  ])("scope %s rejects %s", (scope, requestType) => {
-    expect(isSessionRpcAllowed([scope], requestType)).toBe(false);
-  });
-
-  test("replaces a session's scopes without reconstructing the session", async () => {
+  test("replaces a session's permissions without reconstructing the session", async () => {
     const messages: SessionOutboundMessage[] = [];
-    const session = createSessionForTest({ scopes: ["hub.execution.*"], messages });
+    const session = createSessionForTest({ permissions: ["hub.execute"], messages });
 
     await session.handleMessage({
       type: "ping",
       requestId: "before-scope-change",
       clientSentAt: 1,
     });
-    session.setScopes(["*"]);
+    session.setPermissions(["daemon.read"]);
     await session.handleMessage({ type: "ping", requestId: "after-scope-change", clientSentAt: 2 });
 
     expect(messages).toEqual([
@@ -668,6 +1024,8 @@ describe("project command-center RPCs", () => {
               projectId: "prj_created_directory",
               projectDisplayName: "new-project",
               projectCustomName: null,
+              projectCustomIconRevision: null,
+              projectIconRevision: "automatic:none:v1",
               projectRootPath: directoryPath,
               projectKind: "non_git",
             },
@@ -974,43 +1332,56 @@ describe("workspace file access (behavior preservation)", () => {
     const messages: SessionOutboundMessage[] = [];
     const session = createSessionForTest({ messages, paseoHome });
 
-    await session.handleMessage({
-      type: "file.upload.request",
-      fileName: "notes.txt",
-      mimeType: "text/plain",
-      size: 11,
-      modifiedAt: "2026-05-02T00:00:00.000Z",
-      requestId: "req-upload",
-    });
-    await session.handleBinaryFrame({
-      kind: "file_transfer",
-      frame: uploadFrame({
-        opcode: FileTransferOpcode.FileBegin,
+    const source = {};
+    await session.handleMessage(
+      {
+        type: "file.upload.request",
+        fileName: "notes.txt",
+        mimeType: "text/plain",
+        size: 11,
+        modifiedAt: "2026-05-02T00:00:00.000Z",
         requestId: "req-upload",
-        metadata: {
-          mime: "text/plain",
-          size: 11,
-          encoding: "binary",
-          modifiedAt: "2026-05-02T00:00:00.000Z",
-          fileName: "notes.txt",
-        },
-      }),
-    });
-    await session.handleBinaryFrame({
-      kind: "file_transfer",
-      frame: uploadFrame({
-        opcode: FileTransferOpcode.FileChunk,
-        requestId: "req-upload",
-        payload: new TextEncoder().encode("hello world"),
-      }),
-    });
-    await session.handleBinaryFrame({
-      kind: "file_transfer",
-      frame: uploadFrame({
-        opcode: FileTransferOpcode.FileEnd,
-        requestId: "req-upload",
-      }),
-    });
+      },
+      source,
+    );
+    await session.handleBinaryFrame(
+      {
+        kind: "file_transfer",
+        frame: uploadFrame({
+          opcode: FileTransferOpcode.FileBegin,
+          requestId: "req-upload",
+          metadata: {
+            mime: "text/plain",
+            size: 11,
+            encoding: "binary",
+            modifiedAt: "2026-05-02T00:00:00.000Z",
+            fileName: "notes.txt",
+          },
+        }),
+      },
+      source,
+    );
+    await session.handleBinaryFrame(
+      {
+        kind: "file_transfer",
+        frame: uploadFrame({
+          opcode: FileTransferOpcode.FileChunk,
+          requestId: "req-upload",
+          payload: new TextEncoder().encode("hello world"),
+        }),
+      },
+      source,
+    );
+    await session.handleBinaryFrame(
+      {
+        kind: "file_transfer",
+        frame: uploadFrame({
+          opcode: FileTransferOpcode.FileEnd,
+          requestId: "req-upload",
+        }),
+      },
+      source,
+    );
 
     const response = messages.find((message) => message.type === "file.upload.response");
     if (response?.type !== "file.upload.response") {
@@ -1049,6 +1420,100 @@ function createStoredAgentRecord(
     archivedAt: overrides.archivedAt ?? null,
   };
 }
+
+describe("plugin timeline append RPC", () => {
+  test("stamps the plugin identity and returns the timeline position", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const appendTimelineItem = vi.fn().mockResolvedValue({ seq: 7, epoch: "epoch-1" });
+    const session = createSessionForTest({
+      clientId: "plugin:review",
+      messages,
+      agentManager: { appendTimelineItem },
+    });
+
+    await session.handleMessage({
+      type: "agent.timeline.append.request",
+      requestId: "append-1",
+      agentId: "agent-1",
+      item: {
+        type: "plugin",
+        id: "review-1",
+        kind: "review",
+        version: 1,
+        data: { status: "running" },
+      },
+    });
+
+    expect(appendTimelineItem).toHaveBeenCalledWith("agent-1", {
+      type: "plugin",
+      id: "review-1",
+      pluginId: "review",
+      kind: "review",
+      version: 1,
+      data: { status: "running" },
+    });
+    expect(messages).toContainEqual({
+      type: "agent.timeline.append.response",
+      payload: { requestId: "append-1", seq: 7, epoch: "epoch-1" },
+    });
+  });
+
+  test("rejects append requests from non-plugin sessions", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const appendTimelineItem = vi.fn();
+    const session = createSessionForTest({ messages, agentManager: { appendTimelineItem } });
+
+    await session.handleMessage({
+      type: "agent.timeline.append.request",
+      requestId: "append-1",
+      agentId: "agent-1",
+      item: { type: "plugin", id: "review-1", kind: "review", version: 1, data: {} },
+    });
+
+    expect(appendTimelineItem).not.toHaveBeenCalled();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "rpc_error",
+        payload: expect.objectContaining({ requestId: "append-1", code: "handler_error" }),
+      }),
+    );
+  });
+
+  test("rejects plugin data larger than the append budget", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const appendTimelineItem = vi.fn();
+    const session = createSessionForTest({
+      clientId: "plugin:review",
+      messages,
+      agentManager: { appendTimelineItem },
+    });
+
+    await session.handleMessage({
+      type: "agent.timeline.append.request",
+      requestId: "append-large",
+      agentId: "agent-1",
+      item: {
+        type: "plugin",
+        id: "review-1",
+        kind: "review",
+        version: 1,
+        data: { text: "x".repeat(64 * 1024) },
+      },
+    });
+
+    expect(appendTimelineItem).not.toHaveBeenCalled();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "rpc_error",
+        payload: expect.objectContaining({
+          requestId: "append-large",
+          code: "handler_error",
+          error: expect.stringContaining("65536 bytes"),
+        }),
+      }),
+    );
+  });
+});
 
 describe("agent detach RPC", () => {
   test("detaches a stored subagent and emits the updated standalone agent", async () => {
@@ -1402,6 +1867,88 @@ describe("project config RPC authorization", () => {
   });
 });
 
+test("push token registration can be revoked by the connected client", async () => {
+  const renewed: string[] = [];
+  const revoked: string[] = [];
+  const messages: unknown[] = [];
+  const session = createSessionForTest({
+    messages,
+    pushNotifications: asPushNotifications({
+      renew: (token: string) => renewed.push(token),
+      revoke: (token: string) => revoked.push(token),
+    }),
+  });
+
+  await session.handleMessage({
+    type: "register_push_token",
+    token: "ExponentPushToken[test-device]",
+  });
+  await session.handleMessage({
+    type: "push.unregister.request",
+    token: "ExponentPushToken[test-device]",
+    requestId: "revoke-1",
+  });
+  await session.handleMessage({
+    type: "client_heartbeat",
+    deviceType: "mobile",
+    focusedAgentId: null,
+    lastActivityAt: "2026-08-10T00:00:00.000Z",
+    appVisible: false,
+  });
+
+  expect(renewed).toEqual(["ExponentPushToken[test-device]"]);
+  expect(revoked).toEqual(["ExponentPushToken[test-device]"]);
+  expect(messages).toEqual([
+    {
+      type: "push.unregister.response",
+      payload: { requestId: "revoke-1" },
+    },
+  ]);
+});
+
+test("push token revocation only acknowledges durable removal", async () => {
+  const renewed: string[] = [];
+  const messages: SessionOutboundMessage[] = [];
+  const session = createSessionForTest({
+    messages,
+    pushNotifications: asPushNotifications({
+      renew: (token: string) => renewed.push(token),
+      revoke: () => {
+        throw new Error("disk full");
+      },
+    }),
+  });
+
+  await session.handleMessage({
+    type: "register_push_token",
+    token: "ExponentPushToken[test-device]",
+  });
+  await session.handleMessage({
+    type: "push.unregister.request",
+    token: "ExponentPushToken[test-device]",
+    requestId: "revoke-failed",
+  });
+  await session.handleMessage({
+    type: "client_heartbeat",
+    deviceType: "mobile",
+    focusedAgentId: null,
+    lastActivityAt: "2026-08-10T00:00:00.000Z",
+    appVisible: false,
+  });
+
+  expect(renewed).toEqual(["ExponentPushToken[test-device]", "ExponentPushToken[test-device]"]);
+  expect(messages.some((message) => message.type === "push.unregister.response")).toBe(false);
+  expect(messages).toContainEqual({
+    type: "rpc_error",
+    payload: {
+      requestId: "revoke-failed",
+      requestType: "push.unregister.request",
+      error: "Request failed: disk full",
+      code: "handler_error",
+    },
+  });
+});
+
 describe("daemon status + pairing RPC", () => {
   const tempDirs: string[] = [];
 
@@ -1424,7 +1971,7 @@ describe("daemon status + pairing RPC", () => {
       paseoHome: makeHome(),
       serverId: "srv-test",
       daemonVersion: "9.9.9",
-      daemonRuntimeConfig: { listen: "127.0.0.1:6767", relay: null },
+      daemonRuntimeConfig: { listen: "127.0.0.1:6767", getRelayConfig: () => null },
       agentManager: {
         listProviderAvailability: vi.fn().mockResolvedValue([
           { provider: "claude", available: true },
@@ -1463,7 +2010,7 @@ describe("daemon status + pairing RPC", () => {
       paseoHome: makeHome(),
       serverId: "srv-test",
       daemonVersion: "9.9.9",
-      daemonRuntimeConfig: { listen: "127.0.0.1:6767", relay: null },
+      daemonRuntimeConfig: { listen: "127.0.0.1:6767", getRelayConfig: () => null },
       agentManager: {
         listProviderAvailability: vi.fn().mockRejectedValue(new Error("provider listing failed")),
       },
@@ -1499,13 +2046,13 @@ describe("daemon status + pairing RPC", () => {
       paseoHome: makeHome(),
       daemonRuntimeConfig: {
         listen: "127.0.0.1:6767",
-        relay: {
+        getRelayConfig: () => ({
           enabled: false,
           endpoint: "relay.paseo.sh:443",
           publicEndpoint: "relay.paseo.sh:443",
           useTls: true,
           publicUseTls: true,
-        },
+        }),
       },
     });
 
@@ -1643,13 +2190,15 @@ describe("session provider refresh cwd routing", () => {
       getSnapshot,
       warmUpSnapshotForCwd,
     } = createProviderSnapshotManagerStub();
-    getSnapshot.mockReturnValue([
-      {
-        provider: "codex",
-        status: "loading",
-        enabled: true,
-      },
-    ]);
+    getSnapshot.mockReturnValue(
+      createProviderSnapshot([
+        {
+          provider: "codex",
+          status: "loading",
+          enabled: true,
+        },
+      ]),
+    );
     const session = createSessionForTest({ messages, providerSnapshotManager });
 
     await session.handleMessage({
@@ -1674,13 +2223,15 @@ describe("session provider refresh cwd routing", () => {
     const messages: unknown[] = [];
     const { manager: providerSnapshotManager, warmUpSnapshotForCwd } =
       createProviderSnapshotManagerStub();
-    providerSnapshotManager.getSnapshot = vi.fn(() => [
-      {
-        provider: "codex",
-        status: "loading",
-        enabled: false,
-      },
-    ]);
+    providerSnapshotManager.getSnapshot = vi.fn(() =>
+      createProviderSnapshot([
+        {
+          provider: "codex",
+          status: "loading",
+          enabled: false,
+        },
+      ]),
+    );
     const session = createSessionForTest({ messages, providerSnapshotManager });
 
     await session.handleMessage({
@@ -1705,13 +2256,15 @@ describe("session provider refresh cwd routing", () => {
     const messages: unknown[] = [];
     const { manager: providerSnapshotManager, warmUpSnapshotForCwd } =
       createProviderSnapshotManagerStub();
-    providerSnapshotManager.getSnapshot = vi.fn(() => [
-      {
-        provider: "codex",
-        status: "loading",
-        enabled: false,
-      },
-    ]);
+    providerSnapshotManager.getSnapshot = vi.fn(() =>
+      createProviderSnapshot([
+        {
+          provider: "codex",
+          status: "loading",
+          enabled: false,
+        },
+      ]),
+    );
     const session = createSessionForTest({ messages, providerSnapshotManager });
 
     await session.handleMessage({
@@ -1740,23 +2293,27 @@ describe("session provider refresh cwd routing", () => {
       getSnapshot,
       warmUpSnapshotForCwd,
     } = createProviderSnapshotManagerStub();
-    getSnapshot.mockReturnValueOnce([
-      {
-        provider: "codex",
-        status: "loading",
-        enabled: true,
-      },
-    ]);
-    getSnapshot.mockReturnValue([
-      {
-        provider: "codex",
-        status: "ready",
-        enabled: true,
-        models: [{ provider: "codex", id: "gpt-5.4", label: "GPT-5.4" }],
-        modes: [],
-        fetchedAt: "2026-05-28T00:00:00.000Z",
-      },
-    ]);
+    getSnapshot.mockReturnValueOnce(
+      createProviderSnapshot([
+        {
+          provider: "codex",
+          status: "loading",
+          enabled: true,
+        },
+      ]),
+    );
+    getSnapshot.mockReturnValue(
+      createProviderSnapshot([
+        {
+          provider: "codex",
+          status: "ready",
+          enabled: true,
+          models: [{ provider: "codex", id: "gpt-5.4", label: "GPT-5.4" }],
+          modes: [],
+          fetchedAt: "2026-05-28T00:00:00.000Z",
+        },
+      ]),
+    );
     warmUpSnapshotForCwd.mockReturnValue(warmupDeferred.promise);
     const session = createSessionForTest({ messages, providerSnapshotManager });
 
@@ -1911,10 +2468,14 @@ describe("session checkout merge handling", () => {
       requestId: "request-merge-from-base-success",
     });
 
-    expect(checkoutGitMocks.mergeFromBase).toHaveBeenCalledWith("/tmp/request-worktree", {
-      baseRef: "main",
-      requireCleanTarget: true,
-    });
+    expect(checkoutGitMocks.mergeFromBase).toHaveBeenCalledWith(
+      "/tmp/request-worktree",
+      {
+        baseRef: "main",
+        requireCleanTarget: true,
+      },
+      { paseoHome: "/tmp/paseo-home", worktreesRoot: undefined },
+    );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
       reason: "merge-from-base",
@@ -2371,6 +2932,7 @@ diff --git a/file.txt b/file.txt
         base: "main",
       },
       expect.anything(),
+      { paseoHome: "/tmp/paseo-home", worktreesRoot: undefined },
     );
     expect(messages).toContainEqual({
       type: "checkout_pr_create_response",
@@ -2495,6 +3057,7 @@ diff --git a/file.txt b/file.txt
         base: "main",
       },
       expect.anything(),
+      { paseoHome: "/tmp/paseo-home", worktreesRoot: undefined },
     );
     expect(messages).toContainEqual({
       type: "checkout_pr_create_response",
@@ -3340,11 +3903,11 @@ describe("session checkout refresh handling", () => {
 describe("session checkout status handling", () => {
   test("returns checkout status from the workspace git service snapshot", async () => {
     const messages: unknown[] = [];
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue(createWorkspaceGitSnapshot("/tmp/service-worktree")),
-      peekSnapshot: vi.fn(),
     };
-    const session = createSessionForTest({ workspaceGitService, messages });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
 
     await session.handleMessage({
       type: "checkout_status_request",
@@ -3368,6 +3931,7 @@ describe("session checkout status handling", () => {
         aheadBehind: { ahead: 2, behind: 1 },
         aheadOfOrigin: 2,
         behindOfOrigin: 1,
+        upstreamRef: null,
         hasRemote: true,
         remoteUrl: "https://github.com/getpaseo/paseo.git",
         isPaseoOwnedWorktree: false,
@@ -3379,6 +3943,7 @@ describe("session checkout status handling", () => {
 
   test("returns fresh service data on the first checkout status read for a cwd", async () => {
     const messages: unknown[] = [];
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn(() => null) };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue(
         createWorkspaceGitSnapshot("/tmp/cold-worktree", {
@@ -3391,9 +3956,8 @@ describe("session checkout status handling", () => {
           },
         }),
       ),
-      peekSnapshot: vi.fn(() => null),
     };
-    const session = createSessionForTest({ workspaceGitService, messages });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
 
     await session.handleMessage({
       type: "checkout_status_request",
@@ -3401,7 +3965,7 @@ describe("session checkout status handling", () => {
       requestId: "request-cold-status",
     });
 
-    expect(workspaceGitService.peekSnapshot).not.toHaveBeenCalled();
+    expect(workspaceRuntimeStore.get).not.toHaveBeenCalled();
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledTimes(1);
     expect(messages).toContainEqual({
       type: "checkout_status_response",
@@ -3441,15 +4005,9 @@ describe("session workspace descriptors", () => {
       archivedAt: null,
     };
     const session = createSessionForTest({
-      messages,
-      workspaceRegistry: { get: vi.fn(), list: vi.fn().mockResolvedValue([workspace]) },
-      projectRegistry: {
-        list: vi.fn().mockResolvedValue([project]),
-        get: vi.fn().mockResolvedValue(project),
-      },
-      workspaceGitService: {
-        getSnapshot: vi.fn(),
-        peekSnapshot: vi.fn(() =>
+      workspaceRuntimeStore: {
+        ...createWorkspaceRuntimeStore(),
+        get: vi.fn(() =>
           createWorkspaceGitSnapshot("/repo/app", {
             git: {
               remoteUrl: "https://github.com/acme/app.git",
@@ -3459,6 +4017,16 @@ describe("session workspace descriptors", () => {
             },
           }),
         ),
+      },
+      messages,
+      workspaceRegistry: { get: vi.fn(), list: vi.fn().mockResolvedValue([workspace]) },
+      projectRegistry: {
+        list: vi.fn().mockResolvedValue([project]),
+        get: vi.fn().mockResolvedValue(project),
+      },
+      workspaceGitService: {
+        getSnapshot: vi.fn(),
+
         registerWorkspace: vi.fn(() => () => {}),
       },
     });
@@ -3517,12 +4085,9 @@ describe("session workspace descriptors", () => {
       archivedAt: null,
     };
     const session = createSessionForTest({
-      messages,
-      workspaceRegistry: { get: vi.fn(), list: vi.fn().mockResolvedValue([workspace]) },
-      projectRegistry: { list: vi.fn().mockResolvedValue([project]), get: vi.fn() },
-      workspaceGitService: {
-        getSnapshot: vi.fn(),
-        peekSnapshot: vi.fn(() =>
+      workspaceRuntimeStore: {
+        ...createWorkspaceRuntimeStore(),
+        get: vi.fn(() =>
           createWorkspaceGitSnapshot("/repo/local", {
             git: {
               remoteUrl: null,
@@ -3532,6 +4097,13 @@ describe("session workspace descriptors", () => {
             },
           }),
         ),
+      },
+      messages,
+      workspaceRegistry: { get: vi.fn(), list: vi.fn().mockResolvedValue([workspace]) },
+      projectRegistry: { list: vi.fn().mockResolvedValue([project]), get: vi.fn() },
+      workspaceGitService: {
+        getSnapshot: vi.fn(),
+
         registerWorkspace: vi.fn(() => () => {}),
       },
     });
@@ -3568,16 +4140,19 @@ describe("session workspace descriptors", () => {
     });
   });
 
-  test("reads descriptor diff stat from the workspace git service snapshot", async () => {
-    const workspaceGitService = {
-      getSnapshot: vi.fn(),
-      peekSnapshot: vi.fn(() =>
+  test("reads descriptor diff stat from the workspace runtime store", async () => {
+    const workspaceRuntimeStore = {
+      ...createWorkspaceRuntimeStore(),
+      get: vi.fn(() =>
         createWorkspaceGitSnapshot("/tmp/workspace", {
           git: { diffStat: { additions: 7, deletions: 2 } },
         }),
       ),
     };
-    const session = createSessionForTest({ workspaceGitService });
+    const workspaceGitService = {
+      getSnapshot: vi.fn(),
+    };
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService });
     checkoutGitMocks.getCachedCheckoutShortstat.mockReturnValue({
       additions: 99,
       deletions: 88,
@@ -3599,7 +4174,7 @@ describe("session workspace descriptors", () => {
       },
     );
 
-    expect(workspaceGitService.peekSnapshot).toHaveBeenCalledWith("/tmp/workspace");
+    expect(workspaceRuntimeStore.get).toHaveBeenCalledWith("/tmp/workspace");
     expect(workspaceGitService.getSnapshot).not.toHaveBeenCalled();
     expect(checkoutGitMocks.getCachedCheckoutShortstat).not.toHaveBeenCalled();
     expect(checkoutGitMocks.warmCheckoutShortstatInBackground).not.toHaveBeenCalled();
@@ -3607,11 +4182,11 @@ describe("session workspace descriptors", () => {
   });
 
   test("does not cold-load git data while describing a workspace", async () => {
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn(() => null) };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue(createWorkspaceGitSnapshot("/tmp/workspace")),
-      peekSnapshot: vi.fn(() => null),
     };
-    const session = createSessionForTest({ workspaceGitService });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService });
 
     const descriptor = await asSessionInternals(session).describeWorkspaceRecordWithGitData(
       {
@@ -3629,7 +4204,7 @@ describe("session workspace descriptors", () => {
       },
     );
 
-    expect(workspaceGitService.peekSnapshot).toHaveBeenCalledWith("/tmp/workspace");
+    expect(workspaceRuntimeStore.get).toHaveBeenCalledWith("/tmp/workspace");
     expect(workspaceGitService.getSnapshot).not.toHaveBeenCalled();
     expect(descriptor.diffStat).toBeNull();
     expect(descriptor.gitRuntime).toBeUndefined();
@@ -3639,14 +4214,15 @@ describe("session workspace descriptors", () => {
 describe("session branch validation", () => {
   test("validates branches through the workspace git service", async () => {
     const messages: unknown[] = [];
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
     const workspaceGitService = {
       getSnapshot: vi.fn(),
-      peekSnapshot: vi.fn(),
+
       validateBranchRef: vi
         .fn()
         .mockResolvedValue({ kind: "remote-only", name: "feature", remoteRef: "origin/feature" }),
     };
-    const session = createSessionForTest({ workspaceGitService, messages });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
 
     await session.handleMessage({
       type: "validate_branch_request",
@@ -3684,12 +4260,17 @@ describe("session branch validation", () => {
       execSync("git tag v1", { cwd: repoDir });
 
       const messages: unknown[] = [];
+      const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
       const workspaceGitService = {
         getSnapshot: vi.fn(),
-        peekSnapshot: vi.fn(),
+
         validateBranchRef: vi.fn().mockResolvedValue({ kind: "not-found" }),
       };
-      const session = createSessionForTest({ workspaceGitService, messages });
+      const session = createSessionForTest({
+        workspaceRuntimeStore,
+        workspaceGitService,
+        messages,
+      });
 
       await session.handleMessage({
         type: "validate_branch_request",
@@ -3764,11 +4345,11 @@ describe("session checkout switch branch handling", () => {
 describe("session checkout rename branch handling", () => {
   test("rejects invalid branch slugs without renaming", async () => {
     const messages: unknown[] = [];
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
     const workspaceGitService = {
       getSnapshot: vi.fn(),
-      peekSnapshot: vi.fn(),
     };
-    const session = createSessionForTest({ workspaceGitService, messages });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
 
     await session.handleMessage({
       type: "checkout.rename_branch.request",
@@ -3797,11 +4378,11 @@ describe("session checkout rename branch handling", () => {
 
   test("reports null current branch when branch rename fails", async () => {
     const messages: unknown[] = [];
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
     const workspaceGitService = {
       getSnapshot: vi.fn(),
-      peekSnapshot: vi.fn(),
     };
-    const session = createSessionForTest({ workspaceGitService, messages });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
     checkoutGitMocks.renameCurrentBranch.mockRejectedValue(new Error("branch already exists"));
 
     await session.handleMessage({
@@ -3815,7 +4396,7 @@ describe("session checkout rename branch handling", () => {
       "/tmp/repo",
       "feature/new-name",
     );
-    expect(workspaceGitService.peekSnapshot).not.toHaveBeenCalled();
+    expect(workspaceRuntimeStore.get).not.toHaveBeenCalled();
     expect(workspaceGitService.getSnapshot).not.toHaveBeenCalled();
     expect(messages).toContainEqual({
       type: "checkout.rename_branch.response",
@@ -3835,6 +4416,14 @@ describe("session checkout rename branch handling", () => {
   test("forces workspace git refresh after renaming the current branch", async () => {
     const messages: unknown[] = [];
     const github = { invalidate: vi.fn() };
+    const workspaceRuntimeStore = {
+      ...createWorkspaceRuntimeStore(),
+      get: vi.fn(() =>
+        createWorkspaceGitSnapshot("/tmp/repo", {
+          git: { currentBranch: "feature/old-name" },
+        }),
+      ),
+    };
     const workspaceGitService = {
       getSnapshot: vi.fn().mockResolvedValue(
         createWorkspaceGitSnapshot("/tmp/repo", {
@@ -3844,13 +4433,13 @@ describe("session checkout rename branch handling", () => {
           },
         }),
       ),
-      peekSnapshot: vi.fn(() =>
-        createWorkspaceGitSnapshot("/tmp/repo", {
-          git: { currentBranch: "feature/old-name" },
-        }),
-      ),
     };
-    const session = createSessionForTest({ github, workspaceGitService, messages });
+    const session = createSessionForTest({
+      workspaceRuntimeStore,
+      github,
+      workspaceGitService,
+      messages,
+    });
     checkoutGitMocks.renameCurrentBranch.mockResolvedValue({
       previousBranch: "feature/old-name",
       currentBranch: "feature/new-name",
@@ -3969,12 +4558,12 @@ describe("session branch suggestions handling", () => {
     const branchDetails = [
       { name: "feature/service", committerDate: 10, hasLocal: true, hasRemote: false },
     ];
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
     const workspaceGitService = {
       getSnapshot: vi.fn(),
       suggestBranchesForCwd: vi.fn().mockResolvedValue(branchDetails),
-      peekSnapshot: vi.fn(),
     };
-    const session = createSessionForTest({ workspaceGitService, messages });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
 
     await session.handleMessage({
       type: "branch_suggestions_request",
@@ -4013,12 +4602,12 @@ describe("session stash list handling", () => {
         isPaseo: true,
       },
     ];
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn() };
     const workspaceGitService = {
       getSnapshot: vi.fn(),
       listStashes: vi.fn().mockResolvedValue(entries),
-      peekSnapshot: vi.fn(),
     };
-    const session = createSessionForTest({ workspaceGitService, messages });
+    const session = createSessionForTest({ workspaceRuntimeStore, workspaceGitService, messages });
 
     await session.handleMessage({
       type: "stash_list_request",
@@ -4043,7 +4632,7 @@ describe("session stash mutation handling", () => {
     const messages: unknown[] = [];
     const workspaceGitService = { getSnapshot: vi.fn().mockResolvedValue({}) };
     const session = createSessionForTest({ workspaceGitService, messages });
-    spawnMocks.execCommand.mockResolvedValue({
+    gitCommandMocks.runGitCommand.mockResolvedValue({
       stdout: "",
       stderr: "",
       exitCode: 0,
@@ -4058,6 +4647,10 @@ describe("session stash mutation handling", () => {
       requestId: "request-stash-push",
     });
 
+    expect(gitCommandMocks.runGitCommand).toHaveBeenCalledWith(
+      ["stash", "push", "--include-untracked", "-m", "paseo-auto-stash: feature"],
+      { cwd: "/tmp/repo", timeout: 120_000 },
+    );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
       reason: "stash-push",
@@ -4077,7 +4670,7 @@ describe("session stash mutation handling", () => {
     const messages: unknown[] = [];
     const workspaceGitService = { getSnapshot: vi.fn().mockResolvedValue({}) };
     const session = createSessionForTest({ workspaceGitService, messages });
-    spawnMocks.execCommand.mockResolvedValue({
+    gitCommandMocks.runGitCommand.mockResolvedValue({
       stdout: "",
       stderr: "",
       exitCode: 0,
@@ -4092,6 +4685,10 @@ describe("session stash mutation handling", () => {
       requestId: "request-stash-pop",
     });
 
+    expect(gitCommandMocks.runGitCommand).toHaveBeenCalledWith(["stash", "pop", "stash@{0}"], {
+      cwd: "/tmp/repo",
+      timeout: 120_000,
+    });
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
       force: true,
       reason: "stash-pop",
@@ -4131,7 +4728,6 @@ describe("session paseo worktree creation handling", () => {
     await asSessionInternals(session).createPaseoWorktree({
       cwd: "/tmp/repo",
       worktreeSlug: "new-worktree",
-      runSetup: false,
     });
 
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/repo", {
@@ -4157,8 +4753,8 @@ describe("session workspace script handling", () => {
         remoteUrl: "https://github.com/getpaseo/paseo.git",
       },
     });
+    const workspaceRuntimeStore = { ...createWorkspaceRuntimeStore(), get: vi.fn(() => snapshot) };
     const workspaceGitService = {
-      peekSnapshot: vi.fn(() => snapshot),
       getProjectSlug: vi.fn().mockResolvedValue("paseo"),
     };
     const workspaceRegistry = {
@@ -4172,6 +4768,7 @@ describe("session workspace script handling", () => {
       terminalId: "terminal-1",
     });
     const session = createSessionForTest({
+      workspaceRuntimeStore,
       workspaceGitService,
       workspaceRegistry,
       terminalManager: {
@@ -4561,57 +5158,12 @@ describe("session pull request timeline handling", () => {
   });
 });
 
-describe("chat/schedule/loop dispatch routing (behavior preservation)", () => {
-  // Each chat/*, loop/*, and schedule/* type must reach its domain handler. The
-  // injected service stubs are unstubbed, so every handler's own try/catch fires
-  // and emits its domain rpc_error code — proving the message routed (a dropped
-  // case would silently no-op and emit nothing). schedule/* historically routed
-  // via the chat dispatcher's fall-through arm; this guards that path explicitly.
+describe("schedule dispatch routing", () => {
+  // Each schedule/* type must reach its domain handler. The injected service stub
+  // is unstubbed, so every handler's own try/catch emits its domain rpc_error code.
   // handleMessage receives already-parsed messages, so these fixtures only need to
   // satisfy the TS union here — zod parsing happens upstream at the transport.
   const routingCases: Array<{ msg: SessionInboundMessage; code: string }> = [
-    {
-      msg: { type: "chat/create", requestId: "rt-chat-create", name: "room" },
-      code: "chat_request_failed",
-    },
-    { msg: { type: "chat/list", requestId: "rt-chat-list" }, code: "chat_request_failed" },
-    {
-      msg: { type: "chat/inspect", requestId: "rt-chat-inspect", room: "room" },
-      code: "chat_request_failed",
-    },
-    {
-      msg: { type: "chat/delete", requestId: "rt-chat-delete", room: "room" },
-      code: "chat_request_failed",
-    },
-    {
-      msg: { type: "chat/post", requestId: "rt-chat-post", room: "room", body: "hi" },
-      code: "chat_request_failed",
-    },
-    {
-      msg: { type: "chat/read", requestId: "rt-chat-read", room: "room" },
-      code: "chat_request_failed",
-    },
-    {
-      msg: { type: "chat/wait", requestId: "rt-chat-wait", room: "room" },
-      code: "chat_request_failed",
-    },
-    {
-      msg: { type: "loop/run", requestId: "rt-loop-run", prompt: "p", cwd: "/tmp/loop" },
-      code: "loop_request_failed",
-    },
-    { msg: { type: "loop/list", requestId: "rt-loop-list" }, code: "loop_request_failed" },
-    {
-      msg: { type: "loop/inspect", requestId: "rt-loop-inspect", id: "loop-1" },
-      code: "loop_request_failed",
-    },
-    {
-      msg: { type: "loop/logs", requestId: "rt-loop-logs", id: "loop-1" },
-      code: "loop_request_failed",
-    },
-    {
-      msg: { type: "loop/stop", requestId: "rt-loop-stop", id: "loop-1" },
-      code: "loop_request_failed",
-    },
     {
       msg: {
         type: "schedule/create",
@@ -4716,6 +5268,7 @@ test("acknowledges a timeline subscription only to its socket source", async () 
         payload: {
           agentIds: ["agent-a"],
           requestId: "timeline-subscription-targeted",
+          subscriptionId: expect.any(String),
         },
       },
     },
@@ -4728,6 +5281,7 @@ test("unions viewed timelines across socket sources and removes detached sources
   const session = createSessionForTest({
     messages,
     agentManager: {
+      getAgent: (id: string) => ({ id, internal: false }),
       subscribe: vi.fn((listener: (event: AgentManagerEvent) => void) => {
         agentEventListeners.push(listener);
         return () => {};
@@ -4835,6 +5389,7 @@ test("keeps selective delivery scoped per socket when a retained session also ha
     messages,
     targetedMessages,
     agentManager: {
+      getAgent: (id: string) => ({ id, internal: false }),
       subscribe: vi.fn((listener: (event: AgentManagerEvent) => void) => {
         agentEventListeners.push(listener);
         return () => {};
@@ -4879,7 +5434,7 @@ test("keeps selective delivery scoped per socket when a retained session also ha
   ]);
 });
 
-test("sends project updates only to capable sockets in a retained session", () => {
+test("sends project updates only to capable sockets in a retained session", async () => {
   const messages: SessionOutboundMessage[] = [];
   const targetedMessages: Array<{ source: object; message: SessionOutboundMessage }> = [];
   const session = createSessionForTest({ messages, targetedMessages });
@@ -4888,7 +5443,7 @@ test("sends project updates only to capable sockets in a retained session", () =
   session.updateClientCapabilities(null, legacySocket);
   session.updateClientCapabilities({ [CLIENT_CAPS.projectUpdates]: true }, capableSocket);
 
-  session.emitProjectUpdate({
+  await session.emitProjectUpdate({
     kind: "upsert",
     project: createPersistedProjectRecord({
       projectId: "project-capable-socket",
@@ -4950,6 +5505,8 @@ test("project.list returns every active project descriptor", async () => {
             projectKey: "remote:github.com/acme/app",
             projectDisplayName: "acme/app",
             projectCustomName: null,
+            projectCustomIconRevision: null,
+            projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project-active",
             projectKind: "git",
           },
@@ -5223,4 +5780,108 @@ describe("agent config setters", () => {
       },
     });
   });
+});
+
+test("provider snapshots preserve versionless visibility while capabilities update independently", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const { manager } = createProviderSnapshotManagerStub();
+  manager.getSnapshot = () =>
+    createProviderSnapshot([
+      {
+        provider: "codex",
+        status: "ready",
+        enabled: true,
+        modes: [{ id: "default", label: "Default", icon: "Sparkles" }],
+      },
+      { provider: "plugin-provider", status: "ready", enabled: true },
+    ]);
+  const session = createSessionForTest({ messages, providerSnapshotManager: manager });
+  const source = {};
+  session.updateClientCapabilities(null, source);
+  const read = async () => {
+    messages.length = 0;
+    await session.handleMessage(
+      {
+        type: "get_providers_snapshot_request",
+        requestId: "visibility",
+      },
+      source,
+    );
+    return findByType(messages, "get_providers_snapshot_response")!.payload;
+  };
+  const versionless = await read();
+  expect(versionless.entries.map((entry) => entry.provider)).toEqual(["codex"]);
+  expect(versionless.entries[0]!.modes![0]!.icon).toBe("ShieldCheck");
+  session.updateClientCapabilities(
+    {
+      [CLIENT_CAPS.customModeIcons]: true,
+      [CLIENT_CAPS.providerSnapshotReferences]: true,
+    },
+    source,
+  );
+  const iconsOnly = await read();
+  expect(iconsOnly.entries.map((entry) => entry.provider)).toEqual(["codex"]);
+  expect(iconsOnly.entries[0]!.modes![0]!.icon).toBe("Sparkles");
+  expect(iconsOnly.snapshotHash).toBeUndefined();
+  session.updateClientCapabilities(
+    { [CLIENT_CAPS.customModeIcons]: true, [CLIENT_CAPS.providerSnapshotReferences]: true },
+    source,
+    "0.1.45",
+  );
+  expect((await read()).entries.map((entry) => entry.provider)).toEqual([
+    "codex",
+    "plugin-provider",
+  ]);
+  session.updateClientCapabilities(
+    {
+      [CLIENT_CAPS.compactProviderSnapshots]: true,
+      [CLIENT_CAPS.providerSnapshotReferences]: true,
+    },
+    source,
+    "0.1.45",
+  );
+  const references = await read();
+  expect(references.entries).toEqual([]);
+  expect(references.compactSnapshot!.entries.map((entry) => entry.provider)).toEqual([
+    "codex",
+    "plugin-provider",
+  ]);
+  expect(references.compactSnapshot!.entries[0]!.modes![0]!.icon).toBe("ShieldCheck");
+});
+
+test("a failing direct source observes fire-and-forget file replies without unhandled rejections", async () => {
+  const root = mkdtempSync(join(tmpdir(), "session-send-failure-"));
+  writeFileSync(join(root, "readme.txt"), "source reply");
+  let attempts = 0;
+  const unhandled: unknown[] = [];
+  const collect = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", collect);
+  const session = createSessionForTest({
+    sendToSource: async () => {
+      attempts++;
+      throw new Error("Physical source closed during send");
+    },
+  });
+  try {
+    const source = {};
+    session.updateClientCapabilities(null, source);
+    await session.handleMessage(
+      {
+        type: "file_explorer_request",
+        requestId: "direct-file",
+        cwd: root,
+        path: "readme.txt",
+        mode: "file",
+        acceptBinary: false,
+      },
+      source,
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    expect(attempts).toBeGreaterThan(0);
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", collect);
+    await session.cleanup();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

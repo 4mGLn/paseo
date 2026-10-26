@@ -1,6 +1,7 @@
 import type { ComponentType, ReactElement, ReactNode, RefObject } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
 import type { StreamItem } from "@/types/stream";
+import { continuesResponse } from "./turn-membership";
 import type { StreamHistoryBoundary, StreamRenderSegments } from "./model";
 import type {
   BottomAnchorLocalRequest,
@@ -39,9 +40,24 @@ export interface StreamEdgeSlotProps {
   ListFooterComponentStyle?: StyleProp<ViewStyle>;
 }
 
+/**
+ * A caller that landed on one occurrence inside the message owns where the viewport
+ * settles. It resolved the occurrence against a specific row already, so it takes no
+ * row here and returns null once that row is gone.
+ */
+export interface ScrollToMessageOccurrence {
+  signal: AbortSignal;
+  targetTop(): number | null;
+}
+
 export interface StreamViewportHandle {
+  /** Give keyboard navigation back to the scrolling surface on web. */
+  focus?: () => void;
   scrollToBottom: (reason?: BottomAnchorLocalRequest["reason"]) => void;
   prepareForViewportChange: () => void;
+  /** Stop following output so the rows on screen stay put while rows below them open or close. */
+  holdReadingPosition: () => void;
+  scrollToMessage?: (messageId: string, occurrence?: ScrollToMessageOccurrence) => void;
 }
 
 export interface StreamSegmentRenderers {
@@ -69,7 +85,10 @@ export interface StreamRenderInput {
   routeBottomAnchorRequest: BottomAnchorRouteRequest | null;
   isAuthoritativeHistoryReady: boolean;
   onNearBottomChange: (value: boolean) => void;
-  onNearHistoryStart: () => void;
+  // The history row under the top of the viewport, for surfaces that mark where the reader
+  // is in the transcript. Only the web viewport measures it today.
+  onReadingPositionChange?: (rowId: string | null) => void;
+  onNearHistoryStart: () => boolean | Promise<boolean>;
   isLoadingOlderHistory: boolean;
   hasOlderHistory: boolean;
   olderHistoryProgressKey: string | null;
@@ -77,6 +96,8 @@ export interface StreamRenderInput {
   listStyle: StyleProp<ViewStyle>;
   baseListContentContainerStyle: StyleProp<ViewStyle>;
   forwardListContentContainerStyle: StyleProp<ViewStyle>;
+  // The chat column's max width. The web viewport estimates unmeasured row heights with it.
+  contentMaxWidth: number;
 }
 
 export interface ResolveStreamRenderStrategyInput {
@@ -94,7 +115,7 @@ export interface StreamStrategy {
     index: number,
     relation: NeighborRelation,
   ) => StreamItem | undefined;
-  collectAssistantTurnContent: (items: StreamItem[], startIndex: number) => string;
+  collectAssistantResponseContent: (items: StreamItem[], startIndex: number) => string;
   isNearBottom: (input: StreamNearBottomInput) => boolean;
   getBottomOffset: (metrics: StreamViewportMetrics) => number;
   getEdgeSlotProps: (
@@ -159,20 +180,22 @@ export function createStreamStrategy(config: StreamStrategyConfig): StreamStrate
       }
       return items[neighborIndex];
     },
-    collectAssistantTurnContent: (items, startIndex) => {
+    collectAssistantResponseContent: (items, startIndex) => {
       const messages: string[] = [];
+      let laterItem: StreamItem | null = null;
       for (
         let index = startIndex;
         index >= 0 && index < items.length;
         index += config.assistantTurnTraversalStep
       ) {
         const currentItem = items[index];
-        if (currentItem.kind === "user_message") {
+        if (!currentItem || (laterItem && !continuesResponse(currentItem, laterItem))) {
           break;
         }
         if (currentItem.kind === "assistant_message") {
           messages.push(currentItem.text);
         }
+        laterItem = currentItem;
       }
       return messages.toReversed().join("\n\n");
     },
@@ -269,12 +292,12 @@ export function getStreamNeighborItem(params: {
   return params.strategy.getNeighborItem(params.items, params.index, params.relation);
 }
 
-export function collectAssistantTurnContentForStreamRenderStrategy(params: {
+export function collectAssistantResponseContentForStreamRenderStrategy(params: {
   strategy: StreamStrategy;
   items: StreamItem[];
   startIndex: number;
 }): string {
-  return params.strategy.collectAssistantTurnContent(params.items, params.startIndex);
+  return params.strategy.collectAssistantResponseContent(params.items, params.startIndex);
 }
 
 export function isNearBottomForStreamRenderStrategy(

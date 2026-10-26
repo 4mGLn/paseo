@@ -17,29 +17,13 @@ export interface MaterializedProviderImage {
   path: string;
 }
 
-// The directory basename stays "paseo-attachments" because PROVIDER_IMAGE_MARKDOWN
-// below matches on it, and history written by older builds used
-// mkdtemp(os.tmpdir(), "paseo-attachments-") — the optional "-<suffix>" group in
-// that regex is what lets one pattern match both shapes.
+// Keep this basename compatible with provider-image Markdown in existing timelines.
 const PROVIDER_IMAGE_ATTACHMENT_DIR = "paseo-attachments";
 const PRIVATE_ATTACHMENT_DIR_MODE = 0o700;
 const MATERIALIZED_IMAGE_FILE_MODE = 0o600;
-// Materialized images used to live in os.tmpdir(), which the OS may reap (macOS
-// clears /var/folders after ~3 days). That silently orphaned every image in any
-// transcript older than the reap window: the markdown still pointed at a path
-// whose bytes were gone, and nothing could re-create them.
-//
-// Nothing deletes these now, deliberately. An age-based sweep here would only
-// move the same bug to a longer fuse — mtime cannot distinguish an image a
-// transcript still references from an abandoned one, and reading a transcript
-// does not touch the file. It would also be a regression on hosts whose temp
-// dir is not reaped on a schedule, where these images currently survive
-// indefinitely. Bounding this directory needs to be reference-aware, against
-// the agent timelines that point into it.
-//
-// Growth is bounded in practice by content addressing: filenames are a hash of
-// the bytes, so re-emitting or replaying an image reuses its existing file.
 
+// Persist images across process lifetimes. Age-based cleanup would delete files
+// still referenced by transcripts; any future cleanup must account for references.
 let materializedImageAttachmentDir: string | null = null;
 
 function canReuseMaterializedImageAttachmentDir(dir: string): boolean {
@@ -68,11 +52,6 @@ function getMaterializedImageAttachmentDir(): string {
   fsSync.chmodSync(dir, PRIVATE_ATTACHMENT_DIR_MODE);
   materializedImageAttachmentDir = dir;
   return dir;
-}
-
-/** Test-only hook: the resolved directory is process-scoped. */
-export function __resetMaterializedImageAttachmentDirForTests(): void {
-  materializedImageAttachmentDir = null;
 }
 
 function getImageExtension(mimeType: string): string {
@@ -104,12 +83,7 @@ function normalizeImageData(mimeType: string, data: string): { mimeType: string;
   return { mimeType, data };
 }
 
-// Filenames are a content hash of the bytes, and the directory is now stable
-// across daemon restarts, so re-materializing the same image reuses the existing
-// file instead of leaking a fresh one for repeated image blocks or history
-// replay. Under the old per-process temp directory this deduplication only held
-// within a single daemon process — which is also why this directory does not
-// grow per render, only per distinct image.
+// Content-addressed filenames deduplicate repeated image bytes across restarts.
 export function materializeProviderImage(image: {
   data: string;
   mimeType: string | null;
@@ -134,7 +108,7 @@ const PROVIDER_IMAGE_MARKDOWN = new RegExp(
 );
 
 export function isProviderImageMarkdown(text: string): boolean {
-  return PROVIDER_IMAGE_MARKDOWN.test(text);
+  return PROVIDER_IMAGE_MARKDOWN.test(text.trimStart());
 }
 
 interface RenderProviderImageOutputOptions {
@@ -204,7 +178,8 @@ export function renderProviderImageOutputAsAssistantMarkdown(
     const altText = escapeMarkdownImageAlt(nonEmptyString(image.altText) ?? "Image");
     return {
       type: "assistant_message",
-      text: `![${altText}](${escapeMarkdownImageSource(source)})`,
+      // Image outputs remain standalone paragraphs when adjacent assistant chunks merge.
+      text: `\n\n![${altText}](${escapeMarkdownImageSource(source)})\n\n`,
     };
   }
 
@@ -234,6 +209,6 @@ export function renderProviderImageOutputAsAssistantMarkdown(
   const altText = escapeMarkdownImageAlt(nonEmptyString(image.altText) ?? "Image");
   return {
     type: "assistant_message",
-    text: `![${altText}](${escapeMarkdownImageSource(materialized.path)})`,
+    text: `\n\n![${altText}](${escapeMarkdownImageSource(materialized.path)})\n\n`,
   };
 }

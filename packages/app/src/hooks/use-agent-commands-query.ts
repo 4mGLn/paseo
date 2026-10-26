@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { agentCommandsQueryKey, type AgentCommandsDraftConfig } from "@/hooks/agent-commands-query";
 
@@ -15,6 +16,12 @@ export interface AgentSlashCommand {
 }
 
 export type DraftCommandConfig = AgentCommandsDraftConfig;
+
+/** What a draft composer can list commands for, before an agent exists. */
+export type DraftCommandTarget =
+  | { status: "ready"; config: DraftCommandConfig }
+  | { status: "needs-project" }
+  | { status: "needs-provider" };
 
 interface ListAgentCommandsOptions {
   agentId: string;
@@ -51,6 +58,8 @@ export function useAgentCommandsQuery({
   draftConfig,
 }: UseAgentCommandsQueryOptions) {
   const { t } = useTranslation();
+  const retainedPanelActive = useRetainedPanelActive();
+  const queryEnabled = enabled && retainedPanelActive;
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
 
@@ -62,7 +71,7 @@ export function useAgentCommandsQuery({
       }
       return fetchAgentCommands({ client, agentId, draftConfig });
     },
-    enabled: enabled && !!client && isConnected && (!!agentId || !!draftConfig),
+    enabled: queryEnabled && !!client && isConnected && (!!agentId || !!draftConfig),
     staleTime: draftConfig ? DRAFT_COMMANDS_STALE_TIME : SESSION_COMMANDS_STALE_TIME,
     retry: 3,
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),

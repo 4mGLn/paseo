@@ -1,14 +1,25 @@
 import * as pty from "node-pty";
 import xterm, { type Terminal as TerminalType } from "@xterm/headless";
 import { randomUUID } from "crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, delimiter, dirname, extname, join, resolve as resolvePath } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createExternalProcessEnv } from "../server/paseo-env.js";
 import { writePrivateFileAtomicSync } from "../server/private-files.js";
-import { findExecutable } from "../executable-resolution/executable-resolution.js";
+import {
+  findExecutable,
+  findExecutableWithoutProbing,
+} from "../executable-resolution/executable-resolution.js";
 import type { TerminalCell, TerminalState } from "@getpaseo/protocol/messages";
 import { TerminalInputModeTracker } from "@getpaseo/protocol/terminal-input-mode";
 import { TerminalActivityTracker } from "./activity/terminal-activity-tracker.js";
@@ -31,6 +42,20 @@ export interface TerminalExitInfo {
   exitCode: number | null;
   signal: number | null;
   lastOutputLines: string[];
+}
+
+// The field is assigned explicitly rather than declared as a constructor
+// parameter property: the terminal worker loads this module under
+// --experimental-strip-types, which erases types but cannot emit the
+// assignment a parameter property implies.
+export class TerminalCommandNotFoundError extends Error {
+  readonly command: string;
+
+  constructor(command: string) {
+    super(`${command}: command not found`);
+    this.name = "TerminalCommandNotFoundError";
+    this.command = command;
+  }
 }
 
 export interface TerminalCommandFinishedInfo {
@@ -149,6 +174,10 @@ function resolveInitialTitleMode(presetTitle: string | undefined): "auto" | "man
   return presetTitle?.trim() ? "manual" : "auto";
 }
 
+function isTerminalActivityInterruptInput(data: string): boolean {
+  return data === "\x03" || data === "\x1b";
+}
+
 interface BuildTerminalEnvironmentInput {
   shell: string;
   env: Record<string, string>;
@@ -243,13 +272,81 @@ export function resolveDefaultTerminalShell(
 
 export interface ResolvedTerminalCommand {
   command: string;
-  args: string[];
+  // `.cmd`/`.bat` targets resolve to a single pre-escaped `cmd.exe` command
+  // line (string) instead of an argv array. node-pty's own array-quoting
+  // (see `argsToCommandLine` in its `windowsPtyAgent.js`) only produces
+  // MSVCRT/CommandLineToArgvW-safe quoting; cmd.exe re-parses that whole
+  // line itself afterwards and needs a different, cmd.exe-metachar-aware
+  // escape. Building that line ourselves and passing it as a string is the
+  // node-pty-documented way to bypass its array quoting for exactly this
+  // case (see the `spawn` jsdoc in node-pty's typings).
+  args: string[] | string;
 }
 
 export interface ResolveTerminalSpawnCommandOptions {
   platform?: NodeJS.Platform;
   env?: Record<string, string | undefined>;
   resolveExecutable?: (name: string) => Promise<string | null>;
+}
+
+// cmd.exe treats these characters specially even inside a double-quoted
+// argument, unlike a POSIX shell — quoting alone does not neutralize them.
+// Prefixing each with `^`, cmd.exe's own escape character, does. Mirrors the
+// `escape.command` metachar list in the `cross-spawn` npm package (already a
+// dependency of this repo), which solves this exact `.cmd`/`.bat` spawning
+// problem — see http://www.robvanderwoude.com/escapechars.php.
+const CMD_EXE_METACHAR_PATTERN = /([()%!^"`<>&|;, *?])/g;
+
+function escapeCmdExeMetaChars(text: string): string {
+  return text.replace(CMD_EXE_METACHAR_PATTERN, "^$1");
+}
+
+/**
+ * Escape one argument for safe inclusion in a `cmd.exe /c "..."` command
+ * line that is about to invoke a `.cmd`/`.bat` shim.
+ *
+ * node-pty builds an MSVCRT/`CommandLineToArgvW`-style quoted command line
+ * for whatever `command` it is given (double-quote wrap on whitespace,
+ * backslash-escape only backslash runs immediately before a quote). That
+ * quoting is correct for a normal executable, which parses its own argv via
+ * that same convention. It is not correct here: the `command` node-pty
+ * launches for a `.cmd`/`.bat` target is `cmd.exe` itself, and cmd.exe
+ * re-parses the whole line with its *own* tokenizer before ever handing
+ * arguments to the batch script — a tokenizer that treats `&`, `|`, `^`,
+ * `%` (environment-variable expansion), `<`, `>` etc. as live syntax even
+ * inside double quotes. A prompt containing any of those characters would
+ * therefore be interpreted by cmd.exe, not passed through as text — the
+ * same class of hazard tracked upstream as Node's CVE-2024-27980
+ * ("batBadBadging").
+ *
+ * The escaping below is the "qntm" algorithm (https://qntm.org/cmd): double
+ * every backslash run that immediately precedes a quote (or the end of the
+ * argument, since a closing quote is appended next) and escape that quote,
+ * wrap the whole argument in quotes, then caret-escape cmd.exe's
+ * metacharacters — including the quotes just added, because cmd.exe's own
+ * tokenizer runs first and would otherwise treat them as toggling a quoted
+ * region. It is the same algorithm `cross-spawn` uses for its `.cmd`/`.bat`
+ * auto-shell path (`lib/util/escape.js`). Command shims forward `%*`, which
+ * adds a second cmd.exe parse, so metacharacters need a second escape pass to
+ * survive as literal argv in the Node process behind an npm-generated shim.
+ *
+ * cmd.exe has no escape for a literal CR or LF inside a single command
+ * line — its parser treats them as command separators regardless of
+ * quoting, so passing one through verbatim would let a crafted prompt
+ * inject a second, attacker-chosen command after the newline. There is no
+ * fidelity-preserving option for that case, so newlines are normalized to
+ * spaces before quoting: the target process still receives the full text,
+ * just without the original line breaks, instead of cmd.exe splitting the
+ * prompt into multiple commands.
+ */
+function escapeCmdExeArgument(rawArg: string): string {
+  const arg = rawArg.replace(/\r\n|\r|\n/g, " ");
+
+  let escaped = arg.replace(/(\\*)"/g, '$1$1\\"');
+  escaped = escaped.replace(/(\\*)$/, "$1$1");
+  escaped = `"${escaped}"`;
+
+  return escapeCmdExeMetaChars(escapeCmdExeMetaChars(escaped));
 }
 
 /**
@@ -293,7 +390,21 @@ export async function resolveTerminalSpawnCommand(
   if (extension === ".cmd" || extension === ".bat") {
     const env = options.env ?? process.env;
     const comSpec = env.ComSpec || env.COMSPEC || "C:\\Windows\\System32\\cmd.exe";
-    return { command: comSpec, args: ["/c", resolved, ...args] };
+    // Build the `/c` command line ourselves — as a single pre-escaped
+    // string, not an argv array — so node-pty's own array quoting never
+    // runs over these values; see escapeCmdExeArgument for why that
+    // quoting alone is not safe once cmd.exe re-parses the line. `resolved`
+    // gets the same metachar (not quote-wrap) treatment as the args: it
+    // isn't attacker-controlled, but it now sits inside the same joined
+    // command line and needs to survive cmd.exe's tokenizer too (e.g. a
+    // space in the install path).
+    const commandLine = [
+      "/d",
+      "/s",
+      "/c",
+      `"${[escapeCmdExeMetaChars(resolved), ...args.map(escapeCmdExeArgument)].join(" ")}"`,
+    ].join(" ");
+    return { command: comSpec, args: commandLine };
   }
 
   return { command: resolved, args };
@@ -494,7 +605,9 @@ function extractCell(terminal: TerminalType, row: number, col: number): Terminal
   const bg = bgMode !== 0 ? cell.getBgColor() : undefined;
 
   return {
-    char: cell.getChars() || " ",
+    // Wide chars (CJK) span two cells; xterm returns "" for the zero-width
+    // continuation. Collapsing it to " " injects a real space on restore.
+    char: cell.getWidth() === 0 ? "" : cell.getChars() || " ",
     fg,
     bg,
     fgMode: fgMode !== 0 ? fgMode : undefined,
@@ -553,7 +666,9 @@ function extractScrollback(
           const fg = fgMode !== 0 ? cell.getFgColor() : undefined;
           const bg = bgMode !== 0 ? cell.getBgColor() : undefined;
           rowCells.push({
-            char: cell.getChars() || " ",
+            // Wide chars (CJK) span two cells; xterm returns "" for the zero-width
+            // continuation. Collapsing it to " " injects a real space on restore.
+            char: cell.getWidth() === 0 ? "" : cell.getChars() || " ",
             fg,
             bg,
             fgMode: fgMode !== 0 ? fgMode : undefined,
@@ -796,6 +911,62 @@ function extractLastOutputLinesFromText(text: string, limit: number): string[] {
   return lines.slice(-limit);
 }
 
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) {
+      return false;
+    }
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface AssertTerminalCommandCanStartInput {
+  command: string | undefined;
+  // The terminal's own cwd and environment, not the daemon's: execve in the
+  // child resolves against those, so anything else produces false negatives.
+  cwd: string;
+  env: Record<string, string>;
+  platform?: NodeJS.Platform;
+}
+
+// node-pty spawns directly through execve on POSIX, with no shell, so a command
+// that does not exist fails inside the spawn helper and surfaces as exit code 1
+// with no output -- indistinguishable from `false` or any program that simply
+// failed. Resolving it up front is the only signal that separates "cannot start"
+// from "ran and exited non-zero", and it lets the create report the failure
+// instead of handing back a terminal that dies immediately. Windows keeps
+// resolving inside resolveTerminalSpawnCommand, which has its own shim handling
+// and its own fallback for an unresolved command.
+export async function assertTerminalCommandCanStart(
+  input: AssertTerminalCommandCanStartInput,
+): Promise<void> {
+  const { command, cwd, env } = input;
+  const platform = input.platform ?? process.platform;
+  if (command === undefined || platform === "win32") {
+    return;
+  }
+
+  // A path-ish command is resolved by execve against the child's cwd, never
+  // through PATH and never against the daemon's working directory.
+  if (command.includes("/")) {
+    if (isExecutableFile(resolvePath(cwd, command))) {
+      return;
+    }
+    throw new TerminalCommandNotFoundError(command);
+  }
+
+  const resolved = await findExecutableWithoutProbing(command, {
+    path: env[getPathEnvKey(env)],
+    cwd,
+  });
+  if (!resolved) {
+    throw new TerminalCommandNotFoundError(command);
+  }
+}
+
 export async function createTerminal(options: CreateTerminalOptions): Promise<TerminalSession> {
   const {
     cwd,
@@ -855,19 +1026,23 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
   const { command: spawnCommand, args: spawnArgs } = command
     ? await resolveTerminalSpawnCommand(command, args)
     : { command: resolvedShell, args: [] as string[] };
+  const terminalEnv = buildTerminalEnvironment({
+    shell: spawnCommand,
+    env: {
+      ...env,
+      ...activityEnv,
+      PASEO_WORKSPACE_ID: workspaceId,
+    },
+  });
+
+  await assertTerminalCommandCanStart({ command, cwd, env: terminalEnv });
+
   const ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
     name: "xterm-256color",
     cols,
     rows,
     cwd,
-    env: buildTerminalEnvironment({
-      shell: spawnCommand,
-      env: {
-        ...env,
-        ...activityEnv,
-        PASEO_WORKSPACE_ID: workspaceId,
-      },
-    }),
+    env: terminalEnv,
   });
 
   function emitTitleChange(nextTitle: string | undefined): void {
@@ -1222,6 +1397,9 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
 
     switch (msg.type) {
       case "input": {
+        if (isTerminalActivityInterruptInput(msg.data)) {
+          activityTracker.interrupt();
+        }
         pendingInput += msg.data;
         scheduleInputFlush();
         break;

@@ -1,17 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createProjectViewKey } from "@/projects/workspace-structure";
 
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   composeWorkspaceStructure,
+  createWorkspaceStructureProjectsSelector,
   selectHasWorkspaces,
   selectHydratedWorkspaceServerIds,
+  selectWorkspaceDirectoryServerIds,
   selectProjectOrder,
   selectRecommendedProjectPaths,
   selectWorkspace,
   selectWorkspaceDirectory,
   selectWorkspaceFields,
   selectWorkspaceKeys,
-  selectWorkspaceOrderByScope,
   selectWorkspaceStatusesForBadges,
   selectWorkspaceStructureProjects,
   workspaceEqualityFns,
@@ -25,10 +27,16 @@ import {
 
 const SERVER_ID = "test-server";
 
+function equivalenceViewKey(projectKey: string): string {
+  return createProjectViewKey({ kind: "equivalence", projectKey });
+}
+
 function createWorkspace(
   input: Partial<WorkspaceDescriptor> & Pick<WorkspaceDescriptor, "id">,
 ): WorkspaceDescriptor {
   return {
+    createdAt: null,
+    lastUserMessageAt: null,
     id: input.id,
     projectId: input.projectId ?? "project-1",
     projectDisplayName: input.projectDisplayName ?? "Project 1",
@@ -51,6 +59,7 @@ function projectDescriptorFromTestWorkspace(workspace: WorkspaceDescriptor): Pro
     projectKey: workspace.projectId,
     projectDisplayName: workspace.projectDisplayName,
     projectCustomName: workspace.projectCustomName ?? null,
+    projectCustomIconRevision: workspace.projectCustomIconRevision ?? null,
     projectRootPath: workspace.projectRootPath,
     projectKind: workspace.projectKind,
   };
@@ -110,14 +119,13 @@ function trackSelector<S, T>(
 function emptySidebarOrder(): SidebarOrderSnapshot {
   return {
     projectOrder: [],
-    workspaceOrderByProject: {},
   };
 }
 
-function selectWorkspaceStructureProjectKeys(
+function selectWorkspaceStructureProjectViewKeys(
   state: Parameters<typeof selectWorkspaceStructureProjects>[0],
 ): string[] {
-  return selectWorkspaceStructureProjects(state, [SERVER_ID]).map((project) => project.projectKey);
+  return selectWorkspaceStructureProjects(state, [SERVER_ID]).map((project) => project.viewKey);
 }
 
 afterEach(() => {
@@ -125,20 +133,29 @@ afterEach(() => {
 });
 
 describe("workspace replica authority", () => {
-  it("keeps a cached workspace addressable without publishing it as an authoritative directory", () => {
+  it("publishes a restored directory while keeping remote hydration false", () => {
     const cachedWorkspace = createWorkspace({ id: "cached-workspace" });
-    initializeWorkspaces([cachedWorkspace]);
+    const store = useSessionStore.getState();
+    store.initializeSession(SERVER_ID, null);
+    store.setWorkspaces(SERVER_ID, new Map([[cachedWorkspace.id, cachedWorkspace]]));
+    store.setProjects(SERVER_ID, [projectDescriptorFromTestWorkspace(cachedWorkspace)]);
+    store.setHasWorkspaceDirectorySnapshot(SERVER_ID, true);
+    const cachedSession = useSessionStore.getState().sessions[SERVER_ID];
+    if (!cachedSession) throw new Error("expected initialized session");
 
-    const cachedServerIds = selectHydratedWorkspaceServerIds(useSessionStore.getState(), [
+    const cachedServerIds = selectWorkspaceDirectoryServerIds(useSessionStore.getState(), [
       SERVER_ID,
     ]);
 
     expect(selectWorkspace(useSessionStore.getState(), SERVER_ID, cachedWorkspace.id)).toBe(
       cachedWorkspace,
     );
-    expect(selectWorkspaceStructureProjects(useSessionStore.getState(), cachedServerIds)).toEqual(
-      [],
-    );
+    expect(cachedSession.hasHydratedWorkspaces).toBe(false);
+    expect(
+      selectWorkspaceStructureProjects(useSessionStore.getState(), cachedServerIds).map(
+        (project) => project.workspaceKeys,
+      ),
+    ).toEqual([[`${SERVER_ID}:${cachedWorkspace.id}`]]);
 
     const authoritativeWorkspace = createWorkspace({
       id: "authoritative-workspace",
@@ -319,6 +336,27 @@ describe("selectWorkspaceFields", () => {
 });
 
 describe("workspace structure composition", () => {
+  it("reuses structure when unrelated session state changes", () => {
+    const workspace = createWorkspace({ id: "workspace-a" });
+    const workspaces = new Map([[workspace.id, workspace]]);
+    const projects = new Map([
+      [workspace.projectId, projectDescriptorFromTestWorkspace(workspace)],
+    ]);
+    const selectProjects = createWorkspaceStructureProjectsSelector([SERVER_ID]);
+    const before = selectProjects({ sessions: { [SERVER_ID]: { workspaces, projects } } });
+    const after = selectProjects({
+      sessions: {
+        [SERVER_ID]: {
+          workspaces,
+          projects,
+          hasHydratedWorkspaces: true,
+        },
+      },
+    });
+
+    expect(after).toBe(before);
+  });
+
   function snapshotStructure(
     serverId: string,
     sidebar: SidebarOrderSnapshot,
@@ -326,7 +364,6 @@ describe("workspace structure composition", () => {
     return composeWorkspaceStructure({
       projects: selectWorkspaceStructureProjects(useSessionStore.getState(), [serverId]),
       projectOrder: selectProjectOrder(sidebar),
-      workspaceOrderByScope: selectWorkspaceOrderByScope(sidebar),
     });
   }
 
@@ -343,14 +380,17 @@ describe("workspace structure composition", () => {
       projectKey: "project-a",
       projectDisplayName: "Project A",
       projectCustomName: null,
+      projectCustomIconRevision: null,
       projectRootPath: "/repo/a",
       projectKind: "git",
     };
     initializeWorkspaces([workspace]);
 
-    const emittedProjectKeys = [selectWorkspaceStructureProjectKeys(useSessionStore.getState())];
+    const emittedProjectKeys = [
+      selectWorkspaceStructureProjectViewKeys(useSessionStore.getState()),
+    ];
     const stop = useSessionStore.subscribe((state) => {
-      emittedProjectKeys.push(selectWorkspaceStructureProjectKeys(state));
+      emittedProjectKeys.push(selectWorkspaceStructureProjectViewKeys(state));
     });
 
     try {
@@ -360,7 +400,10 @@ describe("workspace structure composition", () => {
       stop();
     }
 
-    expect(emittedProjectKeys).toEqual([["project-a"], ["project-a"]]);
+    expect(emittedProjectKeys).toEqual([
+      [equivalenceViewKey("project-a")],
+      [equivalenceViewKey("project-a")],
+    ]);
   });
 
   it("changes for membership updates but not status-only updates", () => {
@@ -451,10 +494,13 @@ describe("workspace structure composition", () => {
     const before = snapshotStructure(SERVER_ID, emptySidebarOrder());
     const after = snapshotStructure(SERVER_ID, {
       ...emptySidebarOrder(),
-      projectOrder: ["project-b", "project-a"],
+      projectOrder: [equivalenceViewKey("project-b"), equivalenceViewKey("project-a")],
     });
 
-    expect(after.projects.map((project) => project.projectKey)).toEqual(["project-b", "project-a"]);
+    expect(after.projects.map((project) => project.viewKey)).toEqual([
+      equivalenceViewKey("project-b"),
+      equivalenceViewKey("project-a"),
+    ]);
     expect(after).not.toEqual(before);
   });
 });
@@ -571,4 +617,50 @@ describe("selectWorkspaceStatusesForBadges", () => {
 
     tracked.stop();
   });
+});
+
+it("a prompt changes only its project's structure and output preserves both project identities", () => {
+  const a = { ...createWorkspace({ id: "a", projectId: "p" }), createdAt: new Date("2026-01-01") };
+  const b = { ...createWorkspace({ id: "b", projectId: "p" }), createdAt: new Date("2026-02-01") };
+  const c = { ...createWorkspace({ id: "c", projectId: "q" }), createdAt: new Date("2026-02-01") };
+  const projects = new Map([a, c].map((w) => [w.projectId, projectDescriptorFromTestWorkspace(w)]));
+  const select = createWorkspaceStructureProjectsSelector([SERVER_ID], "lastPrompt");
+  const state = (workspaces: WorkspaceDescriptor[]) => ({
+    sessions: { [SERVER_ID]: { projects, workspaces: new Map(workspaces.map((w) => [w.id, w])) } },
+  });
+  const before = select(state([a, b, c]));
+  const prompted = { ...a, lastUserMessageAt: new Date("2026-03-01") };
+  const after = select(state([prompted, b, c]));
+  expect(after.find((p) => p.viewKey === "p")?.workspaceKeys).toEqual([
+    `${SERVER_ID}:a`,
+    `${SERVER_ID}:b`,
+  ]);
+  expect(after.find((p) => p.viewKey === "q")).toBe(before.find((p) => p.viewKey === "q"));
+  const output = select(state([{ ...prompted, status: "running" }, b, c]));
+  expect(output[0]).toBe(after[0]);
+  expect(output[1]).toBe(after[1]);
+});
+
+it("applies manual order only when requested without mutating the automatic baseline", () => {
+  const project = {
+    viewKey: "p",
+    projectKey: "p",
+    projectName: "P",
+    projectKind: "git" as const,
+    iconWorkingDir: "/repo",
+    hosts: [],
+    workspaceKeys: ["h:new", "h:b", "h:a"],
+  };
+  const input = { projects: [project], projectOrder: ["p"] };
+  expect(
+    composeWorkspaceStructure({
+      ...input,
+      workspaceOrderByProject: { p: ["h:filtered", "h:a", "h:b"] },
+    }).projects[0].workspaceKeys,
+  ).toEqual(["h:new", "h:a", "h:b"]);
+  expect(composeWorkspaceStructure(input).projects[0].workspaceKeys).toEqual([
+    "h:new",
+    "h:b",
+    "h:a",
+  ]);
 });

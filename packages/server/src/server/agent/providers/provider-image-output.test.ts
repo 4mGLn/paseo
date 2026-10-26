@@ -1,12 +1,12 @@
 import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import MarkdownIt from "markdown-it";
+import { projectTimelineRows } from "../timeline-projection.js";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
-  __resetMaterializedImageAttachmentDirForTests,
   isProviderImageMarkdown,
-  materializeProviderImage,
   renderProviderImageOutputAsAssistantMarkdown,
 } from "./provider-image-output.js";
 
@@ -16,11 +16,11 @@ const HASH = "a".repeat(64);
 // run would read and delete the developer's real provider images.
 const originalPaseoHome = process.env.PASEO_HOME;
 let testHome: string | null = null;
+let materializeProviderImage: typeof import("./provider-image-output.js").materializeProviderImage;
 
 function useTempPaseoHome(): string {
   testHome = mkdtempSync(path.join(os.tmpdir(), "paseo-provider-images-"));
   process.env.PASEO_HOME = testHome;
-  __resetMaterializedImageAttachmentDirForTests();
   return testHome;
 }
 
@@ -65,7 +65,7 @@ describe("isProviderImageMarkdown", () => {
     );
 
     expect(markdown).toBe(
-      `![Image](file:///C:/Users/me/AppData/Local/Temp/paseo-attachments/${HASH}.png)`,
+      `\n\n![Image](file:///C:/Users/me/AppData/Local/Temp/paseo-attachments/${HASH}.png)\n\n`,
     );
     expect(isProviderImageMarkdown(markdown)).toBe(true);
   });
@@ -74,20 +74,20 @@ describe("isProviderImageMarkdown", () => {
     const markdown = renderImageMarkdown("/home/user/Projects/Project With Spaces/screenshot.png");
 
     expect(markdown).toBe(
-      "![Image](file:///home/user/Projects/Project%20With%20Spaces/screenshot.png)",
+      "\n\n![Image](file:///home/user/Projects/Project%20With%20Spaces/screenshot.png)\n\n",
     );
   });
 
   test("encodes URI-significant characters in POSIX file paths", () => {
     const markdown = renderImageMarkdown("/tmp/screenshot#1?draft.png");
 
-    expect(markdown).toBe("![Image](file:///tmp/screenshot%231%3Fdraft.png)");
+    expect(markdown).toBe("\n\n![Image](file:///tmp/screenshot%231%3Fdraft.png)\n\n");
   });
 
   test("preserves double-leading slashes in POSIX file paths", () => {
     const markdown = renderImageMarkdown("//tmp/screenshot#1.png");
 
-    expect(markdown).toBe("![Image](file:////tmp/screenshot%231.png)");
+    expect(markdown).toBe("\n\n![Image](file:////tmp/screenshot%231.png)\n\n");
   });
 
   test.each([
@@ -98,7 +98,7 @@ describe("isProviderImageMarkdown", () => {
       "file://server/share/shot%3Fdraft.png",
     ],
   ])("encodes %s image paths as file URIs", (_label, imagePath, expectedSource) => {
-    expect(renderImageMarkdown(imagePath)).toBe(`![Image](${expectedSource})`);
+    expect(renderImageMarkdown(imagePath)).toBe(`\n\n![Image](${expectedSource})\n\n`);
   });
 
   test("rejects user-authored markdown that is not a materialized attachment", () => {
@@ -111,8 +111,10 @@ describe("isProviderImageMarkdown", () => {
 });
 
 describe("materializeProviderImage", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     useTempPaseoHome();
+    vi.resetModules();
+    ({ materializeProviderImage } = await import("./provider-image-output.js"));
   });
 
   afterEach(() => {
@@ -125,7 +127,6 @@ describe("materializeProviderImage", () => {
       rmSync(testHome, { recursive: true, force: true });
       testHome = null;
     }
-    __resetMaterializedImageAttachmentDirForTests();
   });
 
   test("recreates the private directory if the cached directory is removed", () => {
@@ -156,12 +157,13 @@ describe("materializeProviderImage", () => {
     // modes and reports 0o666, so asserting them here fails on that runner.
   });
 
-  test("is idempotent for the same bytes across daemon restarts", () => {
+  test("is idempotent for the same bytes across daemon restarts", async () => {
     const first = materializeProviderImage({ data: "YWJjMTIz", mimeType: "image/png" });
 
-    // A fresh daemon process: module state is cleared but the directory persists.
-    __resetMaterializedImageAttachmentDirForTests();
-    const second = materializeProviderImage({ data: "YWJjMTIz", mimeType: "image/png" });
+    // Reload the module while retaining the files from the previous instance.
+    vi.resetModules();
+    const restarted = await import("./provider-image-output.js");
+    const second = restarted.materializeProviderImage({ data: "YWJjMTIz", mimeType: "image/png" });
 
     expect(second.path).toBe(first.path);
     expect(readdirSync(attachmentsDir())).toHaveLength(1);
@@ -183,16 +185,65 @@ describe("materializeProviderImage", () => {
   // behind the user's back. An age-based sweep would reintroduce that on a
   // longer fuse, because mtime cannot tell a referenced image from an abandoned
   // one and reading a transcript never touches the file.
-  test("keeps images no matter how old they are", () => {
+  test("keeps images no matter how old they are", async () => {
     const image = materializeProviderImage({ data: "YWJjMTIz", mimeType: "image/png" });
     const longAgoSeconds = Date.now() / 1000 - 365 * 24 * 60 * 60;
     utimesSync(image.path, longAgoSeconds, longAgoSeconds);
 
-    // A fresh daemon process materializing an unrelated image: the oldest point
-    // at which a startup sweep would run.
-    __resetMaterializedImageAttachmentDirForTests();
-    materializeProviderImage({ data: "Z2hpNzg5", mimeType: "image/png" });
+    // Reloading the module must not sweep images referenced by older transcripts.
+    vi.resetModules();
+    const restarted = await import("./provider-image-output.js");
+    restarted.materializeProviderImage({ data: "Z2hpNzg5", mimeType: "image/png" });
 
     expect(existsSync(image.path)).toBe(true);
   });
+});
+
+describe("provider image paragraph boundaries", () => {
+  test.each(["", "\n"])("keeps image outputs separate from prose ending in %j", (ending) => {
+    const image = renderProviderImageOutputAsAssistantMarkdown({
+      url: "https://example.com/chart.png",
+    });
+    if (!image) throw new Error("Expected image output");
+    const projected = projectTimelineRows({
+      mode: "projected",
+      rows: [
+        {
+          seq: 1,
+          timestamp: "2026-10-16T15:08:23Z",
+          item: { type: "assistant_message", text: `Before${ending}`, messageId: "commentary" },
+        },
+        { seq: 2, timestamp: "2026-10-16T15:08:24Z", item: image },
+        {
+          seq: 3,
+          timestamp: "2026-10-16T15:08:25Z",
+          item: { type: "assistant_message", text: "After" },
+        },
+      ],
+    });
+    expect(projected).toHaveLength(1);
+    const item = projected[0]!.item;
+    if (item.type !== "assistant_message") throw new Error("Expected assistant message");
+    const paragraphs = new MarkdownIt()
+      .parse(item.text, {})
+      .filter((token) => token.type === "inline");
+    expect(paragraphs.map((token) => token.content)).toEqual([
+      "Before",
+      "![Image](https://example.com/chart.png)",
+      "After",
+    ]);
+  });
+});
+
+test("materialized image output retains paragraph boundaries and attachment recognition", () => {
+  const item = renderProviderImageOutputAsAssistantMarkdown(
+    { data: "YWJjMTIz", mimeType: "image/png" },
+    { materialize: () => ({ path: `/tmp/paseo-attachments/${HASH}.png` }) },
+  );
+  expect(item).toEqual({
+    type: "assistant_message",
+    text: `\n\n![Image](file:///tmp/paseo-attachments/${HASH}.png)\n\n`,
+  });
+  if (!item || item.type !== "assistant_message") throw new Error("Expected image output");
+  expect(isProviderImageMarkdown(item.text)).toBe(true);
 });
