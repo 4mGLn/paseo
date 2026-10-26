@@ -13,7 +13,7 @@ import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/s
 import { Switch } from "@/components/ui/switch";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { deriveGoalTitle } from "@/goals/goal-chat-prefill";
-import { goalFormMemoryFromConfig, prefillFromGoalFormMemory } from "@/goals/goal-form-memory";
+import { goalFormMemoryFromConfig } from "@/goals/goal-form-memory";
 import type {
   GoalFormField,
   GoalFormIssue,
@@ -24,13 +24,21 @@ import type {
 } from "@/goals/goal-form-model";
 import { settingsSummaryText } from "@/goals/goal-labels";
 import { GOAL_PRESET_IDS, type GoalSettingsChoice } from "@/goals/goal-settings";
-import { useGoalFormModel, useGoalFormProviderOptions } from "@/goals/use-goal-form-model";
+import {
+  useGoalFormCwdCheck,
+  useGoalFormHosts,
+  useGoalFormModel,
+  useGoalFormProjectOptions,
+  useGoalFormProviderOptions,
+} from "@/goals/use-goal-form-model";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useHostFeature } from "@/runtime/host-features";
 import { useGoalFormMemoryStore } from "@/stores/goal-form-memory-store";
 import { toErrorMessage } from "@/utils/error-messages";
+import { shortenPath } from "@/utils/shorten-path";
 import { GoalFormAdvanced } from "./goal-form-advanced";
 import { ProviderSelect } from "./goal-form-fields";
+import { GoalHostField, GoalProjectField } from "./goal-project-field";
 
 /**
  * Mount only while open: the caller renders this conditionally, so every open
@@ -45,19 +53,29 @@ export function GoalFormSheet({
   serverId: string;
   prefill?: GoalFormPrefill;
   onClose: () => void;
-  onCreated?: (goal: Goal) => void;
+  /** Gets the host the goal was created on, which you may have changed in the form. */
+  onCreated?: (goal: Goal, serverId: string) => void;
 }): ReactElement {
   const { t } = useTranslation();
   const controlSize: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
-  const { createGoal, isCreating } = useGoalMutations({ serverId });
   // A host without `goalBudgets` would drop the caps silently, so the inputs stay hidden there.
   const budgetSupported = useHostFeature(serverId, "goalBudgets");
   const [snapshot] = useState(() => buildSnapshot({ serverId, prefill, budgetSupported }));
   const model = useGoalFormModel(snapshot);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
+  const goalServerId = state.serverId;
+  const { createGoal, isCreating } = useGoalMutations({ serverId: goalServerId });
+  useGoalFormHosts(model);
+  useGoalFormProjectOptions({ model, serverId: goalServerId });
+  useGoalFormCwdCheck({
+    model,
+    serverId: goalServerId,
+    cwd: state.values.cwd,
+    enabled: state.values.managed,
+  });
   const providersSnapshot = useGoalFormProviderOptions({
     model,
-    serverId,
+    serverId: goalServerId,
     enabled: state.values.managed,
   });
   const { createInput } = state;
@@ -73,16 +91,19 @@ export function GoalFormSheet({
       if (createInput.config) {
         useGoalFormMemoryStore
           .getState()
-          .remember(serverId, goalFormMemoryFromConfig(createInput.config, state.values.settings));
+          .remember(
+            goalServerId,
+            goalFormMemoryFromConfig(createInput.config, state.values.settings),
+          );
       }
       onClose();
       if (goal) {
-        onCreated?.(goal);
+        onCreated?.(goal, goalServerId);
       }
     } catch (error) {
       model.setSubmitError(toErrorMessage(error));
     }
-  }, [createGoal, createInput, model, onClose, onCreated, serverId, state.values.settings]);
+  }, [createGoal, createInput, goalServerId, model, onClose, onCreated, state.values.settings]);
 
   const handleSubmitPress = useCallback(() => {
     void handleSubmit();
@@ -133,6 +154,17 @@ export function GoalFormSheet({
       footer={footer}
       testID="goal-form-sheet"
     >
+      {state.hosts.length > 1 && !state.originAgentId ? (
+        <GoalHostField model={model} state={state} size={controlSize} />
+      ) : null}
+      {state.values.managed ? (
+        <GoalProjectField
+          model={model}
+          state={state}
+          size={controlSize}
+          error={issueMessage(t, state.visibleIssues, "cwd", state.values.cwd)}
+        />
+      ) : null}
       <Field
         label={t("goals.form.objectiveLabel")}
         error={issueMessage(t, state.visibleIssues, "title")}
@@ -189,7 +221,7 @@ export function GoalFormSheet({
         <ManagedGoalFields
           model={model}
           state={state}
-          serverId={serverId}
+          serverId={goalServerId}
           providersLoading={providersSnapshot.isLoading || providersSnapshot.isFetching}
           size={controlSize}
         />
@@ -206,13 +238,12 @@ function buildSnapshot(input: {
   budgetSupported: boolean;
 }): GoalFormSnapshot {
   // Read once: the form starts from your last goal and never rebuilds when memory changes.
-  const memory = useGoalFormMemoryStore.getState().byServer[input.serverId] ?? null;
+  const memoryByServer = useGoalFormMemoryStore.getState().byServer;
   return {
-    prefill: {
-      ...prefillFromGoalFormMemory(memory, { cwd: input.prefill?.cwd }),
-      ...input.prefill,
-    },
-    personalSettings: memory?.settings ?? null,
+    serverId: input.serverId,
+    prefill: input.prefill,
+    memoryByServer,
+    personalSettings: memoryByServer[input.serverId]?.settings ?? null,
     budgetSupported: input.budgetSupported,
   };
 }
@@ -221,6 +252,7 @@ function issueMessage(
   t: TFunction,
   issues: readonly GoalFormIssue[],
   field: GoalFormField,
+  cwd = "",
 ): string | null {
   const issue = issues.find((candidate) => candidate.field === field);
   if (!issue) {
@@ -229,13 +261,16 @@ function issueMessage(
   if (issue.code === "excludesRole") {
     return t("goals.form.errors.excludesRole", { provider: issue.provider });
   }
+  if (issue.code === "notGitRepo") {
+    return t("goals.form.errors.notGitRepo", { path: shortenPath(cwd.trim()) });
+  }
   switch (field) {
     case "title":
       return t("goals.form.errors.titleRequired");
     case "criteria":
       return t("goals.form.errors.criteriaRequired");
     case "cwd":
-      return t("goals.form.errors.cwdRequired");
+      return t("goals.form.errors.projectRequired");
     default:
       return t("goals.form.errors.providerRequired");
   }
@@ -256,7 +291,6 @@ function ManagedGoalFields({
 }): ReactElement {
   const { t } = useTranslation();
   const { values } = state;
-  const setCwd = useCallback((value: string) => model.setValue("cwd", value), [model]);
   const setLead = useCallback((value: string) => model.setValue("leadProvider", value), [model]);
   const setDefault = useCallback(
     (value: string) => model.setValue("defaultProvider", value),
@@ -278,17 +312,6 @@ function ManagedGoalFields({
   return (
     <>
       {state.originAgentId ? <Text style={styles.note}>{t("goals.form.postsBack")}</Text> : null}
-      <Field label={t("goals.form.cwdLabel")} error={issueMessage(t, state.visibleIssues, "cwd")}>
-        <FormTextInput
-          size={size}
-          testID="goal-cwd-input"
-          accessibilityLabel={t("goals.form.cwdLabel")}
-          initialValue={values.cwd}
-          onChangeText={setCwd}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-      </Field>
       <ProviderSelect
         label={t("goals.form.leadProviderLabel")}
         value={values.leadProvider}
