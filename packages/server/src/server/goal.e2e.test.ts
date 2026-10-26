@@ -642,3 +642,90 @@ test("goal controls: a rejected plan is redone with the feedback, and a paused g
   expect(between).not.toContain("run.started");
   expect(types).toContain("plan.rejected");
 });
+
+test("goal management: rename, priority, archive hides from the list, delete removes worktrees and keeps branches", async () => {
+  const repo = createGitRepo(root);
+  const client = await boot(
+    scriptedAgents([implementTask("a")], (_prompt, cwd) => {
+      writeFileSync(path.join(cwd, "a.txt"), "from a\n");
+      return "built a";
+    }),
+  );
+  expect(client.getLastServerInfoMessage()?.features).toMatchObject({ goalManagement: true });
+  const pushed: { id: string; title: string; deleted: boolean }[] = [];
+  const owner = client.observeGoalUpdates();
+  owner.subscribe({
+    snapshot: () => {},
+    update: (message) => {
+      if (message.type !== "goal.update") return;
+      const { goal, deleted } = message.payload;
+      pushed.push({ id: goal.id, title: goal.title, deleted: deleted === true });
+    },
+  });
+  await owner.ready;
+
+  await client.goalCreate({
+    goalId: "g1",
+    title: "Ship",
+    objective: "add a",
+    criteria: ["a.txt exists"],
+    config: managedConfig(repo),
+  });
+  await client.goalCreate({
+    goalId: "g2",
+    title: "Notes",
+    objective: "",
+    criteria: [],
+    priority: "low",
+  });
+  const done = await waitFor(() => client.goalInspect("g1"), isFinished);
+  expect(done.goal?.status).toBe("completed");
+  const integration = done.goal?.integration;
+  expect(integration && existsSync(integration.cwd)).toBe(true);
+
+  const renamed = await client.goalRename({ goalId: "g1", title: "Ship a" });
+  expect(renamed.goal?.title).toBe("Ship a");
+  await client.goalSetPriority({ goalId: "g2", priority: "high" });
+  expect((await client.goalList()).goals.map((g) => g.id)).toEqual(["g2", "g1"]);
+  expect((await client.goalList({ query: "ship A" })).goals.map((g) => g.id)).toEqual(["g1"]);
+  expect((await client.goalList({ cwd: repo })).goals.map((g) => g.id)).toEqual(["g1"]);
+
+  // A live goal must be stopped first.
+  await expect(client.goalArchive({ goalId: "g2" })).rejects.toThrow(/stop it before/);
+  const archived = await client.goalArchive({ goalId: "g1" });
+  expect(archived.goal?.archivedAt).toEqual(expect.any(String));
+  expect((await client.goalList()).goals.map((g) => g.id)).toEqual(["g2"]);
+  expect((await client.goalList({ archived: "only" })).goals.map((g) => g.id)).toEqual(["g1"]);
+  const inspected = await client.goalInspect("g1");
+  expect(inspected.events.map((e) => e.type)).toEqual(
+    expect.arrayContaining(["goal.renamed", "goal.archived"]),
+  );
+
+  await expect(client.goalDelete({ goalId: "g2" })).rejects.toThrow(/stop it before/);
+  const deleted = await client.goalDelete({ goalId: "g1" });
+  expect(deleted).toMatchObject({ goalId: "g1", deleted: true, error: null });
+  expect(deleted.retained).toContainEqual({
+    kind: "branch",
+    name: "paseo-goal/g1",
+    reason: "Branches are never deleted",
+  });
+  expect(deleted.retained.filter((r) => r.kind === "worktree")).toEqual([]);
+  // The integration branch and its commits stay; the worktree is gone.
+  expect(git(repo, "rev-parse", "paseo-goal/g1")).toBe(integration?.headCommit);
+  expect(existsSync(integration?.cwd ?? "")).toBe(false);
+  expect(git(repo, "status", "--porcelain")).toBe("");
+  expect((await client.goalList({ archived: "include" })).goals.map((g) => g.id)).toEqual(["g2"]);
+  expect((await client.goalDelete({ goalId: "g1" })).deleted).toBe(false);
+  await waitFor(
+    async () => pushed.filter((p) => p.deleted),
+    (list) => list.length === 1,
+  );
+  expect(pushed.filter((p) => p.deleted)).toEqual([{ id: "g1", title: "Ship a", deleted: true }]);
+  await owner.release();
+
+  // A deleted goal stays deleted across a restart.
+  await shutdown(client);
+  const after = await boot();
+  expect((await after.goalList({ archived: "include" })).goals.map((g) => g.id)).toEqual(["g2"]);
+  expect((await after.goalList()).goals[0]?.priority).toBe("high");
+}, 90_000);

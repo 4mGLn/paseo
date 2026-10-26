@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir, truncate } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, truncate, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
   GoalEventSchema,
@@ -17,6 +17,9 @@ export class GoalEventLogCorruptionError extends Error {
 }
 
 const GOAL_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** A deleted goal's log is renamed to this before anything else of it is removed. */
+const TOMBSTONE_SUFFIX = ".jsonl.deleted";
 
 export interface AppendResult {
   event: GoalEvent;
@@ -65,6 +68,68 @@ export class GoalEventLog {
     }
   }
 
+  /** Goals whose deletion started but may not have finished. */
+  async listTombstones(): Promise<string[]> {
+    try {
+      const names = await readdir(this.dir);
+      return names
+        .filter((n) => n.endsWith(TOMBSTONE_SUFFIX))
+        .map((n) => n.slice(0, -TOMBSTONE_SUFFIX.length))
+        .filter((id) => GOAL_ID_PATTERN.test(id));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  /**
+   * First step of deleting a goal: its log is renamed out of the way in one atomic
+   * step, so a crash leaves the goal either whole or marked deleted, never half there.
+   * Returns false when the goal had no log.
+   */
+  async tombstone(goalId: string): Promise<boolean> {
+    return this.serialized(goalId, async () => {
+      try {
+        await rename(this.filePath(goalId), this.tombstonePath(goalId));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      } finally {
+        this.loaded.delete(goalId);
+      }
+      await this.syncDirectory();
+      return true;
+    });
+  }
+
+  /** The events of a tombstoned log, so its cleanup can be finished after a crash. */
+  async readTombstone(goalId: string): Promise<GoalEvent[] | null> {
+    return this.serialized(goalId, async () => {
+      try {
+        const text = await readFile(this.tombstonePath(goalId), "utf8");
+        const lines = text.split("\n");
+        lines.pop();
+        return parseLines(goalId, lines).events;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    });
+  }
+
+  /** Last step of deleting a goal. Removing a tombstone that is gone is not an error. */
+  async removeTombstone(goalId: string): Promise<void> {
+    await this.serialized(goalId, async () => {
+      try {
+        await unlink(this.tombstonePath(goalId));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return;
+      }
+      await this.syncDirectory();
+    });
+  }
+
   async read(goalId: string): Promise<GoalEvent[]> {
     return this.serialized(goalId, async () => [...(await this.load(goalId)).events]);
   }
@@ -107,6 +172,13 @@ export class GoalEventLog {
     return join(this.dir, `${goalId}.jsonl`);
   }
 
+  private tombstonePath(goalId: string): string {
+    if (!GOAL_ID_PATTERN.test(goalId)) {
+      throw new Error(`Invalid goal id: ${goalId}`);
+    }
+    return join(this.dir, `${goalId}${TOMBSTONE_SUFFIX}`);
+  }
+
   private serialized<T>(goalId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(goalId) ?? Promise.resolve();
     const run = previous.then(task, task);
@@ -145,28 +217,7 @@ export class GoalEventLog {
       await truncate(path, Buffer.byteLength(text.slice(0, text.length - tail.length)));
     }
 
-    const events: GoalEvent[] = [];
-    const ids = new Map<string, GoalEvent>();
-    lines.forEach((line, index) => {
-      let event: GoalEvent;
-      try {
-        event = GoalEventSchema.parse(JSON.parse(line));
-      } catch (error) {
-        throw new GoalEventLogCorruptionError(
-          goalId,
-          `line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      if (event.goalId !== goalId || event.seq !== index + 1 || ids.has(event.id)) {
-        throw new GoalEventLogCorruptionError(
-          goalId,
-          `line ${index + 1}: unexpected goalId, seq ${event.seq}, or repeated id ${event.id}`,
-        );
-      }
-      events.push(event);
-      ids.set(event.id, event);
-    });
-    return { events, ids };
+    return parseLines(goalId, lines);
   }
 
   private async syncDirectory(): Promise<void> {
@@ -191,4 +242,29 @@ export class GoalEventLog {
     // A new file is only durable once its directory entry is too.
     if (created) await this.syncDirectory();
   }
+}
+
+function parseLines(goalId: string, lines: readonly string[]): LoadedLog {
+  const events: GoalEvent[] = [];
+  const ids = new Map<string, GoalEvent>();
+  lines.forEach((line, index) => {
+    let event: GoalEvent;
+    try {
+      event = GoalEventSchema.parse(JSON.parse(line));
+    } catch (error) {
+      throw new GoalEventLogCorruptionError(
+        goalId,
+        `line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (event.goalId !== goalId || event.seq !== index + 1 || ids.has(event.id)) {
+      throw new GoalEventLogCorruptionError(
+        goalId,
+        `line ${index + 1}: unexpected goalId, seq ${event.seq}, or repeated id ${event.id}`,
+      );
+    }
+    events.push(event);
+    ids.set(event.id, event);
+  });
+  return { events, ids };
 }
