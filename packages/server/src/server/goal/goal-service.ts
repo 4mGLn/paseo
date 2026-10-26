@@ -1,14 +1,22 @@
 import { randomUUID } from "node:crypto";
 import type {
+  GoalListArchivedFilter,
+  GoalRetainedResource,
+} from "@getpaseo/protocol/goal/rpc-schemas";
+import type {
   Goal,
   GoalConfig,
   GoalEvent,
   GoalEventInput,
+  GoalPriority,
+  GoalStatus,
   TaskSpec,
 } from "@getpaseo/protocol/goal/types";
 import type { GoalEventLog } from "./event-log.js";
 import type { GoalConfigValidator } from "./goal-config-validation.js";
-import type { GoalStore, GoalStoreListener } from "./goal-store.js";
+import { goalPriority, sortGoalsByPriority } from "./goal-priority.js";
+import { isTerminalGoalStatus } from "./goal-reducer.js";
+import type { GoalRemovedListener, GoalStore, GoalStoreListener } from "./goal-store.js";
 
 /** Client ids are namespaced so they cannot collide with the Manager's own event ids. */
 function clientEventId(type: string, target: string, eventId: string): string {
@@ -28,11 +36,47 @@ export interface CreateGoalInput {
   objective: string;
   criteria: string[];
   config?: GoalConfig | null;
+  priority?: GoalPriority;
 }
 
-/** What the service asks of the Manager before reopening a failed goal. */
+/** What the service asks of the Manager before reopening or deleting a goal. */
 export interface GoalActivityProbe {
   hasLiveWork(goalId: string): boolean;
+  /** Remove what a deleted goal created; returns what was left in place. Never throws. */
+  releaseResources?(goal: Goal): Promise<GoalRetainedResource[]>;
+}
+
+/** goal.list filters. Every one is optional; they combine with AND. */
+export interface GoalListFilter {
+  query?: string;
+  status?: readonly GoalStatus[];
+  priority?: readonly GoalPriority[];
+  cwd?: string;
+  /** Absent hides archived goals. */
+  archived?: GoalListArchivedFilter;
+}
+
+export interface GoalDeletion {
+  goalId: string;
+  /** False when there was no such goal, for example on a repeated delete. */
+  deleted: boolean;
+  retained: GoalRetainedResource[];
+}
+
+/** Every filter in `filter` holds for the goal. */
+export function matchesGoalFilter(goal: Goal, filter: GoalListFilter): boolean {
+  const archived = filter.archived ?? "exclude";
+  if (archived === "exclude" && goal.archivedAt) return false;
+  if (archived === "only" && !goal.archivedAt) return false;
+  if (filter.status && !filter.status.includes(goal.status)) return false;
+  if (filter.priority && !filter.priority.includes(goalPriority(goal))) return false;
+  if (filter.cwd !== undefined && goal.config?.cwd !== filter.cwd) return false;
+  const query = filter.query?.trim().toLowerCase();
+  if (query) {
+    const haystack = [goal.title, goal.objective, goal.id];
+    if (!haystack.some((text) => text.toLowerCase().includes(query))) return false;
+  }
+  return true;
 }
 
 export interface GoalInspection {
@@ -62,13 +106,19 @@ export class GoalService {
     await this.store.recover();
   }
 
-  list(): Goal[] {
-    return this.store.list();
+  /** Matching goals, higher priority first, then oldest first. Archived ones are hidden by default. */
+  list(filter: GoalListFilter = {}): Goal[] {
+    return sortGoalsByPriority(this.store.list().filter((goal) => matchesGoalFilter(goal, filter)));
   }
 
   /** Called after each event is recorded; returns the unsubscribe. */
   subscribe(listener: GoalStoreListener): () => void {
     return this.store.subscribe(listener);
+  }
+
+  /** Called once per deleted goal with its last state; returns the unsubscribe. */
+  subscribeRemoved(listener: GoalRemovedListener): () => void {
+    return this.store.subscribeRemoved(listener);
   }
 
   async inspect(goalId: string): Promise<GoalInspection> {
@@ -94,8 +144,73 @@ export class GoalService {
       objective: input.objective,
       criteria: input.criteria.map((text, index) => ({ id: `c${index + 1}`, text })),
       ...(config ? { config } : {}),
+      ...(input.priority ? { priority: input.priority } : {}),
     });
     return goal;
+  }
+
+  /** Allowed in any state. The same title again returns the goal unchanged. */
+  async rename(goalId: string, title: string, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.renamed", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const trimmed = title.trim();
+    if (!trimmed) throw new Error("A goal title cannot be empty");
+    const goal = this.requireGoal(goalId);
+    if (goal.title === trimmed) return goal;
+    return this.dispatch(goalId, eventId, { type: "goal.renamed", title: trimmed });
+  }
+
+  /** Allowed in any state. The current priority again returns the goal unchanged. */
+  async setPriority(goalId: string, priority: GoalPriority, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.priority_set", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const goal = this.requireGoal(goalId);
+    if (goalPriority(goal) === priority) return goal;
+    return this.dispatch(goalId, eventId, { type: "goal.priority_set", priority });
+  }
+
+  /** Only an ended goal can be archived. Archiving twice returns the goal unchanged. */
+  async archive(goalId: string, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.archived", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const goal = this.requireEnded(goalId, "archived");
+    if (goal.archivedAt) return goal;
+    return this.dispatch(goalId, eventId, { type: "goal.archived" });
+  }
+
+  /** Unarchiving a goal that is not archived returns it unchanged. */
+  async unarchive(goalId: string, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.unarchived", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const goal = this.requireGoal(goalId);
+    if (!goal.archivedAt) return goal;
+    return this.dispatch(goalId, eventId, { type: "goal.unarchived" });
+  }
+
+  /**
+   * Delete an ended goal for good. Its log is tombstoned first, in one atomic rename,
+   * so a crash leaves the goal either whole or marked deleted; the worktrees it created
+   * are removed next, and the tombstone last. A restart finishes a deletion that a crash
+   * interrupted. Deleting a goal that does not exist succeeds with `deleted: false`.
+   */
+  async delete(goalId: string): Promise<GoalDeletion> {
+    if (this.store.get(goalId)) this.requireEnded(goalId, "deleted");
+    const removed = await this.store.remove(goalId, (goal) => {
+      if (!isTerminalGoalStatus(goal.status)) {
+        throw new Error(`Goal ${goalId} is ${goal.status}; stop it before it can be deleted`);
+      }
+      if (this.activity?.hasLiveWork(goalId)) {
+        throw new Error("The goal's agents are still stopping; delete again in a moment");
+      }
+    });
+    if (!removed) return { goalId, deleted: false, retained: [] };
+    const retained = (await this.activity?.releaseResources?.(removed)) ?? [];
+    await this.store.removeTombstone(goalId);
+    return { goalId, deleted: true, retained };
   }
 
   async proposePlan(goalId: string, tasks: TaskSpec[], eventId?: string): Promise<Goal> {
@@ -271,6 +386,15 @@ export class GoalService {
     if (!eventId) return false;
     this.requireGoal(goalId);
     return this.log.hasEvent(goalId, clientEventId(type, changeSetId, eventId));
+  }
+
+  /** A live goal must be stopped (goal.cancel) before it is archived or deleted. */
+  private requireEnded(goalId: string, action: string): Goal {
+    const goal = this.requireGoal(goalId);
+    if (!isTerminalGoalStatus(goal.status)) {
+      throw new Error(`Goal ${goalId} is ${goal.status}; stop it before it can be ${action}`);
+    }
+    return goal;
   }
 
   /** A manual goal runs nothing, so it has nothing to pause, resume or retry. */

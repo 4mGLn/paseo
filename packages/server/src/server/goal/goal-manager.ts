@@ -1,4 +1,6 @@
+import { stat } from "node:fs/promises";
 import type pino from "pino";
+import type { GoalRetainedResource } from "@getpaseo/protocol/goal/rpc-schemas";
 import type {
   Goal,
   GoalEvent,
@@ -42,6 +44,7 @@ import {
   buildTaskPrompt,
   truncateSummary,
 } from "./prompts.js";
+import { sortGoalsByPriority } from "./goal-priority.js";
 import { blockedTasks, readyTasks } from "./task-graph.js";
 
 export type TurnResult = (
@@ -164,6 +167,7 @@ export class GoalManager {
   private readonly store: GoalStore;
   private readonly agents: ManagerAgentPort;
   private readonly workspaces: ManagerWorkspacePort;
+  private readonly git: GitPort;
   private readonly logger: pino.Logger;
   private readonly maxConcurrentRuns: number;
   private readonly inFlight = new Map<string, LiveRun>();
@@ -187,6 +191,7 @@ export class GoalManager {
     this.store = options.store;
     this.agents = options.agents;
     this.workspaces = options.workspaces;
+    this.git = options.git;
     this.logger = options.logger.child({ module: "goal-manager" });
     this.maxConcurrentRuns = options.maxConcurrentRuns ?? 4;
     this.clock = options.clock ?? systemClock;
@@ -228,6 +233,20 @@ export class GoalManager {
     }
     // Ended goals too: their outcome may still be on its way to the Lead or the chat.
     for (const goal of this.store.list()) this.resumeNotifications(goal);
+    await this.finishPendingDeletions();
+  }
+
+  /** A deletion the previous process tombstoned but did not finish: release and remove. */
+  private async finishPendingDeletions(): Promise<void> {
+    for (const [goalId, goal] of this.store.pendingDeletions) {
+      try {
+        if (goal) await this.releaseResources(goal);
+        await this.store.removeTombstone(goalId);
+        this.store.pendingDeletions.delete(goalId);
+      } catch (error) {
+        this.logger.error({ err: error, goalId }, "Could not finish deleting a goal");
+      }
+    }
   }
 
   /**
@@ -614,10 +633,16 @@ export class GoalManager {
 
   // ---- execution --------------------------------------------------------
 
+  /**
+   * Pump every executing goal, higher priority first. Each pump claims its slots
+   * before its first await, so when the daemon-wide cap is full a freed slot goes
+   * to the highest-priority goal with a ready task; ties go to the older goal.
+   */
   private pumpAllExecuting(): void {
-    for (const goal of this.store.list()) {
-      if (goal.config && goal.status === "executing") this.track(this.pump(goal.id));
-    }
+    const executing = this.store
+      .list()
+      .filter((goal) => goal.config && goal.status === "executing");
+    for (const goal of sortGoalsByPriority(executing)) this.track(this.pump(goal.id));
   }
 
   /** Start every task that is ready and fits under the parallelism limits. */
@@ -1002,6 +1027,63 @@ export class GoalManager {
     if (leadWorkspace) await this.discard(null, leadWorkspace);
   }
 
+  // ---- deletion ----------------------------------------------------------
+
+  /**
+   * The goal was deleted: drop its timers and remove the worktrees it created. A
+   * worktree with uncommitted changes is kept, and branches are never deleted: the
+   * integration branch carries the goal's result. Returns what was left in place.
+   * Never throws; a resource that could not be removed is reported as retained.
+   */
+  async releaseResources(goal: Goal): Promise<GoalRetainedResource[]> {
+    this.clearDeadline(goal.id);
+    this.cancelRetries(goal.id);
+    for (const [key, cancel] of this.notificationRetries) {
+      if (!key.startsWith(`${goal.id}:`)) continue;
+      cancel();
+      this.notificationRetries.delete(key);
+    }
+    const retained: GoalRetainedResource[] = [];
+    for (const workspace of goalWorkspaces(goal)) {
+      if (workspace.cwd && (await this.hasUncommittedWork(workspace.cwd))) {
+        retained.push({
+          kind: "worktree",
+          name: workspace.cwd,
+          reason: "It has uncommitted changes",
+        });
+        continue;
+      }
+      try {
+        await this.workspaces.archive(workspace.workspaceId);
+      } catch (error) {
+        this.logger.warn({ err: error, goalId: goal.id }, "Could not remove a goal worktree");
+        retained.push({
+          kind: "worktree",
+          name: workspace.cwd ?? workspace.workspaceId,
+          reason: `It could not be removed: ${errorMessage(error)}`,
+        });
+      }
+    }
+    for (const branch of goalBranches(goal)) {
+      retained.push({ kind: "branch", name: branch, reason: "Branches are never deleted" });
+    }
+    return retained;
+  }
+
+  /** A directory that is gone, or that git cannot read, holds nothing worth keeping here. */
+  private async hasUncommittedWork(cwd: string): Promise<boolean> {
+    try {
+      await stat(cwd);
+    } catch {
+      return false;
+    }
+    try {
+      return !(await this.git.isClean(cwd));
+    } catch {
+      return false;
+    }
+  }
+
   // ---- reopening ---------------------------------------------------------
 
   /**
@@ -1238,6 +1320,36 @@ function describeDeadline(goal: Goal): string {
   return goalDeadlineMs(goal) < byTimeout
     ? `Deadline ${goal.config?.limits?.deadlineAt} reached`
     : `Time limit of ${Math.round(goalTimeoutMs / 60_000)} minutes reached`;
+}
+
+interface GoalWorkspaceRef {
+  workspaceId: string;
+  /** Null for the Lead's worktree, whose path is not recorded. */
+  cwd: string | null;
+}
+
+/** Every workspace the goal recorded creating, once each. */
+function goalWorkspaces(goal: Goal): GoalWorkspaceRef[] {
+  const found = new Map<string, string | null>();
+  const add = (workspaceId: string | null | undefined, cwd: string | null | undefined) => {
+    if (!workspaceId) return;
+    if (!found.has(workspaceId) || (cwd && !found.get(workspaceId))) {
+      found.set(workspaceId, cwd ?? null);
+    }
+  };
+  add(goal.leadWorkspaceId, null);
+  add(goal.integration?.workspaceId, goal.integration?.cwd);
+  for (const changeSet of goal.changeSets) add(changeSet.workspaceId, changeSet.cwd);
+  for (const run of goal.runs) add(run.workspaceId, run.cwd);
+  return [...found].map(([workspaceId, cwd]) => ({ workspaceId, cwd }));
+}
+
+/** Branches the goal's integration and change sets were recorded on. */
+function goalBranches(goal: Goal): string[] {
+  const branches = new Set<string>();
+  if (goal.integration?.branch) branches.add(goal.integration.branch);
+  for (const changeSet of goal.changeSets) if (changeSet.branch) branches.add(changeSet.branch);
+  return [...branches];
 }
 
 /** Work builds on what is integrated so far, or else on the commit the goal started from. */
