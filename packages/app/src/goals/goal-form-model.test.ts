@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   EMPTY_GOAL_FORM_VALUES,
   buildGoalCreateInput,
+  describeGoalOutcome,
   openGoalForm,
   parseGoalCriteria,
   validateGoalForm,
   type GoalFormValues,
 } from "./goal-form-model";
+import { DAEMON_GOAL_SETTINGS, GOAL_PRESETS } from "./goal-settings";
 
 function values(overrides: Partial<GoalFormValues>): GoalFormValues {
   return { ...EMPTY_GOAL_FORM_VALUES, ...overrides };
@@ -32,8 +34,14 @@ describe("parseGoalCriteria", () => {
 });
 
 describe("buildGoalCreateInput", () => {
-  it("cannot submit without a title", () => {
-    expect(buildGoalCreateInput(values({ title: "   ", objective: "Ship" }))).toBeNull();
+  it("cannot submit without a title or an objective", () => {
+    expect(buildGoalCreateInput(values({ title: "   ", objective: " " }))).toBeNull();
+  });
+
+  it("takes the title from the objective's first line when none is typed", () => {
+    expect(
+      buildGoalCreateInput(values({ objective: "\nFix the login bug\nIt fails on Safari" }))?.title,
+    ).toBe("Fix the login bug");
   });
 
   it("builds a manual goal without a config", () => {
@@ -52,15 +60,7 @@ describe("buildGoalCreateInput", () => {
     });
   });
 
-  it("allows a manual goal without criteria", () => {
-    expect(buildGoalCreateInput(values({ title: "Notes" }))).toEqual({
-      title: "Notes",
-      objective: "",
-      criteria: [],
-    });
-  });
-
-  it("builds the required config and omits every unset optional", () => {
+  it("builds the required config and omits every optional left at the daemon default", () => {
     expect(buildGoalCreateInput(values(MANAGED))).toEqual({
       title: "Rate limiting",
       objective: "Limit the API",
@@ -83,33 +83,43 @@ describe("buildGoalCreateInput", () => {
         ...MANAGED,
         reviewProvider: "opencode",
         testCommand: " npm test ",
-        autoApprovePlan: true,
-        requireHumanApproval: true,
-        maxParallel: "4",
-        maxTasks: "10",
-        maxRuns: "",
-        runTimeoutMinutes: "30",
-        goalTimeoutMinutes: " 600 ",
-        onPermissionRequest: "wait",
+        allowedProviders: ["claude", "codex", "opencode"],
+        settings: GOAL_PRESETS.careful,
+        budget: { maxTotalTokens: 500_000, maxCostUsd: null },
       }),
-      "agent-1",
+      { originAgentId: "agent-1", budgetSupported: true },
     );
 
     expect(input?.config).toEqual({
       cwd: "/repo",
       leadProvider: "claude",
       defaultProvider: "codex",
-      maxParallel: 4,
+      maxParallel: 1,
       maxAttempts: 2,
-      autoApprovePlan: true,
+      autoApprovePlan: false,
       notifyLead: true,
       reviewProvider: "opencode",
       testCommand: "npm test",
       requireHumanApproval: true,
-      limits: { maxTasks: 10, runTimeoutMinutes: 30, goalTimeoutMinutes: 600 },
+      maxReworkRounds: 1,
+      allowedProviders: ["claude", "codex", "opencode"],
+      limits: {
+        maxTasks: 10,
+        maxRuns: 20,
+        runTimeoutMinutes: 30,
+        goalTimeoutMinutes: 240,
+        maxTotalTokens: 500_000,
+      },
       onPermissionRequest: "wait",
       originAgentId: "agent-1",
     });
+  });
+
+  it("never sends a budget the host cannot enforce", () => {
+    const input = buildGoalCreateInput(
+      values({ ...MANAGED, budget: { maxTotalTokens: 500_000, maxCostUsd: 5 } }),
+    );
+    expect(input?.config?.limits).toBeUndefined();
   });
 
   it("sends a chosen model as provider/model and leaves the review model out without a reviewer", () => {
@@ -126,7 +136,8 @@ describe("buildGoalCreateInput", () => {
 
   it("does not send managed fields for a manual goal", () => {
     expect(
-      buildGoalCreateInput(values({ ...MANAGED, managed: false }), "agent-1")?.config,
+      buildGoalCreateInput(values({ ...MANAGED, managed: false }), { originAgentId: "agent-1" })
+        ?.config,
     ).toBeUndefined();
   });
 });
@@ -152,47 +163,32 @@ describe("validateGoalForm", () => {
     ]);
   });
 
-  it("checks every number against the schema range", () => {
-    expect(
-      validateGoalForm(
-        values({
-          ...MANAGED,
-          maxParallel: "9",
-          maxTasks: "0",
-          maxRuns: "501",
-          runTimeoutMinutes: "1.5",
-          goalTimeoutMinutes: "10081",
-        }),
-      ),
-    ).toEqual([
-      { field: "maxParallel", code: "range", min: 1, max: 8 },
-      { field: "maxTasks", code: "range", min: 1, max: 100 },
-      { field: "maxRuns", code: "range", min: 1, max: 500 },
-      { field: "runTimeoutMinutes", code: "range", min: 1, max: 1440 },
-      { field: "goalTimeoutMinutes", code: "range", min: 1, max: 10080 },
-    ]);
-  });
-
-  it("accepts the range bounds and requires max parallel", () => {
-    expect(
-      validateGoalForm(
-        values({
-          ...MANAGED,
-          maxParallel: "8",
-          maxTasks: "100",
-          maxRuns: "1",
-          runTimeoutMinutes: "1440",
-          goalTimeoutMinutes: "10080",
-        }),
-      ),
-    ).toEqual([]);
-    expect(validateGoalForm(values({ ...MANAGED, maxParallel: "" }))).toEqual([
-      { field: "maxParallel", code: "required" },
+  it("refuses an allow-list that leaves out a provider the goal uses", () => {
+    expect(validateGoalForm(values({ ...MANAGED, allowedProviders: ["claude"] }))).toEqual([
+      { field: "allowedProviders", code: "excludesRole", provider: "codex" },
     ]);
   });
 
   it("ignores managed fields while the goal is manual", () => {
-    expect(validateGoalForm(values({ title: "Goal", maxParallel: "99" }))).toEqual([]);
+    expect(validateGoalForm(values({ title: "Goal", allowedProviders: ["x"] }))).toEqual([]);
+  });
+});
+
+describe("describeGoalOutcome", () => {
+  it("explains what happens after Create", () => {
+    expect(describeGoalOutcome(values({}))).toEqual(["manual"]);
+    expect(describeGoalOutcome(values({ ...MANAGED, settings: GOAL_PRESETS.turbo }))).toEqual([
+      "planAuto",
+      "worktrees",
+      "mergeReviewed",
+      "branch",
+    ]);
+    expect(describeGoalOutcome(values({ ...MANAGED, settings: GOAL_PRESETS.careful }))).toEqual([
+      "planReview",
+      "worktrees",
+      "mergeAsk",
+      "branch",
+    ]);
   });
 });
 
@@ -220,9 +216,66 @@ describe("openGoalForm", () => {
     });
   });
 
-  it("drops a prefilled provider the host has not registered once providers arrive", () => {
+  it("starts from a preset, then the prefilled settings, then your own, then the defaults", () => {
+    const mine = { ...GOAL_PRESETS.turbo, maxParallel: 6 };
+    expect(openGoalForm({ prefill: { preset: "careful" } }).getState().settingsChoice).toBe(
+      "careful",
+    );
+    expect(
+      openGoalForm({ prefill: { settings: { maxParallel: 99 } } }).getState().values.settings
+        .maxParallel,
+    ).toBe(8);
+    expect(openGoalForm({ personalSettings: mine }).getState().settingsChoice).toBe("mine");
+    expect(openGoalForm({}).getState().values.settings).toEqual(DAEMON_GOAL_SETTINGS);
+  });
+
+  it("switches to custom on an edit and back with a preset", () => {
+    const model = openGoalForm({ prefill: { managed: true, preset: "balanced" } });
+    model.stepSetting("maxParallel", 1);
+    expect(model.getState().settingsChoice).toBe("custom");
+    expect(model.getState().summary[0]).toEqual({ key: "parallel", n: 3 });
+    model.chooseSettings("turbo");
+    expect(model.getState().values.settings).toEqual(GOAL_PRESETS.turbo);
+    model.setSetting("requireHumanApproval", true);
+    expect(model.getState().outcome).toContain("mergeAsk");
+  });
+
+  it("steps the budget from no cap", () => {
+    const model = openGoalForm({ budgetSupported: true });
+    model.stepBudget("maxCostUsd", 1);
+    model.stepBudget("maxCostUsd", 1);
+    expect(model.getState().values.budget).toEqual({ maxTotalTokens: null, maxCostUsd: 2 });
+  });
+
+  it("shows an issue once its field is touched, and every issue after a submit attempt", () => {
+    const model = openGoalForm({ prefill: { managed: true, title: "x" } });
+    expect(model.getState().visibleIssues).toEqual([]);
+    model.setValue("cwd", "");
+    expect(model.getState().visibleIssues).toEqual([{ field: "cwd", code: "required" }]);
+    model.attemptSubmit();
+    expect(model.getState().visibleIssues.map((issue) => issue.field)).toEqual([
+      "criteria",
+      "cwd",
+      "leadProvider",
+      "defaultProvider",
+    ]);
+  });
+
+  it("fills the providers from the host's first provider once providers arrive", () => {
+    const model = openGoalForm({ prefill: { managed: true } });
+    model.applyProviderOptions([
+      { id: "codex", label: "Codex" },
+      { id: "claude", label: "Claude" },
+    ]);
+    expect(model.getState().values).toMatchObject({
+      leadProvider: "codex",
+      defaultProvider: "codex",
+    });
+  });
+
+  it("replaces a prefilled provider the host has not registered", () => {
     const model = openGoalForm({
-      prefill: { managed: true, leadProvider: "custom-acp", defaultProvider: "codex" },
+      prefill: { managed: true, leadProvider: "custom-acp", defaultProvider: "claude" },
     });
 
     model.applyProviderOptions([]);
@@ -232,11 +285,26 @@ describe("openGoalForm", () => {
       { id: "codex", label: "Codex" },
       { id: "claude", label: "Claude" },
     ]);
-    expect(model.getState().values).toMatchObject({ leadProvider: "", defaultProvider: "codex" });
-    expect(model.getState().providerOptions.map((option) => option.id)).toEqual([
-      "codex",
-      "claude",
+    expect(model.getState().values).toMatchObject({
+      leadProvider: "claude",
+      defaultProvider: "claude",
+    });
+  });
+
+  it("keeps the allow-list to registered providers and fills roles from it", () => {
+    const model = openGoalForm({
+      prefill: { managed: true, allowedProviders: ["gone", "claude"] },
+    });
+    model.applyProviderOptions([
+      { id: "codex", label: "Codex" },
+      { id: "claude", label: "Claude" },
     ]);
+    expect(model.getState().values).toMatchObject({
+      allowedProviders: ["claude"],
+      leadProvider: "claude",
+    });
+    model.toggleAllowedProvider("claude");
+    expect(model.getState().values.allowedProviders).toEqual([]);
   });
 
   it("splits a prefilled provider/model into the provider and model pickers", () => {
