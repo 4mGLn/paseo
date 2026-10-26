@@ -23,6 +23,7 @@ import type {
   GoalFormState,
 } from "@/goals/goal-form-model";
 import { settingsSummaryText } from "@/goals/goal-labels";
+import { basename } from "@/goals/goal-projects";
 import { GOAL_PRESET_IDS, type GoalSettingsChoice } from "@/goals/goal-settings";
 import {
   useGoalFormCwdCheck,
@@ -35,7 +36,6 @@ import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useHostFeature } from "@/runtime/host-features";
 import { useGoalFormMemoryStore } from "@/stores/goal-form-memory-store";
 import { toErrorMessage } from "@/utils/error-messages";
-import { shortenPath } from "@/utils/shorten-path";
 import { GoalFormAdvanced } from "./goal-form-advanced";
 import { ProviderSelect } from "./goal-form-fields";
 import { GoalHostField, GoalProjectField } from "./goal-project-field";
@@ -262,7 +262,8 @@ function issueMessage(
     return t("goals.form.errors.excludesRole", { provider: issue.provider });
   }
   if (issue.code === "notGitRepo") {
-    return t("goals.form.errors.notGitRepo", { path: shortenPath(cwd.trim()) });
+    // The folder's name, not its path: a long path would push the reason out of the one-line error.
+    return t("goals.form.errors.notGitRepo", { folder: basename(cwd) });
   }
   switch (field) {
     case "title":
