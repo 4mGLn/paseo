@@ -21,6 +21,11 @@ export const GoalStatusSchema = z.enum([
 ]);
 export type GoalStatus = z.infer<typeof GoalStatusSchema>;
 
+// Advisory: orders goal lists and, when the daemon-wide run cap is full, decides which
+// goal's ready task takes a freed slot first. Absent means "normal".
+export const GoalPrioritySchema = z.enum(["low", "normal", "high"]);
+export type GoalPriority = z.infer<typeof GoalPrioritySchema>;
+
 export const TaskStatusSchema = z.enum(["pending", "running", "succeeded", "failed", "cancelled"]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
@@ -322,6 +327,11 @@ export const GoalSchema = z.object({
   // When a person dismissed an ended goal. Null again after a retry reopens it. It changes
   // nothing else. Absent from daemons without goal.acknowledge.
   acknowledgedAt: z.string().nullable().optional(),
+  // Absent from daemons without goal management; read absent as "normal".
+  priority: GoalPrioritySchema.optional(),
+  // When a person archived the ended goal; null after unarchiving. goal.list hides archived
+  // goals unless asked. Absent from daemons without goal management.
+  archivedAt: z.string().nullable().optional(),
   // Sequence number of the last event folded into this state.
   lastSeq: z.number().int().nonnegative(),
   failureReason: z.string().nullable(),
@@ -363,6 +373,8 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     objective: z.string(),
     criteria: z.array(z.object({ id: IdSchema, text: z.string().trim().min(1) })),
     config: GoalConfigSchema.nullable().optional(),
+    // Absent means "normal".
+    priority: GoalPrioritySchema.optional(),
   }),
   z.object({
     ...eventEnvelope,
@@ -518,6 +530,16 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
   }),
   // A person dismissed an ended goal. Accepted only after the goal has ended.
   z.object({ ...eventEnvelope, type: z.literal("goal.acknowledged") }),
+  // Goal management. Accepted in any state, ended goals included.
+  z.object({ ...eventEnvelope, type: z.literal("goal.renamed"), title: z.string().trim().min(1) }),
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("goal.priority_set"),
+    priority: GoalPrioritySchema,
+  }),
+  // Accepted only after the goal has ended.
+  z.object({ ...eventEnvelope, type: z.literal("goal.archived") }),
+  z.object({ ...eventEnvelope, type: z.literal("goal.unarchived") }),
 ]);
 export type GoalEvent = z.infer<typeof GoalEventSchema>;
 export type GoalEventType = GoalEvent["type"];

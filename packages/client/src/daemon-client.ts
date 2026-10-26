@@ -4,7 +4,8 @@ import {
   decodeHostRouteFrame,
   type HostRouteFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import type { GoalConfig, TaskSpec } from "@getpaseo/protocol/goal/types";
+import type { GoalListArchivedFilter } from "@getpaseo/protocol/goal/rpc-schemas";
+import type { GoalConfig, GoalPriority, GoalStatus, TaskSpec } from "@getpaseo/protocol/goal/types";
 import { messageTooLargeError } from "./daemon-client-transport-utils.js";
 import type { HostAdd, HostUpdate, HostDirectory } from "@getpaseo/protocol/hosts";
 import { legacyUsageIcon } from "./legacy-usage-icons.js";
@@ -649,6 +650,20 @@ type GoalMutationPayload = Extract<
   { type: "goal.create.response" }
 >["payload"];
 type GoalListPayload = Extract<SessionOutboundMessage, { type: "goal.list.response" }>["payload"];
+export type GoalDeletePayload = Extract<
+  SessionOutboundMessage,
+  { type: "goal.delete.response" }
+>["payload"];
+
+/** goal.list filters; see GoalListRequestSchema. Needs server_info.features.goalManagement. */
+export interface GoalListFilterOptions {
+  query?: string;
+  status?: GoalStatus[];
+  priority?: GoalPriority[];
+  cwd?: string;
+  archived?: GoalListArchivedFilter;
+  requestId?: string;
+}
 type GoalInspectPayload = Extract<
   SessionOutboundMessage,
   { type: "goal.inspect.response" }
@@ -6466,9 +6481,11 @@ export class DaemonClient {
     objective: string;
     criteria: string[];
     config?: GoalConfig;
+    priority?: GoalPriority;
     requestId?: string;
   }): Promise<GoalMutationPayload> {
     this.requireGoals();
+    if (options.priority) this.requireGoalManagement();
     const config = options.config;
     if (
       config &&
@@ -6490,15 +6507,122 @@ export class DaemonClient {
         objective: options.objective,
         criteria: options.criteria,
         ...(options.config ? { config: options.config } : {}),
+        ...(options.priority ? { priority: options.priority } : {}),
       },
     });
   }
 
-  async goalList(requestId?: string): Promise<GoalListPayload> {
+  /**
+   * Goals, higher priority first. Archived goals are left out unless `archived` asks
+   * for them. Pass a requestId string for the unfiltered list.
+   */
+  async goalList(options?: string | GoalListFilterOptions): Promise<GoalListPayload> {
     this.requireGoals();
+    const { requestId, ...filter } =
+      typeof options === "string" ? { requestId: options } : (options ?? {});
+    const filtered = Object.values(filter).some((value) => value !== undefined);
+    if (filtered) this.requireGoalManagement();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.list.response">({
       requestId,
-      message: { type: "goal.list.request" },
+      message: {
+        type: "goal.list.request",
+        ...(filter.query !== undefined ? { query: filter.query } : {}),
+        ...(filter.status ? { status: filter.status } : {}),
+        ...(filter.priority ? { priority: filter.priority } : {}),
+        ...(filter.cwd !== undefined ? { cwd: filter.cwd } : {}),
+        ...(filter.archived ? { archived: filter.archived } : {}),
+      },
+    });
+  }
+
+  supportsGoalManagement(): boolean {
+    return this.lastServerInfoMessage?.features?.goalManagement === true;
+  }
+
+  private requireGoalManagement(): void {
+    if (!this.supportsGoalManagement()) {
+      throw new Error("Update the host to rename, prioritise, archive, delete or filter goals.");
+    }
+  }
+
+  async goalRename(options: {
+    goalId: string;
+    title: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalManagement();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.rename.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.rename.request",
+        goalId: options.goalId,
+        title: options.title,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalSetPriority(options: {
+    goalId: string;
+    priority: GoalPriority;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalManagement();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.set_priority.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.set_priority.request",
+        goalId: options.goalId,
+        priority: options.priority,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** Only an ended goal can be archived; stop a live one with goalCancel first. */
+  async goalArchive(options: {
+    goalId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalManagement();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.archive.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.archive.request",
+        goalId: options.goalId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  async goalUnarchive(options: {
+    goalId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalManagement();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.unarchive.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.unarchive.request",
+        goalId: options.goalId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /**
+   * Delete an ended goal for good. The daemon does not ask for confirmation; ask the
+   * person first. `retained` lists what the goal created that was left in place.
+   */
+  async goalDelete(options: { goalId: string; requestId?: string }): Promise<GoalDeletePayload> {
+    this.requireGoalManagement();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.delete.response">({
+      requestId: options.requestId,
+      message: { type: "goal.delete.request", goalId: options.goalId },
     });
   }
 

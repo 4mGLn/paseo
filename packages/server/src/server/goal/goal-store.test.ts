@@ -156,4 +156,35 @@ describe("goal event log and store", () => {
     const { log } = open();
     await expect(log.append("../evil", created)).rejects.toThrow(/Invalid goal id/);
   });
+
+  test("a removed goal's log is tombstoned in one step and survives a restart as deleted", async () => {
+    const first = open();
+    await first.store.dispatch("g1", created);
+    expect(await first.store.remove("g1")).toMatchObject({ id: "g1" });
+    // Removing again finds nothing and writes nothing.
+    expect(await first.store.remove("g1")).toBeNull();
+    expect(await first.log.listGoalIds()).toEqual([]);
+    expect(await first.log.listTombstones()).toEqual(["g1"]);
+    // A torn line at the end of the tombstone is ignored, as on a live log.
+    await appendFile(join(dir, "g1.jsonl.deleted"), '{"partial":');
+
+    const second = open();
+    await second.store.recover();
+    expect(second.store.get("g1")).toBeUndefined();
+    expect(second.store.pendingDeletions.get("g1")).toMatchObject({ id: "g1", title: "Ship it" });
+    await second.store.removeTombstone("g1");
+    expect(await second.log.listTombstones()).toEqual([]);
+  });
+
+  test("a guard can refuse a removal after queued events are applied", async () => {
+    const { store, log } = open();
+    await store.dispatch("g1", created);
+    await expect(
+      store.remove("g1", () => {
+        throw new Error("refused");
+      }),
+    ).rejects.toThrow("refused");
+    expect(store.get("g1")).toBeDefined();
+    expect(await log.listGoalIds()).toEqual(["g1"]);
+  });
 });

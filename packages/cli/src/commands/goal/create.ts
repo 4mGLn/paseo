@@ -1,7 +1,8 @@
 import path from "node:path";
 import type { Command } from "commander";
 import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
-import type { GoalConfig } from "@getpaseo/protocol/goal/types";
+import { GoalPrioritySchema, type GoalConfig } from "@getpaseo/protocol/goal/types";
+import { parseEnum } from "./ls.js";
 import type { SingleResult } from "../../output/index.js";
 import {
   connectGoalClient,
@@ -42,6 +43,7 @@ export interface GoalCreateOptions extends GoalCommandOptions {
   retryBackoff?: string;
   onPermission?: "fail" | "wait";
   allowProvider?: string[];
+  priority?: string;
 }
 
 function intOption(value: string | undefined, name: string): number | undefined {
@@ -114,7 +116,12 @@ export async function runCreateCommand(
   const client = await connectGoalClient(options.daemonTarget);
   try {
     const config = buildConfig(options);
+    const priority =
+      options.priority === undefined
+        ? undefined
+        : parseEnum(GoalPrioritySchema, options.priority, "--priority");
     const payload = await client.goalCreate({
+      ...(priority ? { priority } : {}),
       title,
       objective: options.objective ?? "",
       criteria: options.criterion ?? [],

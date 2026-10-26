@@ -92,6 +92,16 @@ import {
   GoalResumeResponseSchema,
   GoalAcknowledgeRequestSchema,
   GoalAcknowledgeResponseSchema,
+  GoalRenameRequestSchema,
+  GoalRenameResponseSchema,
+  GoalSetPriorityRequestSchema,
+  GoalSetPriorityResponseSchema,
+  GoalArchiveRequestSchema,
+  GoalArchiveResponseSchema,
+  GoalUnarchiveRequestSchema,
+  GoalUnarchiveResponseSchema,
+  GoalDeleteRequestSchema,
+  GoalDeleteResponseSchema,
   GoalUpdateMessageSchema,
   GoalCreateResponseSchema,
   GoalListResponseSchema,
@@ -3538,6 +3548,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   GoalPauseRequestSchema,
   GoalResumeRequestSchema,
   GoalAcknowledgeRequestSchema,
+  GoalRenameRequestSchema,
+  GoalSetPriorityRequestSchema,
+  GoalArchiveRequestSchema,
+  GoalUnarchiveRequestSchema,
+  GoalDeleteRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -3895,6 +3910,10 @@ export const ServerInfoStatusPayloadSchema = z
         // Honours leadThinking, workerThinking, reviewThinking, verifyThinking and a task's
         // `thinking`. Older daemons drop them silently, so send them only when this is set.
         goalThinking: z.boolean().optional(),
+        // COMPAT(goalManagement): added in v0.13.1, remove gate after 2027-10-26.
+        // goal.rename, goal.set_priority, goal.archive, goal.unarchive, goal.delete, the
+        // goal.list filters, `priority` on goal.create, and goal.update's `deleted`.
+        goalManagement: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
@@ -7318,6 +7337,11 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   GoalPauseResponseSchema,
   GoalResumeResponseSchema,
   GoalAcknowledgeResponseSchema,
+  GoalRenameResponseSchema,
+  GoalSetPriorityResponseSchema,
+  GoalArchiveResponseSchema,
+  GoalUnarchiveResponseSchema,
+  GoalDeleteResponseSchema,
   GoalUpdateMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
@@ -7824,6 +7848,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.timelineNotifications]: z.boolean().optional(),
       [CLIENT_CAPS.goalControlEvents]: z.boolean().optional(),
       [CLIENT_CAPS.goalAcknowledgeEvents]: z.boolean().optional(),
+      [CLIENT_CAPS.goalManagementEvents]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()

@@ -32,6 +32,7 @@ describe("GoalSession", () => {
   async function openSession(
     controlEvents?: boolean,
     acknowledgeEvents?: boolean,
+    managementEvents?: boolean,
   ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
@@ -43,6 +44,9 @@ describe("GoalSession", () => {
         ...(acknowledgeEvents === undefined
           ? {}
           : { supportsGoalAcknowledgeEvents: () => acknowledgeEvents }),
+        ...(managementEvents === undefined
+          ? {}
+          : { supportsGoalManagementEvents: () => managementEvents }),
       },
       goalService: service,
       logger: pino({ level: "silent" }),
@@ -329,4 +333,143 @@ describe("GoalSession", () => {
     expect(inspected.payload.goal.acknowledgedAt).toBeTruthy();
     expect(inspected.payload.events.map((e) => e.type)).toEqual(["goal.created", "goal.cancelled"]);
   });
+
+  async function createManual(session: GoalSession, goalId: string, title: string) {
+    await send(session, {
+      type: "goal.create.request",
+      requestId: `create-${goalId}`,
+      goalId,
+      title,
+      objective: "",
+      criteria: [],
+    });
+  }
+
+  function lastOf<T extends SessionOutboundMessage["type"]>(type: T) {
+    return emitted.findLast((m) => m.type === type) as Extract<SessionOutboundMessage, { type: T }>;
+  }
+
+  test("renames, reprioritises, archives, filters and deletes goals", async () => {
+    const session = await openSession();
+    await createManual(session, "g1", "Fix login");
+    await send(session, {
+      type: "goal.create.request",
+      requestId: "c2",
+      goalId: "g2",
+      title: "Write docs",
+      objective: "",
+      criteria: [],
+      priority: "high",
+    });
+    await send(session, {
+      type: "goal.rename.request",
+      requestId: "r1",
+      goalId: "g1",
+      title: " Fix signup ",
+    });
+    expect(lastOf("goal.rename.response").payload.goal?.title).toBe("Fix signup");
+    await send(session, {
+      type: "goal.set_priority.request",
+      requestId: "r2",
+      goalId: "g1",
+      priority: "low",
+    });
+    expect(lastOf("goal.set_priority.response").payload.goal?.priority).toBe("low");
+
+    await send(session, { type: "goal.list.request", requestId: "l1" });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g2", "g1"]);
+    await send(session, { type: "goal.list.request", requestId: "l2", query: "SIGNUP" });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g1"]);
+    await send(session, { type: "goal.list.request", requestId: "l3", priority: ["high"] });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g2"]);
+
+    // A live goal must be stopped first.
+    await send(session, { type: "goal.archive.request", requestId: "a0", goalId: "g1" });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "a0",
+      error: expect.stringMatching(/stop it before it can be archived/),
+    });
+    await send(session, { type: "goal.cancel.request", requestId: "x1", goalId: "g1" });
+    await send(session, { type: "goal.archive.request", requestId: "a1", goalId: "g1" });
+    expect(lastOf("goal.archive.response").payload.goal?.archivedAt).toBeTruthy();
+
+    // Old clients send no filter and get archived goals hidden.
+    await send(session, { type: "goal.list.request", requestId: "l4" });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g2"]);
+    await send(session, { type: "goal.list.request", requestId: "l5", includeArchived: true });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g2", "g1"]);
+    await send(session, {
+      type: "goal.list.request",
+      requestId: "l6",
+      includeArchived: true,
+      archived: "only",
+    });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g1"]);
+    await send(session, {
+      type: "goal.list.request",
+      requestId: "l7",
+      archived: "include",
+      status: ["cancelled"],
+    });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g1"]);
+
+    await send(session, { type: "goal.unarchive.request", requestId: "u1", goalId: "g1" });
+    expect(lastOf("goal.unarchive.response").payload.goal?.archivedAt).toBeNull();
+
+    await send(session, { type: "goal.delete.request", requestId: "d0", goalId: "g2" });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "d0",
+      requestType: "goal.delete.request",
+      error: expect.stringMatching(/stop it before it can be deleted/),
+    });
+    await send(session, { type: "goal.delete.request", requestId: "d1", goalId: "g1" });
+    expect(lastOf("goal.delete.response").payload).toEqual({
+      requestId: "d1",
+      goalId: "g1",
+      deleted: true,
+      retained: [],
+      error: null,
+    });
+    await send(session, { type: "goal.delete.request", requestId: "d2", goalId: "g1" });
+    expect(lastOf("goal.delete.response").payload.deleted).toBe(false);
+    await send(session, { type: "goal.list.request", requestId: "l8", archived: "include" });
+    expect(lastOf("goal.list.response").payload.goals.map((g) => g.id)).toEqual(["g2"]);
+  });
+
+  for (const capable of [true, false]) {
+    test(`${capable ? "keeps" : "omits"} goal management events for clients ${capable ? "with" : "without"} the capability`, async () => {
+      const session = await openSession(true, true, capable);
+      await createManual(session, "g1", "T");
+      await send(session, {
+        type: "goal.rename.request",
+        requestId: "r1",
+        goalId: "g1",
+        title: "U",
+      });
+      await send(session, {
+        type: "goal.set_priority.request",
+        requestId: "r2",
+        goalId: "g1",
+        priority: "high",
+      });
+      await send(session, { type: "goal.cancel.request", requestId: "r3", goalId: "g1" });
+      await send(session, { type: "goal.archive.request", requestId: "r4", goalId: "g1" });
+      await send(session, { type: "goal.unarchive.request", requestId: "r5", goalId: "g1" });
+      await send(session, { type: "goal.inspect.request", requestId: "r6", goalId: "g1" });
+      const inspected = lastOf("goal.inspect.response").payload;
+      expect(inspected.goal?.title).toBe("U");
+      expect(inspected.events.map((e) => e.type)).toEqual(
+        capable
+          ? [
+              "goal.created",
+              "goal.renamed",
+              "goal.priority_set",
+              "goal.cancelled",
+              "goal.archived",
+              "goal.unarchived",
+            ]
+          : ["goal.created", "goal.cancelled"],
+      );
+    });
+  }
 });

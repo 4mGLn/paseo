@@ -10,6 +10,8 @@ export interface GoalSessionHost {
   supportsGoalControlEvents?(): boolean;
   /** Whether the client parses goal.acknowledged. Assumed when absent. */
   supportsGoalAcknowledgeEvents?(): boolean;
+  /** Whether the client parses the goal management events. Assumed when absent. */
+  supportsGoalManagementEvents?(): boolean;
 }
 
 // COMPAT(goalControlEvents): added in v0.13.0, remove after 2027-04-26.
@@ -22,6 +24,14 @@ const GOAL_CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 // COMPAT(goalAcknowledgeEvents): added in v0.13.0, remove after 2027-04-26.
 const GOAL_ACKNOWLEDGE_EVENT_TYPES: ReadonlySet<string> = new Set(["goal.acknowledged"]);
+
+// COMPAT(goalManagementEvents): added in v0.13.1, remove after 2027-04-26.
+const GOAL_MANAGEMENT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "goal.renamed",
+  "goal.priority_set",
+  "goal.archived",
+  "goal.unarchived",
+]);
 
 export interface GoalSessionOptions {
   host: GoalSessionHost;
@@ -47,9 +57,15 @@ type GoalMutationRequest = Extract<
       | "goal.retry.request"
       | "goal.pause.request"
       | "goal.resume.request"
-      | "goal.acknowledge.request";
+      | "goal.acknowledge.request"
+      | "goal.rename.request"
+      | "goal.set_priority.request"
+      | "goal.archive.request"
+      | "goal.unarchive.request";
   }
 >;
+
+type GoalListRequest = Extract<SessionInboundMessage, { type: "goal.list.request" }>;
 
 type GoalMutationResponseType =
   | "goal.create.response"
@@ -62,7 +78,11 @@ type GoalMutationResponseType =
   | "goal.retry.response"
   | "goal.pause.response"
   | "goal.resume.response"
-  | "goal.acknowledge.response";
+  | "goal.acknowledge.response"
+  | "goal.rename.response"
+  | "goal.set_priority.response"
+  | "goal.archive.response"
+  | "goal.unarchive.response";
 
 export class GoalSession {
   private readonly host: GoalSessionHost;
@@ -91,6 +111,7 @@ export class GoalSession {
             objective: msg.objective,
             criteria: msg.criteria,
             config: msg.config,
+            priority: msg.priority,
           }),
         );
       case "goal.propose_plan.request":
@@ -133,8 +154,26 @@ export class GoalSession {
         return this.mutate(msg, "goal.acknowledge.response", () =>
           this.goalService.acknowledge(msg.goalId, msg.eventId),
         );
+      case "goal.rename.request":
+        return this.mutate(msg, "goal.rename.response", () =>
+          this.goalService.rename(msg.goalId, msg.title, msg.eventId),
+        );
+      case "goal.set_priority.request":
+        return this.mutate(msg, "goal.set_priority.response", () =>
+          this.goalService.setPriority(msg.goalId, msg.priority, msg.eventId),
+        );
+      case "goal.archive.request":
+        return this.mutate(msg, "goal.archive.response", () =>
+          this.goalService.archive(msg.goalId, msg.eventId),
+        );
+      case "goal.unarchive.request":
+        return this.mutate(msg, "goal.unarchive.response", () =>
+          this.goalService.unarchive(msg.goalId, msg.eventId),
+        );
+      case "goal.delete.request":
+        return this.handleDelete(msg.requestId, msg.goalId);
       case "goal.list.request":
-        return this.handleList(msg.requestId);
+        return this.handleList(msg);
       case "goal.inspect.request":
         return this.handleInspect(msg.requestId, msg.goalId);
       default:
@@ -158,14 +197,33 @@ export class GoalSession {
     }
   }
 
-  private async handleList(requestId: string): Promise<void> {
+  private async handleList(msg: GoalListRequest): Promise<void> {
     try {
+      const goals = this.goalService.list({
+        query: msg.query,
+        status: msg.status,
+        priority: msg.priority,
+        cwd: msg.cwd,
+        archived: msg.archived ?? (msg.includeArchived ? "include" : undefined),
+      });
       this.host.emit({
         type: "goal.list.response",
-        payload: { requestId, goals: this.goalService.list().map(toGoalSummary), error: null },
+        payload: { requestId: msg.requestId, goals: goals.map(toGoalSummary), error: null },
       });
     } catch (error) {
-      this.emitError(requestId, "goal.list.request", error);
+      this.emitError(msg.requestId, "goal.list.request", error);
+    }
+  }
+
+  private async handleDelete(requestId: string, goalId: string): Promise<void> {
+    try {
+      const { deleted, retained } = await this.goalService.delete(goalId);
+      this.host.emit({
+        type: "goal.delete.response",
+        payload: { requestId, goalId, deleted, retained, error: null },
+      });
+    } catch (error) {
+      this.emitError(requestId, "goal.delete.request", error);
     }
   }
 
@@ -175,12 +233,14 @@ export class GoalSession {
       // An older client's event union rejects types it does not know.
       const hideControl = this.host.supportsGoalControlEvents?.() === false;
       const hideAcknowledge = this.host.supportsGoalAcknowledgeEvents?.() === false;
+      const hideManagement = this.host.supportsGoalManagementEvents?.() === false;
       const visible =
-        hideControl || hideAcknowledge
+        hideControl || hideAcknowledge || hideManagement
           ? events.filter(
               (e) =>
                 !(hideControl && GOAL_CONTROL_EVENT_TYPES.has(e.type)) &&
-                !(hideAcknowledge && GOAL_ACKNOWLEDGE_EVENT_TYPES.has(e.type)),
+                !(hideAcknowledge && GOAL_ACKNOWLEDGE_EVENT_TYPES.has(e.type)) &&
+                !(hideManagement && GOAL_MANAGEMENT_EVENT_TYPES.has(e.type)),
             )
           : events;
       this.host.emit({
