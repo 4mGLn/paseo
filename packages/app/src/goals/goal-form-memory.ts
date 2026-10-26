@@ -11,12 +11,35 @@ export interface GoalFormMemory {
   testCommand: string | null;
   allowedProviders: string[];
   settings: GoalSettings;
+  /**
+   * Thinking ids per role. Absent from memory written before thinking existed. A level the
+   * role's model no longer lists is dropped once the providers load.
+   */
+  thinking?: GoalFormMemoryThinking;
+}
+
+export interface GoalFormMemoryThinking {
+  lead?: string;
+  worker?: string;
+  reviewer?: string;
+  verifier?: string;
+}
+
+function thinkingFromConfig(config: GoalConfig): GoalFormMemoryThinking | undefined {
+  const thinking: GoalFormMemoryThinking = {
+    ...(config.leadThinking ? { lead: config.leadThinking } : {}),
+    ...(config.workerThinking ? { worker: config.workerThinking } : {}),
+    ...(config.reviewThinking ? { reviewer: config.reviewThinking } : {}),
+    ...(config.verifyThinking ? { verifier: config.verifyThinking } : {}),
+  };
+  return Object.keys(thinking).length > 0 ? thinking : undefined;
 }
 
 export function goalFormMemoryFromConfig(
   config: GoalConfig,
   settings: GoalSettings,
 ): GoalFormMemory {
+  const thinking = thinkingFromConfig(config);
   return {
     cwd: config.cwd,
     leadProvider: config.leadProvider,
@@ -25,6 +48,7 @@ export function goalFormMemoryFromConfig(
     testCommand: config.testCommand ?? null,
     allowedProviders: config.allowedProviders ?? [],
     settings,
+    ...(thinking ? { thinking } : {}),
   };
 }
 
@@ -49,5 +73,9 @@ export function prefillFromGoalFormMemory(
     ...(memory.reviewProvider ? { reviewProvider: memory.reviewProvider } : {}),
     ...(memory.testCommand && cwd === memory.cwd ? { testCommand: memory.testCommand } : {}),
     ...(memory.allowedProviders.length > 0 ? { allowedProviders: memory.allowedProviders } : {}),
+    ...(memory.thinking?.lead ? { leadThinking: memory.thinking.lead } : {}),
+    ...(memory.thinking?.worker ? { workerThinking: memory.thinking.worker } : {}),
+    ...(memory.thinking?.reviewer ? { reviewThinking: memory.thinking.reviewer } : {}),
+    ...(memory.thinking?.verifier ? { verifyThinking: memory.thinking.verifier } : {}),
   };
 }

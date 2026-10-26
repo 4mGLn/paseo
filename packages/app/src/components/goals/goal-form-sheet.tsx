@@ -60,7 +60,11 @@ export function GoalFormSheet({
   const controlSize: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
   // A host without `goalBudgets` would drop the caps silently, so the inputs stay hidden there.
   const budgetSupported = useHostFeature(serverId, "goalBudgets");
-  const [snapshot] = useState(() => buildSnapshot({ serverId, prefill, budgetSupported }));
+  // An older daemon would drop thinking settings, so the pickers appear only with `goalThinking`.
+  const thinkingSupported = useHostFeature(serverId, "goalThinking");
+  const [snapshot] = useState(() =>
+    buildSnapshot({ serverId, prefill, budgetSupported, thinkingSupported }),
+  );
   const model = useGoalFormModel(snapshot);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
   const goalServerId = state.serverId;
@@ -236,6 +240,7 @@ function buildSnapshot(input: {
   serverId: string;
   prefill: GoalFormPrefill | undefined;
   budgetSupported: boolean;
+  thinkingSupported: boolean;
 }): GoalFormSnapshot {
   // Read once: the form starts from your last goal and never rebuilds when memory changes.
   const memoryByServer = useGoalFormMemoryStore.getState().byServer;
@@ -245,6 +250,7 @@ function buildSnapshot(input: {
     memoryByServer,
     personalSettings: memoryByServer[input.serverId]?.settings ?? null,
     budgetSupported: input.budgetSupported,
+    thinkingSupported: input.thinkingSupported,
   };
 }
 

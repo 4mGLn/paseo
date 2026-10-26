@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Goal, GoalEvent, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { useFetchQuery } from "@/data/query";
 import { isGoalTerminal } from "@/goals/goal-derivation";
-import { mergePolledGoals } from "@/goals/goal-updates";
+import { mergePolledGoals, type GoalListArchivedMode } from "@/goals/goal-updates";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useGoalPushLive } from "@/stores/goal-attention-store";
 
@@ -21,8 +21,18 @@ export function goalsHostQueryKey(serverId: string) {
   return [...goalsQueryBaseKey, serverId] as const;
 }
 
-export function goalListQueryKey(serverId: string) {
-  return [...goalsHostQueryKey(serverId), "list"] as const;
+/**
+ * The default list (archived goals left out) and the Goals screen's list with them in. The
+ * first is a prefix of the second, so invalidating it refreshes both.
+ */
+export function goalListQueryKey(serverId: string, archived: GoalListArchivedMode = "exclude") {
+  const base = [...goalsHostQueryKey(serverId), "list"] as const;
+  return archived === "include" ? ([...base, "include"] as const) : base;
+}
+
+/** Which list a cached list query holds, from its key. */
+export function goalListArchivedModeOfKey(queryKey: readonly unknown[]): GoalListArchivedMode {
+  return queryKey[queryKey.length - 1] === "include" ? "include" : "exclude";
 }
 
 export function goalDetailQueryKey(serverId: string, goalId: string) {
@@ -57,7 +67,10 @@ export function useGoalList(input: {
   enabled: boolean;
   /** Defaults to the Goals screen's interval. Ignored while pushes are live. */
   pollMs?: number;
+  /** "include" lists archived goals too; only for hosts with `goalManagement`. */
+  archived?: GoalListArchivedMode;
 }): GoalQueryResult<GoalSummary[]> {
+  const archived = input.archived ?? "exclude";
   const isPushLive = useGoalPushLive(input.serverId);
   const pollMs = isPushLive ? GOALS_PUSH_FALLBACK_POLL_MS : (input.pollMs ?? GOALS_POLL_MS);
   const { t } = useTranslation();
@@ -65,7 +78,10 @@ export function useGoalList(input: {
   const client = useHostRuntimeClient(input.serverId);
   const isConnected = useHostRuntimeIsConnected(input.serverId);
   const shouldFetch = input.enabled && client !== null && isConnected;
-  const queryKey = useMemo(() => goalListQueryKey(input.serverId), [input.serverId]);
+  const queryKey = useMemo(
+    () => goalListQueryKey(input.serverId, archived),
+    [archived, input.serverId],
+  );
 
   const query = useFetchQuery<GoalSummary[]>({
     queryKey,
@@ -73,7 +89,7 @@ export function useGoalList(input: {
       if (!client) {
         throw new Error(t("common.errors.daemonClientUnavailable"));
       }
-      const payload = await client.goalList();
+      const payload = await client.goalList(archived === "include" ? { archived } : undefined);
       if (payload.error) {
         throw new Error(payload.error);
       }

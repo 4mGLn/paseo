@@ -195,7 +195,8 @@ export function goalControlsAvailable(goal: Goal, hostHasControls: boolean): Goa
     canRejectPlan: goal.status === "awaiting_plan_approval" && rejections < MAX_PLAN_REJECTIONS,
     canPause: isLive && !goal.pausedAt,
     canResume: isLive && Boolean(goal.pausedAt),
-    canRetry: goal.status === "failed" && !hasRejectedChange,
+    // The daemon reopens an archived failed goal only after it is unarchived.
+    canRetry: goal.status === "failed" && !hasRejectedChange && !goal.archivedAt,
     canRetryTasks: goal.status === "executing",
   };
 }

@@ -101,6 +101,22 @@ describe("goal list filters", () => {
     expect(sections.others.map((goal) => goal.id)).toEqual(["running", "older"]);
   });
 
+  it("puts archived goals in their own group, which never needs you", () => {
+    const archivedFailure = { ...failed, id: "archived", archivedAt: "2026-10-22T00:00:00Z" };
+    expect(goalAttention(archivedFailure)).toBeNull();
+    const sections = buildGoalListSections([archivedFailure, failed, running], "all");
+    expect(sections.attention.map((goal) => goal.id)).toEqual(["failed"]);
+    expect(sections.others.map((goal) => goal.id)).toEqual(["running"]);
+    expect(sections.archived.map((goal) => goal.id)).toEqual(["archived"]);
+  });
+
+  it("orders each group with the given comparator", () => {
+    const sections = buildGoalListSections([running, completed], "all", (a, b) =>
+      a.id.localeCompare(b.id),
+    );
+    expect(sections.others.map((goal) => goal.id)).toEqual(["completed", "running"]);
+  });
+
   it("keeps only finished goals under done", () => {
     const sections = buildGoalListSections([running, completed, failed], "done");
     expect(sections.attention.map((goal) => goal.id)).toEqual(["failed"]);

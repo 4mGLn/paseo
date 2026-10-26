@@ -57,6 +57,8 @@ export function useGoalFormProviderOptions(input: {
           id: definition.id,
           label: definition.label,
           description: definition.description,
+          isDefault: definition.isDefault,
+          thinkingOptions: definition.thinkingOptions,
         })),
       })),
     );
@@ -126,6 +128,7 @@ export function useGoalFormHosts(model: GoalFormModel): void {
   const serverIds = useMemo(() => profiles.map((host) => host.serverId), [profiles]);
   const goals = useHostFeatureMap(serverIds, "goals");
   const budgets = useHostFeatureMap(serverIds, "goalBudgets");
+  const thinking = useHostFeatureMap(serverIds, "goalThinking");
   const statuses = useHostRuntimeConnectionStatuses(serverIds);
   const hosts = useMemo<GoalFormHost[]>(
     () =>
@@ -137,8 +140,9 @@ export function useGoalFormHosts(model: GoalFormModel): void {
           serverId: host.serverId,
           label: host.label,
           budgetSupported: budgets.get(host.serverId) === true,
+          thinkingSupported: thinking.get(host.serverId) === true,
         })),
-    [budgets, goals, profiles, statuses],
+    [budgets, goals, profiles, statuses, thinking],
   );
 
   useEffect(() => {

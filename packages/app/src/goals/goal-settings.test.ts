@@ -4,6 +4,7 @@ import {
   GOAL_PRESETS,
   GOAL_SETTING_RANGES,
   goalBudgetToLimits,
+  goalTeam,
   goalSettingSteps,
   goalSettingsToConfig,
   matchGoalSettingsChoice,
@@ -160,5 +161,30 @@ describe("budget", () => {
       maxTotalTokens: 500_000,
       maxCostUsd: 5,
     });
+  });
+});
+
+describe("goalTeam", () => {
+  it("names each role's provider and thinking, workers on the default provider", () => {
+    expect(
+      goalTeam({
+        cwd: "/repo",
+        leadProvider: "claude/opus",
+        defaultProvider: "codex",
+        reviewProvider: "opencode",
+        maxParallel: 2,
+        maxAttempts: 2,
+        autoApprovePlan: false,
+        notifyLead: true,
+        leadThinking: "high",
+        workerThinking: "low",
+        verifyThinking: "medium",
+      }),
+    ).toEqual([
+      { role: "lead", provider: "claude/opus", thinking: "high" },
+      { role: "worker", provider: "codex", thinking: "low" },
+      { role: "reviewer", provider: "opencode", thinking: null },
+      { role: "verifier", provider: "opencode", thinking: "medium" },
+    ]);
   });
 });

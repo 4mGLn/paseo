@@ -1,4 +1,5 @@
 import type { GoalConfig } from "@getpaseo/protocol/goal/types";
+import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { deriveGoalTitle } from "./goal-chat-prefill";
 import { prefillFromGoalFormMemory, type GoalFormMemory } from "./goal-form-memory";
 import {
@@ -27,6 +28,8 @@ import {
   type GoalSettings,
   type GoalSettingsChoice,
   type GoalSettingsSummaryPart,
+  type GoalThinkingRole,
+  GOAL_THINKING_ROLES,
 } from "./goal-settings";
 
 export interface GoalFormValues {
@@ -44,6 +47,14 @@ export interface GoalFormValues {
   /** Empty means the reviewer uses the Lead's provider and model. */
   reviewProvider: string;
   reviewModel: string;
+  /**
+   * Thinking option ids per role (a model's `thinkingOptions[].id`). Empty leaves the model's
+   * default, and is what the form sends nothing for.
+   */
+  leadThinking: string;
+  workerThinking: string;
+  reviewThinking: string;
+  verifyThinking: string;
   testCommand: string;
   /** Empty means any registered provider. */
   allowedProviders: string[];
@@ -77,6 +88,11 @@ export interface GoalFormPrefill {
   defaultProvider?: string;
   /** A provider id, or "provider/model". */
   reviewProvider?: string;
+  /** Thinking option ids; one the role's model does not list is dropped once providers load. */
+  leadThinking?: string;
+  workerThinking?: string;
+  reviewThinking?: string;
+  verifyThinking?: string;
   testCommand?: string;
   allowedProviders?: string[];
   /** Starts from a preset; wins over `settings`. */
@@ -93,6 +109,8 @@ export interface GoalFormHost {
   label: string;
   /** The host enforces token and cost caps (`goalBudgets`). */
   budgetSupported: boolean;
+  /** The host takes a thinking level per role (`goalThinking`). */
+  thinkingSupported: boolean;
 }
 
 /** The chosen project as shown on the picker, captured when it is chosen. */
@@ -116,6 +134,8 @@ export interface GoalFormSnapshot {
   personalSettings?: GoalSettings | null;
   /** The host enforces token and cost caps. Without it the budget is never sent. */
   budgetSupported?: boolean;
+  /** The host takes a thinking level per role. Without it no thinking is sent or offered. */
+  thinkingSupported?: boolean;
 }
 
 export type GoalFormField =
@@ -143,6 +163,10 @@ export const EMPTY_GOAL_FORM_VALUES: GoalFormValues = {
   defaultModel: "",
   reviewProvider: "",
   reviewModel: "",
+  leadThinking: "",
+  workerThinking: "",
+  reviewThinking: "",
+  verifyThinking: "",
   testCommand: "",
   allowedProviders: [],
   settings: DAEMON_GOAL_SETTINGS,
@@ -224,6 +248,7 @@ function buildGoalConfig(input: {
   values: GoalFormValues;
   originAgentId: string | null;
   budgetSupported: boolean;
+  thinkingSupported: boolean;
 }): GoalConfig {
   const { values } = input;
   const reviewProvider = values.reviewProvider.trim()
@@ -248,7 +273,33 @@ function buildGoalConfig(input: {
       ? { allowedProviders: [...values.allowedProviders] }
       : {}),
     ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
+    ...(input.thinkingSupported ? goalThinkingConfig(values) : {}),
   };
+}
+
+const THINKING_FIELD = {
+  lead: "leadThinking",
+  worker: "workerThinking",
+  reviewer: "reviewThinking",
+  verifier: "verifyThinking",
+} as const satisfies Record<GoalThinkingRole, keyof GoalConfig & keyof GoalFormValues>;
+
+/** The thinking fields that are set; an unset one leaves the model's default. */
+function goalThinkingConfig(
+  values: GoalFormValues,
+): Pick<GoalConfig, "leadThinking" | "workerThinking" | "reviewThinking" | "verifyThinking"> {
+  const config: Pick<
+    GoalConfig,
+    "leadThinking" | "workerThinking" | "reviewThinking" | "verifyThinking"
+  > = {};
+  for (const role of GOAL_THINKING_ROLES) {
+    const field = THINKING_FIELD[role];
+    const value = values[field].trim();
+    if (value) {
+      config[field] = value;
+    }
+  }
+  return config;
 }
 
 /** Returns null while the form cannot be submitted (see `validateGoalForm`). */
@@ -257,6 +308,7 @@ export function buildGoalCreateInput(
   options: {
     originAgentId?: string | null;
     budgetSupported?: boolean;
+    thinkingSupported?: boolean;
     cwdCheck?: GoalCwdCheck | null;
   } = {},
 ): GoalCreateInput | null {
@@ -268,6 +320,7 @@ export function buildGoalCreateInput(
         values,
         originAgentId: options.originAgentId ?? null,
         budgetSupported: options.budgetSupported ?? false,
+        thinkingSupported: options.thinkingSupported ?? false,
       })
     : null;
   return {
@@ -300,10 +353,96 @@ export function describeGoalOutcome(values: GoalFormValues): GoalOutcomeStep[] {
   ];
 }
 
+export interface GoalThinkingOption {
+  id: string;
+  label?: string;
+  description?: string;
+  isDefault?: boolean;
+}
+
 export interface GoalModelOption {
   id: string;
   label: string;
   description?: string;
+  /** The model the provider starts when none is named. */
+  isDefault?: boolean;
+  /** Absent or empty when the model offers no thinking levels. */
+  thinkingOptions?: GoalThinkingOption[];
+}
+
+/**
+ * The provider and model an agent in this role runs on, as the form sends them. The reviewer
+ * runs on the Lead's when no review provider is chosen, and the verifier on the reviewer's: the
+ * form does not set `verifyProvider`.
+ */
+export function goalRoleModel(
+  values: GoalFormValues,
+  role: GoalThinkingRole,
+): { provider: string; model: string } {
+  switch (role) {
+    case "lead":
+      return { provider: values.leadProvider, model: values.leadModel };
+    case "worker":
+      return { provider: values.defaultProvider, model: values.defaultModel };
+    case "reviewer":
+    case "verifier":
+      return values.reviewProvider.trim()
+        ? { provider: values.reviewProvider, model: values.reviewModel }
+        : { provider: values.leadProvider, model: values.leadModel };
+  }
+}
+
+/**
+ * The thinking levels the role's model offers, or null while that is unknown: the providers
+ * have not loaded, or the provider lists no such model. No model means the provider's default
+ * one, found the way the daemon finds it.
+ */
+export function goalRoleThinkingOptions(
+  values: GoalFormValues,
+  providerOptions: readonly GoalProviderOption[],
+  role: GoalThinkingRole,
+): GoalThinkingOption[] | null {
+  const { provider, model } = goalRoleModel(values, role);
+  const models = providerOptions.find((option) => option.id === provider.trim())?.models ?? [];
+  const modelId = model.trim();
+  const definition = modelId
+    ? models.find((entry) => entry.id === modelId)
+    : (models.find((entry) => entry.isDefault) ?? models[0]);
+  return definition ? (definition.thinkingOptions ?? []) : null;
+}
+
+/** Drops a thinking level the role's model does not list; keeps it while that is unknown. */
+export function reconcileGoalThinking(
+  values: GoalFormValues,
+  providerOptions: readonly GoalProviderOption[],
+): GoalFormValues {
+  const cleared: Partial<Pick<GoalFormValues, (typeof THINKING_FIELD)[GoalThinkingRole]>> = {};
+  for (const role of GOAL_THINKING_ROLES) {
+    const field = THINKING_FIELD[role];
+    const value = values[field];
+    if (!value) {
+      continue;
+    }
+    const options = goalRoleThinkingOptions(values, providerOptions, role);
+    if (options && !options.some((option) => option.id === value)) {
+      cleared[field] = "";
+    }
+  }
+  return Object.keys(cleared).length > 0 ? { ...values, ...cleared } : values;
+}
+
+function thinkingSummary(
+  values: GoalFormValues,
+  thinkingOptions: Record<GoalThinkingRole, GoalThinkingOption[]>,
+): GoalSettingsSummaryPart[] {
+  return GOAL_THINKING_ROLES.flatMap((role): GoalSettingsSummaryPart[] => {
+    const id = values[THINKING_FIELD[role]];
+    if (!id) {
+      return [];
+    }
+    const option = thinkingOptions[role].find((entry) => entry.id === id) ?? { id };
+    return [{ key: "thinking", role, label: formatThinkingOptionLabel(option) }];
+  });
 }
 
 export interface GoalProviderOption {
@@ -336,6 +475,9 @@ export interface GoalFormState {
   advancedExpanded: boolean;
   personalSettings: GoalSettings | null;
   budgetSupported: boolean;
+  thinkingSupported: boolean;
+  /** The thinking levels each role's model offers; empty hides that role's picker. */
+  thinkingOptions: Record<GoalThinkingRole, GoalThinkingOption[]>;
   /** Fields you have edited; their issues show right away. The rest show after Create. */
   touched: readonly GoalFormField[];
   submitAttempted: boolean;
@@ -463,12 +605,24 @@ type BaseState = Omit<
   | "summary"
   | "outcome"
   | "selectedProjectId"
+  | "thinkingOptions"
 >;
 
 function withDerived(state: BaseState): GoalFormState {
   const issues = validateGoalForm(state.values, { cwdCheck: state.cwdCheck });
+  const optionsFor = (role: GoalThinkingRole): GoalThinkingOption[] =>
+    state.thinkingSupported
+      ? (goalRoleThinkingOptions(state.values, state.providerOptions, role) ?? [])
+      : [];
+  const thinkingOptions: Record<GoalThinkingRole, GoalThinkingOption[]> = {
+    lead: optionsFor("lead"),
+    worker: optionsFor("worker"),
+    reviewer: optionsFor("reviewer"),
+    verifier: optionsFor("verifier"),
+  };
   return {
     ...state,
+    thinkingOptions,
     selectedProjectId: findGoalProject(state.projectOptions, state.values.cwd)?.projectId ?? null,
     issues,
     // The host's verdict on the directory shows at once: you did not type it to be told later.
@@ -480,12 +634,16 @@ function withDerived(state: BaseState): GoalFormState {
     createInput: buildGoalCreateInput(state.values, {
       originAgentId: state.originAgentId,
       budgetSupported: state.budgetSupported,
+      thinkingSupported: state.thinkingSupported,
       cwdCheck: state.cwdCheck,
     }),
     settingsChoice: matchGoalSettingsChoice(state.values.settings, state.personalSettings),
-    summary: summarizeGoalSettings(state.values.settings, {
-      hasTestCommand: state.values.testCommand.trim().length > 0,
-    }),
+    summary: [
+      ...summarizeGoalSettings(state.values.settings, {
+        hasTestCommand: state.values.testCommand.trim().length > 0,
+      }),
+      ...(state.thinkingSupported ? thinkingSummary(state.values, thinkingOptions) : []),
+    ],
     outcome: describeGoalOutcome(state.values),
   };
 }
@@ -537,6 +695,10 @@ function valuesFromPrefill(prefill: GoalFormPrefill, settings: GoalSettings): Go
     defaultModel: fallback.model,
     reviewProvider: review.provider,
     reviewModel: review.model,
+    leadThinking: prefill.leadThinking ?? "",
+    workerThinking: prefill.workerThinking ?? "",
+    reviewThinking: prefill.reviewThinking ?? "",
+    verifyThinking: prefill.verifyThinking ?? "",
     testCommand: prefill.testCommand ?? "",
     allowedProviders: prefill.allowedProviders ?? [],
     settings,
@@ -576,6 +738,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
     advancedExpanded: false,
     personalSettings: snapshot.personalSettings ?? null,
     budgetSupported: snapshot.budgetSupported ?? false,
+    thinkingSupported: snapshot.thinkingSupported ?? false,
     touched: [],
     submitAttempted: false,
     submitError: null,
@@ -637,7 +800,13 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
       if (isProviderField(key) && value !== state.values[key]) {
         values[MODEL_FIELD_BY_PROVIDER[key]] = "";
       }
-      publish({ ...state, values, touched: touch(FIELD_OF_KEY[key]), submitError: null });
+      publish({
+        ...state,
+        // A new provider or model may not offer the thinking level chosen for the old one.
+        values: reconcileGoalThinking(values, state.providerOptions),
+        touched: touch(FIELD_OF_KEY[key]),
+        submitError: null,
+      });
     },
     setSetting(key, value) {
       setSettings({ ...state.values.settings, [key]: value });
@@ -681,6 +850,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         ...state,
         hosts: [...hosts],
         budgetSupported: host ? host.budgetSupported : state.budgetSupported,
+        thinkingSupported: host ? host.thinkingSupported : state.thinkingSupported,
       });
     },
     setHost(serverId) {
@@ -706,6 +876,10 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
           defaultModel: seeded.defaultModel,
           reviewProvider: seeded.reviewProvider,
           reviewModel: seeded.reviewModel,
+          leadThinking: seeded.leadThinking,
+          workerThinking: seeded.workerThinking,
+          reviewThinking: seeded.reviewThinking,
+          verifyThinking: seeded.verifyThinking,
           testCommand: seeded.testCommand,
           allowedProviders: seeded.allowedProviders,
         },
@@ -719,6 +893,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         providerOptions: [],
         personalSettings: memory?.settings ?? null,
         budgetSupported: host?.budgetSupported ?? false,
+        thinkingSupported: host?.thinkingSupported ?? false,
         submitError: null,
       });
     },
@@ -766,7 +941,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
     applyProviderOptions(options) {
       publish({
         ...state,
-        values: reconcileWithOptions(state.values, options),
+        values: reconcileGoalThinking(reconcileWithOptions(state.values, options), options),
         providerOptions: [...options],
       });
     },

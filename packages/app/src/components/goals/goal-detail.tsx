@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { ChevronLeft, Copy, Pause, Play } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
-import type { Goal, GoalEvent } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalConfig, GoalEvent } from "@getpaseo/protocol/goal/types";
+import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { SettingsCard, SettingsSection } from "@/components/settings";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import { canAcknowledgeGoal } from "@/goals/goal-attention";
 import { canApproveGoalPlan, isGoalTerminal } from "@/goals/goal-derivation";
 import { goalBadge } from "@/goals/goal-labels";
 import { goalControlsAvailable, goalGuidance, goalSteps } from "@/goals/goal-phase";
+import { goalTeam } from "@/goals/goal-settings";
 import { goalWaitingOnDetail } from "@/goals/goal-waiting-on";
 import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
@@ -27,7 +29,8 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { GoalActivity } from "./goal-activity";
 import { GoalChangeSetList } from "./goal-change-set-list";
 import { GoalFeedbackSheet } from "./goal-feedback-sheet";
-import { GoalProjectLine } from "./goal-list";
+import { GoalActionsMenu } from "./goal-actions-menu";
+import { GoalPriorityBadge, GoalProjectLine } from "./goal-list";
 import { GoalProgressPanel } from "./goal-progress-panel";
 import { GoalStepper } from "./goal-stepper";
 import { GoalTaskList, OpenAgentButton } from "./goal-task-list";
@@ -36,10 +39,13 @@ export function GoalDetail({
   serverId,
   goalId,
   onBack,
+  onDeleted,
 }: {
   serverId: string;
   goalId: string;
   onBack: () => void;
+  /** Called once the goal shown here was deleted. */
+  onDeleted?: () => void;
 }): ReactElement {
   const { t } = useTranslation();
   const { loadState, isError, refetch } = useGoalDetail({ serverId, goalId });
@@ -51,6 +57,7 @@ export function GoalDetail({
         serverId={serverId}
         goal={loadState.data.goal}
         events={loadState.data.events}
+        onDeleted={onDeleted}
       />
     );
   } else if (loadState.status === "loaded") {
@@ -84,16 +91,18 @@ function GoalDetailContent({
   serverId,
   goal,
   events,
+  onDeleted,
 }: {
   serverId: string;
   goal: Goal;
   events: GoalEvent[];
+  onDeleted?: () => void;
 }): ReactElement {
   const steps = useMemo(() => goalSteps(goal), [goal]);
   const hasControls = useHostFeature(serverId, "goalControls");
   return (
     <View>
-      <GoalSummary serverId={serverId} goal={goal} />
+      <GoalSummary serverId={serverId} goal={goal} onDeleted={onDeleted} />
       {steps ? (
         <View style={styles.stepper}>
           <GoalStepper steps={steps} />
@@ -108,12 +117,21 @@ function GoalDetailContent({
         canRetryTasks={goalControlsAvailable(goal, hasControls).canRetryTasks}
       />
       <GoalCriteria goal={goal} />
+      {goal.config ? <GoalTeamSection config={goal.config} /> : null}
       <GoalActivity goal={goal} events={events} />
     </View>
   );
 }
 
-function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): ReactElement {
+function GoalSummary({
+  serverId,
+  goal,
+  onDeleted,
+}: {
+  serverId: string;
+  goal: Goal;
+  onDeleted?: () => void;
+}): ReactElement {
   const { t } = useTranslation();
   const toast = useToast();
   const mutations = useGoalMutations({ serverId });
@@ -135,6 +153,9 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
       [goal.acknowledgedAt, goal.createdAt],
     ),
   );
+  const archivedAgo = useCompactTimeAgo(
+    useMemo(() => new Date(goal.archivedAt ?? goal.createdAt), [goal.archivedAt, goal.createdAt]),
+  );
   const lead = useMemo(
     () =>
       goal.leadAgentId ? { agentId: goal.leadAgentId, workspaceId: goal.leadWorkspaceId } : null,
@@ -146,6 +167,9 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
   }
   if (goal.acknowledgedAt) {
     meta.push(t("goals.detail.dismissed", { time: acknowledged }));
+  }
+  if (goal.archivedAt) {
+    meta.push(t("goals.detail.archivedAt", { time: archivedAgo }));
   }
 
   const handleApprove = useCallback(() => {
@@ -207,8 +231,20 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
   return (
     <View style={styles.summary}>
       <View style={styles.titleRow}>
-        <Text style={styles.title}>{goal.title}</Text>
+        <Text style={styles.title} testID="goal-detail-title">
+          {goal.title}
+        </Text>
+        <GoalPriorityBadge goal={goal} />
+        {goal.archivedAt ? <StatusBadge label={t("goals.archived.badge")} /> : null}
         <StatusBadge label={badge.label} variant={badge.variant} />
+        <View style={styles.titleMenu}>
+          <GoalActionsMenu
+            serverId={serverId}
+            goal={goal}
+            onDeleted={onDeleted}
+            testID="goal-detail-menu"
+          />
+        </View>
       </View>
       <GoalProjectLine projects={projects} cwd={goal.config?.cwd} testID="goal-detail-project" />
       {goal.objective ? <Text style={styles.objective}>{goal.objective}</Text> : null}
@@ -347,6 +383,35 @@ function GoalGuidanceBanner({ goal }: { goal: Goal }): ReactElement {
   );
 }
 
+/** Who runs each role, on which provider and model, with what thinking. */
+function GoalTeamSection({ config }: { config: GoalConfig }): ReactElement {
+  const { t } = useTranslation();
+  const team = useMemo(() => goalTeam(config), [config]);
+  return (
+    <SettingsSection title={t("goals.detail.team")} testID="goal-team">
+      <SettingsCard>
+        {team.map((member) => (
+          <View key={member.role} style={settingsStyles.row} testID={`goal-team-${member.role}`}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>{t(`goals.detail.roles.${member.role}`)}</Text>
+              <Text style={settingsStyles.rowHint} numberOfLines={1}>
+                {member.provider}
+              </Text>
+            </View>
+            <Text style={styles.meta} testID={`goal-team-${member.role}-thinking`}>
+              {member.thinking
+                ? t("goals.detail.thinking", {
+                    level: formatThinkingOptionLabel({ id: member.thinking }),
+                  })
+                : t("goals.detail.thinkingDefault")}
+            </Text>
+          </View>
+        ))}
+      </SettingsCard>
+    </SettingsSection>
+  );
+}
+
 function GoalCriteria({ goal }: { goal: Goal }): ReactElement {
   const { t } = useTranslation();
   return (
@@ -400,6 +465,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[3],
+  },
+  titleMenu: {
+    marginLeft: "auto",
   },
   title: {
     flexShrink: 1,
