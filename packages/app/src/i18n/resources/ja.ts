@@ -307,6 +307,12 @@ export const ja: TranslationResources = {
   goals: {
     title: "ゴール",
     newGoal: "新しいゴール",
+    projectFilter: {
+      all: "すべてのプロジェクト",
+      none: "プロジェクトなし",
+      label: "プロジェクト: {{project}}",
+      option: "{{project}}（{{n}}）",
+    },
     sidebarBadge: "{{label}}、対応が必要 {{n}} 件",
     empty: "ゴールはまだありません",
     emptyDescription:
@@ -643,6 +649,19 @@ export const ja: TranslationResources = {
       managedLabel: "エージェントで実行",
       postsBack: "結果はこのチャットに投稿されます。",
       cwdLabel: "作業ディレクトリ",
+      hostLabel: "ホスト",
+      projectLabel: "プロジェクト",
+      projectPlaceholder: "プロジェクトを選択",
+      projectEmpty: "このホストに git プロジェクトはありません",
+      projectSearch: "プロジェクトを検索",
+      otherFolder: "別のフォルダーを選択…",
+      cwdPlaceholder: "/path/to/project",
+      cwdCheck: {
+        checking: "確認中…",
+        branch: "{{branch}} から作業します",
+        detached: "detached HEAD から作業します",
+        dirty: "未コミットの変更は含まれません",
+      },
       leadProviderLabel: "Lead のプロバイダー",
       defaultProviderLabel: "ワーカーのプロバイダー",
       reviewProviderLabel: "レビューのプロバイダー",
@@ -761,7 +780,8 @@ export const ja: TranslationResources = {
       errors: {
         titleRequired: "ゴールを説明するか、タイトルを付けてください",
         criteriaRequired: "エージェントで実行するには基準を 1 つ以上追加してください",
-        cwdRequired: "作業ディレクトリを入力してください",
+        projectRequired: "プロジェクトを選択してください",
+        notGitRepo: "{{path}} は git の管理下にありません",
         providerRequired: "プロバイダーを選択してください",
         excludesRole: "{{provider}} はロールで使われていますが、許可されていません",
       },

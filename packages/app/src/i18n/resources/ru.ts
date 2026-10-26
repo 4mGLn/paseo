@@ -306,6 +306,12 @@ export const ru: TranslationResources = {
   goals: {
     title: "Цели",
     newGoal: "Новая цель",
+    projectFilter: {
+      all: "Все проекты",
+      none: "Без проекта",
+      label: "Проект: {{project}}",
+      option: "{{project}} ({{n}})",
+    },
     sidebarBadge: "{{label}}, ждут вас: {{n}}",
     empty: "Целей пока нет",
     emptyDescription:
@@ -656,6 +662,19 @@ export const ru: TranslationResources = {
       managedLabel: "Выполнять агентами",
       postsBack: "Результат будет отправлен в этот чат.",
       cwdLabel: "Рабочий каталог",
+      hostLabel: "Хост",
+      projectLabel: "Проект",
+      projectPlaceholder: "Выберите проект",
+      projectEmpty: "На этом хосте нет git-проектов",
+      projectSearch: "Поиск проектов",
+      otherFolder: "Выбрать другую папку…",
+      cwdPlaceholder: "/путь/к/проекту",
+      cwdCheck: {
+        checking: "Проверка…",
+        branch: "Основа: {{branch}}",
+        detached: "Основа: отсоединённый HEAD",
+        dirty: "незафиксированные изменения не войдут",
+      },
       leadProviderLabel: "Провайдер Lead",
       defaultProviderLabel: "Провайдер исполнителей",
       reviewProviderLabel: "Провайдер ревью",
@@ -777,7 +796,8 @@ export const ru: TranslationResources = {
       errors: {
         titleRequired: "Опишите цель или дайте ей название",
         criteriaRequired: "Добавьте хотя бы один критерий, чтобы выполнять агентами",
-        cwdRequired: "Укажите рабочий каталог",
+        projectRequired: "Выберите проект",
+        notGitRepo: "{{path}} не под управлением git",
         providerRequired: "Выберите провайдера",
         excludesRole: "{{provider}} используется ролью, но не разрешён",
       },

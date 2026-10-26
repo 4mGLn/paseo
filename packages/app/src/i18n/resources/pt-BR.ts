@@ -306,6 +306,12 @@ export const ptBR: TranslationResources = {
   goals: {
     title: "Metas",
     newGoal: "Nova meta",
+    projectFilter: {
+      all: "Todos os projetos",
+      none: "Sem projeto",
+      label: "Projeto: {{project}}",
+      option: "{{project}} ({{n}})",
+    },
     sidebarBadge: "{{label}}, {{n}} precisam de você",
     empty: "Nenhuma meta ainda",
     emptyDescription:
@@ -644,6 +650,19 @@ export const ptBR: TranslationResources = {
       managedLabel: "Executar com agentes",
       postsBack: "O resultado é publicado de volta neste chat.",
       cwdLabel: "Diretório de trabalho",
+      hostLabel: "Host",
+      projectLabel: "Projeto",
+      projectPlaceholder: "Escolha um projeto",
+      projectEmpty: "Nenhum projeto git neste host",
+      projectSearch: "Buscar projetos",
+      otherFolder: "Escolher outra pasta…",
+      cwdPlaceholder: "/caminho/do/projeto",
+      cwdCheck: {
+        checking: "Verificando…",
+        branch: "Parte de {{branch}}",
+        detached: "Parte de um HEAD destacado",
+        dirty: "alterações sem commit ficam de fora",
+      },
       leadProviderLabel: "Provedor do Lead",
       defaultProviderLabel: "Provedor dos agentes",
       reviewProviderLabel: "Provedor de revisão",
@@ -767,7 +786,8 @@ export const ptBR: TranslationResources = {
       errors: {
         titleRequired: "Descreva a meta ou dê um título a ela",
         criteriaRequired: "Adicione pelo menos um critério para executar com agentes",
-        cwdRequired: "Informe o diretório de trabalho",
+        projectRequired: "Escolha um projeto",
+        notGitRepo: "{{path}} não está sob git",
         providerRequired: "Escolha um provedor",
         excludesRole: "{{provider}} é usado por uma função, mas não é permitido",
       },

@@ -16,6 +16,7 @@ import { canApproveGoalPlan, isGoalTerminal } from "@/goals/goal-derivation";
 import { goalBadge } from "@/goals/goal-labels";
 import { goalControlsAvailable, goalGuidance, goalSteps } from "@/goals/goal-phase";
 import { goalWaitingOnDetail } from "@/goals/goal-waiting-on";
+import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useGoalDetail } from "@/hooks/use-goals";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
@@ -26,6 +27,7 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { GoalActivity } from "./goal-activity";
 import { GoalChangeSetList } from "./goal-change-set-list";
 import { GoalFeedbackSheet } from "./goal-feedback-sheet";
+import { GoalProjectLine } from "./goal-list";
 import { GoalProgressPanel } from "./goal-progress-panel";
 import { GoalStepper } from "./goal-stepper";
 import { GoalTaskList, OpenAgentButton } from "./goal-task-list";
@@ -125,6 +127,7 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
   const showApprove = canApproveGoalPlan(goal.status);
   const showCancel = !isGoalTerminal(goal.status);
   const badge = goalBadge(t, goal);
+  const projects = useGoalProjectOptions(serverId);
   const created = useCompactTimeAgo(useMemo(() => new Date(goal.createdAt), [goal.createdAt]));
   const acknowledged = useCompactTimeAgo(
     useMemo(
@@ -140,9 +143,6 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
   const meta = [t("goals.detail.created", { time: created })];
   if (goal.integration) {
     meta.push(t("goals.detail.branch", { branch: goal.integration.branch }));
-  }
-  if (goal.config) {
-    meta.push(goal.config.cwd);
   }
   if (goal.acknowledgedAt) {
     meta.push(t("goals.detail.dismissed", { time: acknowledged }));
@@ -210,6 +210,7 @@ function GoalSummary({ serverId, goal }: { serverId: string; goal: Goal }): Reac
         <Text style={styles.title}>{goal.title}</Text>
         <StatusBadge label={badge.label} variant={badge.variant} />
       </View>
+      <GoalProjectLine projects={projects} cwd={goal.config?.cwd} testID="goal-detail-project" />
       {goal.objective ? <Text style={styles.objective}>{goal.objective}</Text> : null}
       <Text style={styles.meta} numberOfLines={2}>
         {meta.join(" · ")}

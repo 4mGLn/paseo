@@ -299,6 +299,12 @@ export const en = {
   goals: {
     title: "Goals",
     newGoal: "New goal",
+    projectFilter: {
+      all: "All projects",
+      none: "No project",
+      label: "Project: {{project}}",
+      option: "{{project}} ({{n}})",
+    },
     sidebarBadge: "{{label}}, {{n}} need you",
     empty: "No goals yet",
     emptyDescription:
@@ -634,6 +640,19 @@ export const en = {
       managedLabel: "Run with agents",
       postsBack: "The result is posted back to this chat.",
       cwdLabel: "Working directory",
+      hostLabel: "Host",
+      projectLabel: "Project",
+      projectPlaceholder: "Choose a project",
+      projectEmpty: "No git projects on this host",
+      projectSearch: "Search projects",
+      otherFolder: "Choose another folder…",
+      cwdPlaceholder: "/path/to/project",
+      cwdCheck: {
+        checking: "Checking…",
+        branch: "Builds from {{branch}}",
+        detached: "Builds from a detached HEAD",
+        dirty: "uncommitted changes are left out",
+      },
       leadProviderLabel: "Lead provider",
       defaultProviderLabel: "Worker provider",
       reviewProviderLabel: "Review provider",
@@ -742,7 +761,8 @@ export const en = {
       errors: {
         titleRequired: "Describe the goal or give it a title",
         criteriaRequired: "Add at least one criterion to run with agents",
-        cwdRequired: "Enter the working directory",
+        projectRequired: "Choose a project",
+        notGitRepo: "{{path}} is not under git",
         providerRequired: "Choose a provider",
         excludesRole: "{{provider}} is used by a role but not allowed",
       },

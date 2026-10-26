@@ -8,6 +8,8 @@ import {
   validateGoalForm,
   type GoalFormValues,
 } from "./goal-form-model";
+import { goalFormMemoryFromConfig } from "./goal-form-memory";
+import { buildGoalProjectOptions } from "./goal-projects";
 import { DAEMON_GOAL_SETTINGS, GOAL_PRESETS } from "./goal-settings";
 
 function values(overrides: Partial<GoalFormValues>): GoalFormValues {
@@ -365,5 +367,166 @@ describe("openGoalForm", () => {
     model.setValue("title", "ignored");
     expect(model.getState().values.title).toBe("");
     expect(notified).toBe(2);
+  });
+});
+
+describe("project and host", () => {
+  const memoryByServer = {
+    "host-a": goalFormMemoryFromConfig(
+      {
+        cwd: "/code/api",
+        maxParallel: 2,
+        maxAttempts: 2,
+        autoApprovePlan: false,
+        notifyLead: true,
+        leadProvider: "claude",
+        defaultProvider: "codex",
+        testCommand: "npm test",
+      },
+      DAEMON_GOAL_SETTINGS,
+    ),
+    "host-b": goalFormMemoryFromConfig(
+      {
+        cwd: "/srv/web",
+        maxParallel: 1,
+        maxAttempts: 2,
+        autoApprovePlan: false,
+        notifyLead: true,
+        leadProvider: "opencode",
+        defaultProvider: "opencode",
+      },
+      GOAL_PRESETS.careful,
+    ),
+  };
+  const projects = buildGoalProjectOptions({
+    projects: [
+      {
+        projectId: "api",
+        projectDisplayName: "api",
+        projectRootPath: "/code/api",
+        projectKind: "git",
+      },
+      {
+        projectId: "cli",
+        projectDisplayName: "cli",
+        projectRootPath: "/code/cli",
+        projectKind: "git",
+      },
+    ],
+    workspaces: [
+      {
+        projectId: "cli",
+        workspaceDirectory: "/worktrees/cli/fix",
+        lastUserMessageAt: new Date("2026-06-01T00:00:00Z"),
+        createdAt: null,
+      },
+    ],
+  });
+
+  it("opens on the directory it was given, over the host's remembered project", () => {
+    const state = openGoalForm({
+      serverId: "host-a",
+      prefill: { cwd: "/worktrees/cli/fix", originAgentId: "agent-1" },
+      memoryByServer,
+    }).getState();
+    expect(state.values).toMatchObject({
+      cwd: "/worktrees/cli/fix",
+      leadProvider: "claude",
+      managed: true,
+      testCommand: "",
+    });
+    expect(state.cwdSource).toBe("prefill");
+  });
+
+  it("opens on the host's remembered project without a given directory", () => {
+    const state = openGoalForm({ serverId: "host-a", memoryByServer }).getState();
+    expect(state.values).toMatchObject({ cwd: "/code/api", testCommand: "npm test" });
+    expect(state.cwdSource).toBe("memory");
+    expect(state.projectDisplay).toEqual({ label: "api", path: "/code/api" });
+  });
+
+  it("names a given worktree by its project once the projects arrive, and keeps the directory", () => {
+    const model = openGoalForm({
+      serverId: "host-a",
+      prefill: { cwd: "/worktrees/cli/fix" },
+      memoryByServer,
+    });
+    expect(model.getState().projectDisplay).toEqual({ label: "fix", path: "/worktrees/cli/fix" });
+    model.applyProjectOptions(projects);
+    expect(model.getState()).toMatchObject({
+      selectedProjectId: "cli",
+      projectDisplay: { label: "cli", path: "/worktrees/cli/fix" },
+      values: { cwd: "/worktrees/cli/fix" },
+    });
+  });
+
+  it("fills an empty directory with the most recently used project", () => {
+    const model = openGoalForm({ serverId: "host-new", memoryByServer: {} });
+    expect(model.getState().values.cwd).toBe("");
+    model.applyProjectOptions(projects);
+    expect(model.getState()).toMatchObject({
+      values: { cwd: "/code/cli" },
+      cwdSource: "recent",
+      projectDisplay: { label: "cli", path: "/code/cli" },
+    });
+  });
+
+  it("runs a chosen project in its checkout and a chosen folder where it is", () => {
+    const model = openGoalForm({ serverId: "host-a", memoryByServer });
+    model.applyProjectOptions(projects);
+    model.chooseProject("cli");
+    expect(model.getState()).toMatchObject({
+      values: { cwd: "/code/cli" },
+      cwdSource: "manual",
+      selectedProjectId: "cli",
+    });
+    model.chooseFolder(" /tmp/scratch ");
+    expect(model.getState()).toMatchObject({
+      values: { cwd: "/tmp/scratch" },
+      selectedProjectId: null,
+      projectDisplay: { label: "scratch", path: "/tmp/scratch" },
+    });
+  });
+
+  it("refuses a directory the host says is not under git, at once, and ignores stale answers", () => {
+    const model = openGoalForm({ prefill: { ...MANAGED, cwd: "/plain" } });
+    model.applyCwdCheck({ cwd: "/elsewhere", status: "notGit" });
+    expect(model.getState().issues).toEqual([]);
+    model.applyCwdCheck({ cwd: "/plain", status: "notGit" });
+    expect(model.getState().visibleIssues).toEqual([{ field: "cwd", code: "notGitRepo" }]);
+    expect(model.getState().createInput).toBeNull();
+    model.setValue("cwd", "/repo");
+    expect(model.getState().cwdCheck).toBeNull();
+    expect(model.getState().createInput?.config?.cwd).toBe("/repo");
+  });
+
+  it("moves to another host with that host's remembered project and providers", () => {
+    const model = openGoalForm({
+      serverId: "host-a",
+      prefill: { objective: "Ship it", cwd: "/code/api", originAgentId: "agent-1" },
+      memoryByServer,
+    });
+    model.applyHosts([
+      { serverId: "host-a", label: "A", budgetSupported: false },
+      { serverId: "host-b", label: "B", budgetSupported: true },
+    ]);
+    model.applyProjectOptions(projects);
+    model.setHost("host-b");
+    expect(model.getState()).toMatchObject({
+      serverId: "host-b",
+      originAgentId: null,
+      budgetSupported: true,
+      projectOptions: [],
+      providerOptions: [],
+      personalSettings: GOAL_PRESETS.careful,
+      cwdSource: "memory",
+      values: {
+        objective: "Ship it",
+        cwd: "/srv/web",
+        leadProvider: "opencode",
+        defaultProvider: "opencode",
+        testCommand: "",
+      },
+    });
   });
 });

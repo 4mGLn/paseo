@@ -307,6 +307,12 @@ export const es: TranslationResources = {
   goals: {
     title: "Objetivos",
     newGoal: "Nuevo objetivo",
+    projectFilter: {
+      all: "Todos los proyectos",
+      none: "Sin proyecto",
+      label: "Proyecto: {{project}}",
+      option: "{{project}} ({{n}})",
+    },
     sidebarBadge: "{{label}}, {{n}} te necesitan",
     empty: "Aún no hay objetivos",
     emptyDescription:
@@ -645,6 +651,19 @@ export const es: TranslationResources = {
       managedLabel: "Ejecutar con agentes",
       postsBack: "El resultado se publica de vuelta en este chat.",
       cwdLabel: "Directorio de trabajo",
+      hostLabel: "Host",
+      projectLabel: "Proyecto",
+      projectPlaceholder: "Elige un proyecto",
+      projectEmpty: "No hay proyectos git en este host",
+      projectSearch: "Buscar proyectos",
+      otherFolder: "Elegir otra carpeta…",
+      cwdPlaceholder: "/ruta/al/proyecto",
+      cwdCheck: {
+        checking: "Comprobando…",
+        branch: "Parte de {{branch}}",
+        detached: "Parte de un HEAD separado",
+        dirty: "los cambios no confirmados quedan fuera",
+      },
       leadProviderLabel: "Proveedor del Lead",
       defaultProviderLabel: "Proveedor de los agentes",
       reviewProviderLabel: "Proveedor de revisión",
@@ -762,7 +781,8 @@ export const es: TranslationResources = {
       errors: {
         titleRequired: "Describe el objetivo o ponle un título",
         criteriaRequired: "Añade al menos un criterio para ejecutar con agentes",
-        cwdRequired: "Introduce el directorio de trabajo",
+        projectRequired: "Elige un proyecto",
+        notGitRepo: "{{path}} no está bajo git",
         providerRequired: "Elige un proveedor",
         excludesRole: "{{provider}} lo usa un rol pero no está permitido",
       },

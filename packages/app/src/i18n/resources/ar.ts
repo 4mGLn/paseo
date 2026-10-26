@@ -302,6 +302,12 @@ export const ar: TranslationResources = {
   goals: {
     title: "الأهداف",
     newGoal: "هدف جديد",
+    projectFilter: {
+      all: "كل المشاريع",
+      none: "بلا مشروع",
+      label: "المشروع: {{project}}",
+      option: "{{project}} ({{n}})",
+    },
     sidebarBadge: "{{label}}، {{n}} بانتظارك",
     empty: "لا توجد أهداف بعد",
     emptyDescription:
@@ -659,6 +665,19 @@ export const ar: TranslationResources = {
       managedLabel: "التشغيل باستخدام الوكلاء",
       postsBack: "تُنشر النتيجة في هذه المحادثة.",
       cwdLabel: "دليل العمل",
+      hostLabel: "المضيف",
+      projectLabel: "المشروع",
+      projectPlaceholder: "اختر مشروعًا",
+      projectEmpty: "لا توجد مشاريع git على هذا المضيف",
+      projectSearch: "ابحث في المشاريع",
+      otherFolder: "اختر مجلدًا آخر…",
+      cwdPlaceholder: "/path/to/project",
+      cwdCheck: {
+        checking: "جارٍ التحقق…",
+        branch: "يبدأ من {{branch}}",
+        detached: "يبدأ من HEAD منفصل",
+        dirty: "التغييرات غير الملتزم بها لا تُضمَّن",
+      },
       leadProviderLabel: "مزوّد Lead",
       defaultProviderLabel: "مزوّد العاملين",
       reviewProviderLabel: "مزوّد المراجعة",
@@ -764,7 +783,8 @@ export const ar: TranslationResources = {
       errors: {
         titleRequired: "صف الهدف أو أعطه عنوانًا",
         criteriaRequired: "أضف معيارًا واحدًا على الأقل للتشغيل باستخدام الوكلاء",
-        cwdRequired: "أدخل دليل العمل",
+        projectRequired: "اختر مشروعًا",
+        notGitRepo: "{{path}} ليس تحت إدارة git",
         providerRequired: "اختر مزوّدًا",
         excludesRole: "{{provider}} يستخدمه دور لكنه غير مسموح به",
       },

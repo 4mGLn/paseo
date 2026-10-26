@@ -303,6 +303,12 @@ export const ko: TranslationResources = {
   goals: {
     title: "목표",
     newGoal: "새 목표",
+    projectFilter: {
+      all: "모든 프로젝트",
+      none: "프로젝트 없음",
+      label: "프로젝트: {{project}}",
+      option: "{{project}} ({{n}})",
+    },
     sidebarBadge: "{{label}}, 확인 필요 {{n}}개",
     empty: "아직 목표가 없습니다",
     emptyDescription:
@@ -637,6 +643,19 @@ export const ko: TranslationResources = {
       managedLabel: "에이전트로 실행",
       postsBack: "결과는 이 채팅에 다시 게시됩니다.",
       cwdLabel: "작업 디렉터리",
+      hostLabel: "호스트",
+      projectLabel: "프로젝트",
+      projectPlaceholder: "프로젝트를 선택하세요",
+      projectEmpty: "이 호스트에 git 프로젝트가 없습니다",
+      projectSearch: "프로젝트 검색",
+      otherFolder: "다른 폴더 선택…",
+      cwdPlaceholder: "/path/to/project",
+      cwdCheck: {
+        checking: "확인 중…",
+        branch: "{{branch}}에서 시작합니다",
+        detached: "detached HEAD에서 시작합니다",
+        dirty: "커밋되지 않은 변경 사항은 포함되지 않습니다",
+      },
       leadProviderLabel: "Lead 프로바이더",
       defaultProviderLabel: "워커 프로바이더",
       reviewProviderLabel: "리뷰 프로바이더",
@@ -746,7 +765,8 @@ export const ko: TranslationResources = {
       errors: {
         titleRequired: "목표를 설명하거나 제목을 입력하세요",
         criteriaRequired: "에이전트로 실행하려면 기준을 하나 이상 추가하세요",
-        cwdRequired: "작업 디렉터리를 입력하세요",
+        projectRequired: "프로젝트를 선택하세요",
+        notGitRepo: "{{path}}은(는) git으로 관리되지 않습니다",
         providerRequired: "프로바이더를 선택하세요",
         excludesRole: "{{provider}}은(는) 역할에서 사용하지만 허용되지 않습니다",
       },

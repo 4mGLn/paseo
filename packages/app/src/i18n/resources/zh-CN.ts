@@ -302,6 +302,12 @@ export const zhCN: TranslationResources = {
   goals: {
     title: "目标",
     newGoal: "新建目标",
+    projectFilter: {
+      all: "全部 project",
+      none: "无 project",
+      label: "Project：{{project}}",
+      option: "{{project}}（{{n}}）",
+    },
     sidebarBadge: "{{label}}，{{n}} 个需要你处理",
     empty: "还没有目标",
     emptyDescription:
@@ -633,6 +639,19 @@ export const zhCN: TranslationResources = {
       managedLabel: "由 Agent 执行",
       postsBack: "结果会发回此聊天。",
       cwdLabel: "工作目录",
+      hostLabel: "Host",
+      projectLabel: "Project",
+      projectPlaceholder: "选择 project",
+      projectEmpty: "此 Host 上没有 git project",
+      projectSearch: "搜索 project",
+      otherFolder: "选择其他文件夹…",
+      cwdPlaceholder: "/path/to/project",
+      cwdCheck: {
+        checking: "正在检查…",
+        branch: "基于 {{branch}}",
+        detached: "基于分离的 HEAD",
+        dirty: "未 commit 的变更不会包含在内",
+      },
       leadProviderLabel: "Lead Provider",
       defaultProviderLabel: "执行者 Provider",
       reviewProviderLabel: "审查 Provider",
@@ -735,7 +754,8 @@ export const zhCN: TranslationResources = {
       errors: {
         titleRequired: "请描述目标或为其设置标题",
         criteriaRequired: "至少添加一条标准才能由 Agent 执行",
-        cwdRequired: "请输入工作目录",
+        projectRequired: "请选择 project",
+        notGitRepo: "{{path}} 不在 git 管理下",
         providerRequired: "请选择 Provider",
         excludesRole: "{{provider}} 被某个角色使用，但未被允许",
       },

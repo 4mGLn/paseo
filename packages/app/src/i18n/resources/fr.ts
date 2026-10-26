@@ -307,6 +307,12 @@ export const fr: TranslationResources = {
   goals: {
     title: "Objectifs",
     newGoal: "Nouvel objectif",
+    projectFilter: {
+      all: "Tous les projets",
+      none: "Aucun projet",
+      label: "Projet : {{project}}",
+      option: "{{project}} ({{n}})",
+    },
     sidebarBadge: "{{label}}, {{n}} en attente de vous",
     empty: "Aucun objectif pour l'instant",
     emptyDescription:
@@ -648,6 +654,19 @@ export const fr: TranslationResources = {
       managedLabel: "Exécuter avec des agents",
       postsBack: "Le résultat est publié dans ce chat.",
       cwdLabel: "Répertoire de travail",
+      hostLabel: "Hôte",
+      projectLabel: "Projet",
+      projectPlaceholder: "Choisissez un projet",
+      projectEmpty: "Aucun projet git sur cet hôte",
+      projectSearch: "Rechercher des projets",
+      otherFolder: "Choisir un autre dossier…",
+      cwdPlaceholder: "/chemin/vers/le/projet",
+      cwdCheck: {
+        checking: "Vérification…",
+        branch: "Part de {{branch}}",
+        detached: "Part d'un HEAD détaché",
+        dirty: "les modifications non commitées sont exclues",
+      },
       leadProviderLabel: "Fournisseur du Lead",
       defaultProviderLabel: "Fournisseur des agents",
       reviewProviderLabel: "Fournisseur de revue",
@@ -772,7 +791,8 @@ export const fr: TranslationResources = {
       errors: {
         titleRequired: "Décrivez l'objectif ou donnez-lui un titre",
         criteriaRequired: "Ajoutez au moins un critère pour exécuter avec des agents",
-        cwdRequired: "Saisissez le répertoire de travail",
+        projectRequired: "Choisissez un projet",
+        notGitRepo: "{{path}} n'est pas sous git",
         providerRequired: "Choisissez un fournisseur",
         excludesRole: "{{provider}} est utilisé par un rôle mais n'est pas autorisé",
       },
