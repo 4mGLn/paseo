@@ -36,10 +36,11 @@ export function buildLeadPlanningPrompt(goal: Goal): string {
     "",
     "Read the repository as needed, then break the work into tasks that other coding agents will carry out.",
     "Reply with a short explanation followed by exactly one fenced ```json block containing:",
-    '{"tasks": [{"id": "t1", "title": "...", "description": "what to do and how to know it is done", "kind": "implement" | "review" | "read", "dependsOn": ["t0"], "provider": "optional provider id"}]}',
+    '{"tasks": [{"id": "t1", "title": "...", "description": "what to do and how to know it is done", "kind": "implement" | "review" | "read", "dependsOn": ["t0"], "provider": "optional provider id", "thinking": "optional thinking option id"}]}',
     "Rules: ids are unique; dependsOn lists only ids from this plan and must not form a cycle;",
     "give each implement task a self-contained description, since its agent starts with no other context;",
-    "tasks that can run in parallel should not depend on each other.",
+    "tasks that can run in parallel should not depend on each other;",
+    "omit thinking unless the objective asks for a thinking level for a task.",
     ...rejectionSection(goal),
   ].join("\n");
 }

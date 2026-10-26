@@ -117,6 +117,52 @@ describe("goal RPC schemas", () => {
     );
   });
 
+  test("per-role thinking, a task's thinking and a run's thinking are optional", () => {
+    const thinking = {
+      ...config,
+      leadThinking: "high",
+      workerThinking: "low",
+      reviewThinking: "medium",
+      verifyThinking: "max",
+    };
+    const create = SessionInboundMessageSchema.parse({
+      type: "goal.create.request",
+      requestId: "r1",
+      title: "Ship",
+      objective: "",
+      criteria: [],
+      config: thinking,
+    });
+    expect(create).toMatchObject({ config: thinking });
+    expect(GoalConfigSchema.parse(config)).not.toHaveProperty("leadThinking");
+    expect(GoalConfigSchema.safeParse({ ...config, workerThinking: " " }).success).toBe(false);
+
+    const plan = SessionInboundMessageSchema.parse({
+      type: "goal.propose_plan.request",
+      requestId: "r2",
+      goalId: "g1",
+      tasks: [
+        { id: "a", title: "A", description: "", kind: "implement", dependsOn: [], thinking: "x" },
+      ],
+    });
+    expect(plan).toMatchObject({ tasks: [{ thinking: "x" }] });
+
+    const attached = {
+      id: "e",
+      goalId: "g",
+      seq: 2,
+      at: "2026-01-01T00:00:00.000Z",
+      type: "run.attached",
+      runId: "a-a1",
+      agentId: "ag",
+      workspaceId: "ws",
+    };
+    expect(GoalEventSchema.parse(attached)).not.toHaveProperty("thinking");
+    expect(GoalEventSchema.parse({ ...attached, thinking: "low" })).toMatchObject({
+      thinking: "low",
+    });
+  });
+
   test("acknowledge, the goal.update push and the list summary parse", () => {
     const goal: Goal = {
       id: "g",
