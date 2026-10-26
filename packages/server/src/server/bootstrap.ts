@@ -197,7 +197,11 @@ import { admitSecuredRelaySocket } from "./websocket/secure-relay-ingress.js";
 import type { PushNotificationSender } from "./push/index.js";
 import { getOrCreateServerId } from "./server-id.js";
 import { resolveDaemonVersion } from "./daemon-version.js";
-import { listResolvedAgentTeams, type AgentTeamsConfig } from "./agent/agent-teams.js";
+import {
+  listResolvedAgentTeams,
+  readAgentTeamsConfig,
+  type AgentTeamsConfig,
+} from "./agent/agent-teams.js";
 import type { AgentClient, AgentProvider } from "./agent/agent-sdk-types.js";
 import type {
   AgentProfile,
@@ -439,7 +443,7 @@ export interface PaseoDaemonConfig {
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
   agentProfiles?: AgentProfile[];
-  /** Read from the config file at startup; a change takes a daemon restart. */
+  /** Seeds `teams` in the mutable config; later edits go through DaemonConfigStore. */
   teams?: AgentTeamsConfig;
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
@@ -626,7 +630,17 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     initialConfig.agentProfiles = config.agentProfiles;
   }
 
+  seedMutableTeams(initialConfig, config.teams);
+
   return initialConfig;
+}
+
+/** An empty record is stored as no teams, matching what a config patch persists. */
+function seedMutableTeams(
+  initialConfig: MutableDaemonConfig,
+  teams: AgentTeamsConfig | undefined,
+): void {
+  if (teams !== undefined && Object.keys(teams).length > 0) initialConfig.teams = teams;
 }
 
 function warnAboutUnusableTeams(
@@ -1516,6 +1530,7 @@ export async function createPaseoDaemon(
     git: goalGit,
     logger,
   });
+  goalService.attachActivityProbe(goalManager);
   await goalManager.start();
   logger.info({ elapsed: elapsed() }, "Goal service initialized");
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
@@ -1640,7 +1655,7 @@ export async function createPaseoDaemon(
       (runtime.callerAgentId ? agentManager.getPaseoToolPolicy(runtime.callerAgentId) : undefined),
     paseoHome: config.paseoHome,
     worktreesRoot: config.worktreesRoot,
-    agentTeams: config.teams,
+    getAgentTeams: () => readAgentTeamsConfig(daemonConfigStore.get()),
     callerAgentId: runtime.callerAgentId,
     enableVoiceTools: runtime.enableVoiceTools,
     voiceOnly: runtime.voiceOnly,
@@ -1918,7 +1933,6 @@ export async function createPaseoDaemon(
               {
                 listen: formatListenTarget(boundListenTarget ?? listenTarget),
                 worktreesRoot: config.worktreesRoot,
-                teams: config.teams,
                 get appBaseUrl() {
                   return appBaseUrl;
                 },

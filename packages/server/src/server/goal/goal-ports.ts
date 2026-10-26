@@ -2,7 +2,9 @@ import type { Logger } from "pino";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
+import type { TurnUsage } from "@getpaseo/protocol/goal/types";
 import type { AgentManager, AgentManagerEvent } from "../agent/agent-manager.js";
+import type { AgentUsage } from "../agent/agent-sdk-types.js";
 import { startAgentRun } from "../agent/agent-prompt.js";
 import { markPaseoWorktreeFirstAgentBranchAutoNameAttempted } from "../../utils/worktree-metadata.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -38,7 +40,26 @@ export type TurnEnd =
 export interface TurnWatcher {
   /** How the turn ended according to the agent's own event stream, if it has. */
   end(): TurnEnd | null;
+  /** The last usage the provider reported during the turn, if any. */
+  usage(): TurnUsage | undefined;
   stop(): void;
+}
+
+/** Keep the fields a goal tracks; drop anything that is not a finite, non-negative number. */
+export function toTurnUsage(usage: AgentUsage | undefined): TurnUsage | undefined {
+  if (!usage) return undefined;
+  const pick = (value: number | undefined) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+  const result: TurnUsage = {};
+  const inputTokens = pick(usage.inputTokens);
+  const cachedInputTokens = pick(usage.cachedInputTokens);
+  const outputTokens = pick(usage.outputTokens);
+  const costUsd = pick(usage.totalCostUsd);
+  if (inputTokens !== undefined) result.inputTokens = inputTokens;
+  if (cachedInputTokens !== undefined) result.cachedInputTokens = cachedInputTokens;
+  if (outputTokens !== undefined) result.outputTokens = outputTokens;
+  if (costUsd !== undefined) result.costUsd = costUsd;
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 /**
@@ -50,14 +71,19 @@ export function watchTurn(
   subscribe: (listener: (event: AgentManagerEvent) => void) => () => void,
 ): TurnWatcher {
   let end: TurnEnd | null = null;
+  let usage: TurnUsage | undefined;
   const unsubscribe = subscribe((event) => {
     if (end || event.type !== "agent_stream") return;
     const inner = event.event;
+    // Providers report usage on turn completion or as updates during the turn.
+    if (inner.type === "usage_updated" || inner.type === "turn_completed") {
+      usage = toTurnUsage(inner.usage) ?? usage;
+    }
     if (inner.type === "turn_completed") end = { type: "turn_completed" };
     else if (inner.type === "turn_canceled") end = { type: "turn_canceled" };
     else if (inner.type === "turn_failed") end = { type: "turn_failed", error: inner.error };
   });
-  return { end: () => end, stop: unsubscribe };
+  return { end: () => end, usage: () => usage, stop: unsubscribe };
 }
 
 interface AgentWait {
@@ -175,9 +201,12 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
           options?.signal,
         );
         const end = watcher.end();
-        if (end?.type === "turn_canceled") return { outcome: "canceled" };
-        if (end?.type === "turn_failed") return { outcome: "failed", error: end.error };
-        return result;
+        const usage = watcher.usage();
+        const reported = usage ? { usage } : {};
+        if (end?.type === "turn_canceled") return { outcome: "canceled", ...reported };
+        if (end?.type === "turn_failed")
+          return { outcome: "failed", error: end.error, ...reported };
+        return { ...result, ...reported };
       } finally {
         watcher.stop();
       }

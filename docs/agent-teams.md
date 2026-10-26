@@ -6,7 +6,9 @@ Use a team when you keep telling a chat "use Codex for the code and Claude for t
 
 ## Configure
 
-Teams live in the daemon config file under `daemon.teams`. There is no editor in the app. Edit `$PASEO_HOME/config.json` and restart the daemon; teams are read at startup and `paseo reload` does not apply them.
+Teams live in the daemon config under `daemon.teams`. Edit them in the app under **Settings → host → Teams**, or edit `$PASEO_HOME/config.json` and run `paseo reload`. Both apply without a daemon restart. The editor shows when the host advertises `server_info.features.agentTeamsConfig`; an older daemon drops `teams` from a config patch, so the app hides the editor there instead of letting a save look successful.
+
+The editor writes the whole `teams` record through the config RPC (`patchConfig({ teams })`), as agent profiles do. Each role picks a provider (then a model and mode from that provider's catalog) or an agent profile, plus the workspace choice (`isolation`). The editor has no control for `thinkingOptionId`: it keeps a stored value until you change the role's provider or model. Fields it does not know are written back unchanged.
 
 ```json
 {
@@ -54,7 +56,7 @@ A role names exactly one of:
 
 `description` is required; it is what the chat agent reads to pick a role. `peerMessaging` (team-level, default `false`) lets members of one team run message each other; see [Peer messaging](#peer-messaging). `isolation: "worktree"` tells the chat to create a worktree workspace before starting that helper; `"local"` keeps the helper in the chat's workspace.
 
-The config schema rejects a team without roles and a role with both or neither of `profile` and `provider`. A role that names a profile that does not exist does not fail the config load, because agent profiles are edited at runtime: the daemon logs a warning at startup, `agent.teams.list` leaves that team out and reports it in `error`, and creating a chat with that team fails.
+The config schema rejects a team without roles and a role with both or neither of `profile` and `provider`; a config patch that breaks these rules fails with the schema's message and changes nothing. The wire schema (`packages/protocol/src/agent-team-config.ts`) is structural only and keeps `isolation` a string, so a client keeps parsing a daemon that adds values. A role that names a profile that does not exist does not fail the config load, because agent profiles are edited at runtime: the daemon logs a warning at startup, `agent.teams.list` leaves that team out and reports it in `error`, and creating a chat with that team fails.
 
 ## Use
 
@@ -70,7 +72,7 @@ The daemon resolves the team when the chat is created, appends the roster to the
 
 The roster is frozen at creation, with the request's model overrides applied. A role whose model is overridden loses its configured `thinkingOptionId`, because thinking options belong to a model. Editing the team later does not change chats that already exist.
 
-The roster gives each role's `create_agent` call a `labels: {"paseo.team-role": "<role>"}` entry. The role label is informational: the chat sets it, and teammates see it in `list_team_members`.
+The roster gives each role's `create_agent` call a `labels: {"paseo.team-role": "<role>"}` entry. The role label is informational: the chat sets it, teammates see it in `list_team_members`, and the app leads a helper's facts line with it in the team chat's subagents track ([agent-lifecycle.md](agent-lifecycle.md#the-subagents-track)).
 
 ## Team runs
 
@@ -80,7 +82,7 @@ Agents cannot forge membership. Agent-scoped `create_agent` and `update_agent` r
 
 ## Peer messaging
 
-With `peerMessaging: true`, members of one team run get two tools. The roster tells the chat to brief helpers on them in their `initialPrompt`.
+With `peerMessaging: true`, members of one team run get two tools. Unlike the roster, the flag is read from the current config on every call, so turning it off stops messaging in runs already under way. The roster tells the chat to brief helpers on them in their `initialPrompt`.
 
 - `list_team_members {}` returns the run's members: `agentId`, `title`, `role`, `provider`, `status`, `isParent` (the caller's own parent), `isSelf`. Archived members are left out.
 - `send_team_message { agentId, message }` delivers `message` to another member of the same run, the team chat included. The receiver gets a sender-marked agent message (`Message from <title> (<role>) [agent <id>]:`) through the same path as `send_agent_prompt`: an idle receiver starts a turn, and a mid-turn receiver is steered (or interrupted on providers that cannot steer).
