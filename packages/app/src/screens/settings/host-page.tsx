@@ -21,6 +21,7 @@ import {
   DEFAULT_TERMINAL_PROFILES,
 } from "@getpaseo/protocol/terminal-profiles";
 import { AgentProfilesPage, type AgentProfilesBeforeLeaveGuard } from "@/agent-profiles";
+import { AgentTeamsSection } from "@/agent-teams/settings/agent-teams-section";
 import { AgentSkillsSection } from "@/agent-skills";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { PageLayout } from "@/components/page-layout";
