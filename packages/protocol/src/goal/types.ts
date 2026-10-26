@@ -36,6 +36,8 @@ export const TaskSpecSchema = z.object({
   kind: TaskKindSchema,
   dependsOn: z.array(IdSchema),
   provider: AgentProviderSchema.trim().min(1).optional(),
+  // Thinking option id for this task's model. Overrides workerThinking.
+  thinking: z.string().trim().min(1).optional(),
 });
 export type TaskSpec = z.infer<typeof TaskSpecSchema>;
 
@@ -84,6 +86,13 @@ export const GoalConfigSchema = z.object({
   reviewProvider: AgentProviderSchema.optional(),
   // Provider for the criteria verifier. Defaults to reviewProvider, then the Lead's.
   verifyProvider: AgentProviderSchema.optional(),
+  // Thinking option ids (a model's thinkingOptions[].id) per role. Unset means the
+  // model's own default. Each applies to its role only; see ./thinking.ts.
+  leadThinking: z.string().trim().min(1).optional(),
+  // Applies to worker runs on defaultProvider. A task's own `thinking` wins.
+  workerThinking: z.string().trim().min(1).optional(),
+  reviewThinking: z.string().trim().min(1).optional(),
+  verifyThinking: z.string().trim().min(1).optional(),
   // Shell command run in the integration worktree after each merge. A non-zero exit rejects the merge.
   testCommand: z.string().trim().min(1).optional(),
   // Hold every reviewed change set until a person approves it.
@@ -174,6 +183,9 @@ export const AgentRunSchema = z.object({
   error: z.string().nullable(),
   // Usage of this run's turns. Absent until a turn of the run is recorded.
   usage: UsageTotalsSchema.optional(),
+  // Thinking option the run's agent started with. Absent when neither the goal nor the
+  // provider named one, and from daemons that predate goal thinking.
+  thinking: z.string().optional(),
 });
 export type AgentRun = z.infer<typeof AgentRunSchema>;
 
@@ -408,6 +420,8 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     agentId: z.string().min(1),
     workspaceId: z.string().min(1),
     cwd: z.string().min(1).optional(),
+    // The agent's thinking option once created.
+    thinking: z.string().min(1).optional(),
   }),
   z.object({
     ...eventEnvelope,
