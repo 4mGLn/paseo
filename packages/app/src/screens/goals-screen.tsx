@@ -8,14 +8,25 @@ import type { Goal, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { GoalDetail } from "@/components/goals/goal-detail";
 import { GoalEmptyState } from "@/components/goals/goal-empty-state";
 import { GoalFormSheet } from "@/components/goals/goal-form-sheet";
-import { GoalList, GoalListFilters, type GoalListDismiss } from "@/components/goals/goal-list";
+import {
+  GoalList,
+  GoalListFilters,
+  GoalProjectFilter,
+  type GoalListDismiss,
+} from "@/components/goals/goal-list";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HostFilter } from "@/components/hosts/host-filter";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { GoalListFilter } from "@/goals/goal-attention";
 import type { GoalFormPrefill } from "@/goals/goal-form-model";
+import {
+  GOAL_PROJECT_FILTER_ALL,
+  buildGoalProjectFilterOptions,
+  filterGoalsByProject,
+} from "@/goals/goal-projects";
 import { buildTemplatePrefill, type GoalTemplate } from "@/goals/goal-templates";
+import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useGoalList } from "@/hooks/use-goals";
 import { useHostFeature, useHostFeatureAvailabilityMap } from "@/runtime/host-features";
@@ -56,6 +67,7 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
     null,
   );
   const [filter, setFilter] = useState<GoalListFilter>("all");
+  const [projectFilter, setProjectFilter] = useState<string>(GOAL_PROJECT_FILTER_ALL);
 
   // A picked host that was removed falls back to the first host that supports goals.
   const pickedHostExists = hosts.some((host) => host.serverId === pickedServerId);
@@ -74,13 +86,23 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
     loadState,
     isError,
   });
-  const goals = loadState.status === "loaded" ? loadState.data : EMPTY_GOALS;
+  const allGoals = loadState.status === "loaded" ? loadState.data : EMPTY_GOALS;
+  const projects = useGoalProjectOptions(serverId || null);
+  const projectFilterOptions = useMemo(
+    () => buildGoalProjectFilterOptions(allGoals, projects, t("goals.projectFilter.none")),
+    [allGoals, projects, t],
+  );
+  const goals = useMemo(
+    () => filterGoalsByProject(allGoals, projects, projectFilter),
+    [allGoals, projectFilter, projects],
+  );
   const canCreate = bodyState.kind === "empty" || bodyState.kind === "content";
   const dismiss = useGoalListDismiss(serverId);
 
   const selectHost = useCallback((nextServerId: string) => {
     setPickedServerId(nextServerId);
     setSelectedGoalId(null);
+    setProjectFilter(GOAL_PROJECT_FILTER_ALL);
   }, []);
   const formPrefill = useLastWorkspacePrefill(serverId);
   const openForm = useCallback(
@@ -104,7 +126,10 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
   );
   const closeForm = useCallback(() => setForm(null), []);
   const closeDetail = useCallback(() => setSelectedGoalId(null), []);
-  const selectCreatedGoal = useCallback((goal: Goal) => setSelectedGoalId(goal.id), []);
+  const selectCreatedGoal = useCallback((goal: Goal, createdServerId: string) => {
+    setPickedServerId(createdServerId);
+    setSelectedGoalId(goal.id);
+  }, []);
 
   // The detail stays reachable only while the host can still serve goals.
   const detailGoalId = canCreate ? selectedGoalId : null;
@@ -116,8 +141,21 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
       <>
         <View style={styles.filters}>
           <GoalListFilters goals={goals} filter={filter} onChange={setFilter} />
+          {projectFilterOptions.length > 1 ? (
+            <GoalProjectFilter
+              options={projectFilterOptions}
+              value={projectFilter}
+              onChange={setProjectFilter}
+            />
+          ) : null}
         </View>
-        <GoalList goals={goals} filter={filter} onSelect={setSelectedGoalId} dismiss={dismiss} />
+        <GoalList
+          goals={goals}
+          projects={projects}
+          filter={filter}
+          onSelect={setSelectedGoalId}
+          dismiss={dismiss}
+        />
       </>
     );
   } else if (bodyState.kind === "empty") {
@@ -260,7 +298,10 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: "center",
   },
   filters: {
-    alignItems: "flex-start",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: theme.spacing[2],
     marginBottom: theme.spacing[4],
   },
   centered: {
