@@ -1,4 +1,4 @@
-import type { Goal, GoalEvent, GoalStatus, TaskStatus } from "@getpaseo/protocol/goal/types";
+import type { GoalEvent, GoalStatus } from "@getpaseo/protocol/goal/types";
 import type { StatusBadgeVariant } from "@/components/ui/status-badge";
 
 const TERMINAL_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set([
@@ -16,40 +16,12 @@ export const GOAL_STATUS_BADGE: Record<GoalStatus, StatusBadgeVariant> = {
   cancelled: "muted",
 };
 
-export const TASK_STATUS_BADGE: Record<TaskStatus, StatusBadgeVariant> = {
-  pending: "muted",
-  running: "warning",
-  succeeded: "success",
-  failed: "error",
-  cancelled: "muted",
-};
-
-export interface GoalProgress {
-  tasksDone: number;
-  tasksTotal: number;
-  criteriaVerified: number;
-  criteriaTotal: number;
-}
-
 export function isGoalTerminal(status: GoalStatus): boolean {
   return TERMINAL_GOAL_STATUSES.has(status);
 }
 
 export function canApproveGoalPlan(status: GoalStatus): boolean {
   return status === "awaiting_plan_approval";
-}
-
-export function summarizeGoalProgress(goal: Pick<Goal, "tasks" | "criteria">): GoalProgress {
-  const tasksDone = goal.tasks.filter((task) => task.status === "succeeded").length;
-  const criteriaVerified = goal.criteria.filter(
-    (criterion) => criterion.verifiedAt !== null,
-  ).length;
-  return {
-    tasksDone,
-    tasksTotal: goal.tasks.length,
-    criteriaVerified,
-    criteriaTotal: goal.criteria.length,
-  };
 }
 
 /** The id or reason an event is about, shown next to its raw type in the history list. */

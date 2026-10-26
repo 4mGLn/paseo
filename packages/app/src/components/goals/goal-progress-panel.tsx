@@ -1,0 +1,208 @@
+import type { ReactElement, ReactNode } from "react";
+import { Text, View } from "react-native";
+import { useTranslation } from "react-i18next";
+import { StyleSheet } from "react-native-unistyles";
+import type { Goal } from "@getpaseo/protocol/goal/types";
+import { SettingsCard, SettingsSection } from "@/components/settings";
+import { isGoalTerminal } from "@/goals/goal-derivation";
+import { budgetLabel, estimateLabel } from "@/goals/goal-labels";
+import {
+  burnRatePerHour,
+  countGoalTasks,
+  estimateRemaining,
+  formatCompactCount,
+  formatUsd,
+  goalDeadline,
+  goalElapsedMs,
+  goalPercent,
+  goalUsageStatus,
+  type BudgetStatus,
+} from "@/goals/goal-progress";
+import { settingsStyles } from "@/styles/settings";
+import { useRelativeTimeTick } from "@/usage/use-relative-time-tick";
+import { formatDuration } from "@/utils/time";
+import { GoalBar, type GoalBarTone } from "./goal-bar";
+
+const WARN_FRACTION = 0.8;
+const MINUTE_MS = 60_000;
+
+/** The panel ticks once a minute, so past the first minute it shows whole minutes only. */
+function formatMinutes(ms: number): string {
+  return formatDuration(ms < MINUTE_MS ? ms : Math.floor(ms / MINUTE_MS) * MINUTE_MS);
+}
+
+function fractionTone(fraction: number, isOver: boolean): GoalBarTone {
+  if (isOver) {
+    return "danger";
+  }
+  return fraction >= WARN_FRACTION ? "warning" : "neutral";
+}
+
+/** Percent, counts, time and spend for a managed goal, refreshed by polling and a minute tick. */
+export function GoalProgressPanel({ goal }: { goal: Goal }): ReactElement {
+  const { t } = useTranslation();
+  const isLive = !isGoalTerminal(goal.status);
+  const now = useRelativeTimeTick({ enabled: isLive });
+  const percent = goalPercent(goal);
+  const counts = countGoalTasks(goal);
+  const elapsedMs = goalElapsedMs(goal, now);
+  const estimate = estimateLabel(t, estimateRemaining(goal, now));
+  const deadline = goalDeadline(goal, now);
+  const usage = goalUsageStatus(goal);
+  const tokenRate =
+    usage.tokens.kind === "not_reported" ? null : burnRatePerHour(usage.tokens.used, elapsedMs);
+  const isPartialUsage = usage.reportedTurns > 0 && usage.reportedTurns < usage.totalTurns;
+
+  let deadlineValue: string | null = null;
+  if (deadline.kind === "running") {
+    deadlineValue = t("goals.progress.deadlineLeft", {
+      time: formatMinutes(deadline.remainingMs),
+    });
+  } else if (deadline.kind === "overdue") {
+    deadlineValue = t("goals.progress.deadlineOverdue", {
+      time: formatMinutes(deadline.overdueMs),
+    });
+  }
+
+  return (
+    <SettingsSection title={t("goals.progress.title")}>
+      <SettingsCard testID="goal-progress">
+        <View style={settingsStyles.row}>
+          <View style={styles.fill}>
+            <View style={styles.headline}>
+              <Text style={settingsStyles.rowTitle}>
+                {t("goals.progress.percent", { percent })}
+              </Text>
+              {counts.failed > 0 ? (
+                <Text style={styles.danger}>
+                  {t("goals.progress.failed", { n: counts.failed })}
+                </Text>
+              ) : null}
+            </View>
+            <GoalBar fraction={percent / 100} tone={percent === 100 ? "success" : "neutral"} />
+            <Text style={settingsStyles.rowHint}>
+              {t("goals.progress.counts", {
+                done: counts.done,
+                running: counts.running,
+                remaining: counts.remaining,
+              })}
+            </Text>
+          </View>
+        </View>
+        <MetricRow label={t("goals.progress.elapsed")} value={formatMinutes(elapsedMs)} />
+        {estimate ? (
+          <MetricRow
+            label={t("goals.progress.remaining")}
+            value={estimate}
+            testID="goal-progress-estimate"
+          />
+        ) : null}
+        {deadlineValue && deadline.kind !== "none" ? (
+          <MetricRow label={t("goals.progress.deadline")} value={deadlineValue}>
+            <GoalBar
+              fraction={deadline.kind === "running" ? deadline.usedFraction : 1}
+              tone={fractionTone(
+                deadline.kind === "running" ? deadline.usedFraction : 1,
+                deadline.kind === "overdue",
+              )}
+            />
+          </MetricRow>
+        ) : null}
+        <BudgetRow
+          label={t("goals.progress.tokens")}
+          status={usage.tokens}
+          format={formatCompactCount}
+          hint={
+            tokenRate === null
+              ? null
+              : t("goals.progress.burnRate", { rate: formatCompactCount(tokenRate) })
+          }
+        />
+        <BudgetRow
+          label={t("goals.progress.cost")}
+          status={usage.cost}
+          format={formatUsd}
+          hint={
+            isPartialUsage
+              ? t("goals.progress.partialUsage", {
+                  reported: usage.reportedTurns,
+                  total: usage.totalTurns,
+                })
+              : null
+          }
+        />
+      </SettingsCard>
+    </SettingsSection>
+  );
+}
+
+function MetricRow({
+  label,
+  value,
+  children,
+  testID,
+}: {
+  label: string;
+  value: string;
+  children?: ReactNode;
+  testID?: string;
+}): ReactElement {
+  return (
+    <View style={settingsStyles.row} testID={testID}>
+      <View style={styles.fill}>
+        <View style={styles.headline}>
+          <Text style={styles.metricLabel}>{label}</Text>
+          <Text style={settingsStyles.rowTitle}>{value}</Text>
+        </View>
+        {children}
+      </View>
+    </View>
+  );
+}
+
+function BudgetRow({
+  label,
+  status,
+  format,
+  hint,
+}: {
+  label: string;
+  status: BudgetStatus;
+  format: (value: number) => string;
+  hint: string | null;
+}): ReactElement {
+  const { t } = useTranslation();
+  return (
+    <MetricRow label={label} value={budgetLabel(t, status, format)}>
+      {status.kind === "limited" ? (
+        <GoalBar fraction={status.fraction} tone={fractionTone(status.fraction, status.isOver)} />
+      ) : null}
+      {hint ? <Text style={styles.hint}>{hint}</Text> : null}
+    </MetricRow>
+  );
+}
+
+const styles = StyleSheet.create((theme) => ({
+  fill: {
+    flex: 1,
+    gap: theme.spacing[2],
+  },
+  headline: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[3],
+  },
+  metricLabel: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.base,
+  },
+  hint: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  danger: {
+    color: theme.colors.statusDanger,
+    fontSize: theme.fontSize.sm,
+  },
+}));

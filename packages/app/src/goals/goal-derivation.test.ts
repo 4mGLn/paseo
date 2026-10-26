@@ -1,46 +1,8 @@
-import type { Goal, GoalEvent, Task } from "@getpaseo/protocol/goal/types";
+import type { GoalEvent } from "@getpaseo/protocol/goal/types";
 import { describe, expect, it } from "vitest";
-import {
-  canApproveGoalPlan,
-  goalEventSubject,
-  isGoalTerminal,
-  summarizeGoalProgress,
-} from "./goal-derivation";
-
-function makeTask(id: string, status: Task["status"]): Task {
-  return {
-    id,
-    title: `Task ${id}`,
-    description: "",
-    kind: "implement",
-    dependsOn: [],
-    status,
-    attempts: 0,
-    summary: null,
-    error: null,
-  };
-}
+import { canApproveGoalPlan, goalEventSubject, isGoalTerminal } from "./goal-derivation";
 
 const AT = "2026-10-21T00:00:00.000Z";
-
-describe("summarizeGoalProgress", () => {
-  it("counts succeeded tasks and verified criteria", () => {
-    const goal: Pick<Goal, "tasks" | "criteria"> = {
-      tasks: [makeTask("a", "succeeded"), makeTask("b", "running"), makeTask("c", "failed")],
-      criteria: [
-        { id: "c1", text: "Tests pass", verifiedAt: AT, evidence: null },
-        { id: "c2", text: "Docs updated", verifiedAt: null, evidence: null },
-      ],
-    };
-
-    expect(summarizeGoalProgress(goal)).toEqual({
-      tasksDone: 1,
-      tasksTotal: 3,
-      criteriaVerified: 1,
-      criteriaTotal: 2,
-    });
-  });
-});
 
 describe("goal status policy", () => {
   it("offers approval only while the plan awaits approval", () => {
