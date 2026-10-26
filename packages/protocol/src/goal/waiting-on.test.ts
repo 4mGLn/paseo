@@ -73,4 +73,49 @@ describe("describeGoalWaitingOn", () => {
       "verification",
     );
   });
+
+  test("pairs every English label with a translation key and its params", () => {
+    expect(describeGoalWaitingOn({ ...base, tasks: [task("a", "running")] })).toEqual({
+      kind: "running",
+      label: "running task a (Task a)",
+      key: "goals.waitingOn.runningTask",
+      params: { count: 1, ids: "a", title: "Task a", tasks: "a (Task a)" },
+    });
+    expect(
+      describeGoalWaitingOn({ ...base, tasks: [task("a", "running"), task("b", "running")] }),
+    ).toMatchObject({
+      label: "running tasks a (Task a), b (Task b)",
+      key: "goals.waitingOn.runningTask",
+      params: { count: 2, ids: "a, b", title: "Task a" },
+    });
+    expect(
+      describeGoalWaitingOn({
+        ...base,
+        tasks: [task("a", "succeeded")],
+        changeSets: [changeSet("cs1", "approved"), changeSet("cs2", "integrating")],
+      }),
+    ).toEqual({
+      kind: "merge",
+      label: "merge of cs1, cs2",
+      key: "goals.waitingOn.merge",
+      params: { count: 2, ids: "cs1, cs2" },
+    });
+    expect(describeGoalWaitingOn({ ...base, pausedAt: "x" })).toEqual({
+      kind: "paused",
+      label: "resume (paused)",
+      key: "goals.waitingOn.paused",
+      params: {},
+    });
+    expect(describeGoalWaitingOn({ ...base, status: "planning", config: null })?.key).toBe(
+      "goals.waitingOn.manualPlan",
+    );
+    expect(describeGoalWaitingOn({ ...base, tasks: [task("a", "pending")] })).toMatchObject({
+      label: "starting task a (Task a)",
+      key: "goals.waitingOn.startingTask",
+      params: { count: 1, title: "Task a" },
+    });
+    expect(describeGoalWaitingOn({ ...base, tasks: [task("a", "failed")] })?.key).toBe(
+      "goals.waitingOn.retry",
+    );
+  });
 });

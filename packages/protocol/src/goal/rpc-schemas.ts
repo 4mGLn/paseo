@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { GoalConfigSchema, GoalEventSchema, GoalSchema, TaskSpecSchema } from "./types.js";
+import {
+  GoalConfigSchema,
+  GoalEventSchema,
+  GoalSchema,
+  GoalSummarySchema,
+  TaskSpecSchema,
+} from "./types.js";
 
 // Mutating requests accept an optional eventId. A retry with the same eventId is
 // a no-op, so a client can safely resend after a dropped connection.
@@ -101,6 +107,15 @@ export const GoalResumeRequestSchema = z.object({
   eventId,
 });
 
+// Gated on server_info.features.goalAcknowledge. Dismisses an ended goal; see the
+// goal.acknowledged event.
+export const GoalAcknowledgeRequestSchema = z.object({
+  type: z.literal("goal.acknowledge.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  eventId,
+});
+
 const GoalMutationPayloadSchema = z.object({
   requestId: z.string(),
   goal: GoalSchema.nullable(),
@@ -116,7 +131,8 @@ export const GoalListResponseSchema = z.object({
   type: z.literal("goal.list.response"),
   payload: z.object({
     requestId: z.string(),
-    goals: z.array(GoalSchema),
+    // Each goal carries `progress` from daemons that compute it.
+    goals: z.array(GoalSummarySchema),
     error: z.string().nullable(),
   }),
 });
@@ -174,4 +190,21 @@ export const GoalPauseResponseSchema = z.object({
 export const GoalResumeResponseSchema = z.object({
   type: z.literal("goal.resume.response"),
   payload: GoalMutationPayloadSchema,
+});
+
+export const GoalAcknowledgeResponseSchema = z.object({
+  type: z.literal("goal.acknowledge.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+// Pushed to connections that subscribed to the "goal.update" session event, gated on
+// server_info.features.goalUpdates. One per goal change, coalesced per goal, carrying
+// the goal as goal.list returns it. Not a reply: there is no requestId.
+export const GoalUpdateMessageSchema = z.object({
+  type: z.literal("goal.update"),
+  payload: z.object({
+    // The session.events subscription this push belongs to.
+    subscriptionId: z.string().optional(),
+    goal: GoalSummarySchema,
+  }),
 });

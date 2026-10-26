@@ -225,6 +225,16 @@ export const ChangeSetSchema = z.object({
   error: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  // Stage times, set by the reducer from changeset.transitioned events. Absent until the
+  // stage is reached, and from daemons that predate them.
+  // Entered in_review.
+  reviewStartedAt: z.string().optional(),
+  // Left in_review with a verdict: approved, held for a person, changes requested or rejected.
+  reviewedAt: z.string().optional(),
+  // First entered integrating.
+  mergeStartedAt: z.string().optional(),
+  // Reached integrated.
+  mergedAt: z.string().optional(),
 });
 export type ChangeSet = z.infer<typeof ChangeSetSchema>;
 
@@ -292,6 +302,14 @@ export const GoalSchema = z.object({
   // Usage of every agent turn: Lead, workers, reviewers, verifier. Absent until the
   // first turn is recorded, and from daemons that predate usage tracking.
   usage: UsageTotalsSchema.optional(),
+  // When every task succeeded and every change set settled, so verification could start.
+  // Absent until then, and from daemons that predate stage times.
+  verifyStartedAt: z.string().optional(),
+  // When the last acceptance criterion was verified.
+  verifiedAt: z.string().optional(),
+  // When a person dismissed an ended goal. Null again after a retry reopens it. It changes
+  // nothing else. Absent from daemons without goal.acknowledge.
+  acknowledgedAt: z.string().nullable().optional(),
   // Sequence number of the last event folded into this state.
   lastSeq: z.number().int().nonnegative(),
   failureReason: z.string().nullable(),
@@ -299,6 +317,22 @@ export const GoalSchema = z.object({
   updatedAt: z.string(),
 });
 export type Goal = z.infer<typeof GoalSchema>;
+
+// Task counts for a list row; see summarizeGoalProgress in ./progress.ts.
+export const GoalProgressSummarySchema = z.object({
+  tasksTotal: z.number().int().nonnegative(),
+  tasksDone: z.number().int().nonnegative(),
+  tasksFailed: z.number().int().nonnegative(),
+  tasksRunning: z.number().int().nonnegative(),
+});
+export type GoalProgressSummary = z.infer<typeof GoalProgressSummarySchema>;
+
+// A goal as goal.list and goal.update carry it: the full goal plus derived counts.
+// `progress` is absent from daemons that predate it; derive it from `tasks` then.
+export const GoalSummarySchema = GoalSchema.extend({
+  progress: GoalProgressSummarySchema.optional(),
+});
+export type GoalSummary = z.infer<typeof GoalSummarySchema>;
 
 const eventEnvelope = {
   // Unique per event; the log treats a repeated id as a duplicate delivery.
@@ -468,6 +502,8 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     taskIds: z.array(IdSchema).min(1),
     reopen: z.boolean(),
   }),
+  // A person dismissed an ended goal. Accepted only after the goal has ended.
+  z.object({ ...eventEnvelope, type: z.literal("goal.acknowledged") }),
 ]);
 export type GoalEvent = z.infer<typeof GoalEventSchema>;
 export type GoalEventType = GoalEvent["type"];
