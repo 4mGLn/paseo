@@ -162,4 +162,10 @@ describe("goalControlsAvailable", () => {
     };
     expect(goalControlsAvailable(rejected, true).canRetry).toBe(false);
   });
+
+  it("does not retry an archived failed goal until it is unarchived", () => {
+    const archived = makeGoal({ status: "failed", archivedAt: "2026-10-22T00:00:00Z" });
+    expect(goalControlsAvailable(archived, true).canRetry).toBe(false);
+    expect(goalControlsAvailable({ ...archived, archivedAt: null }, true).canRetry).toBe(true);
+  });
 });

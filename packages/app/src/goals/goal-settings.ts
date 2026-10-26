@@ -1,4 +1,5 @@
 import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
+import { goalRoleProvider, goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { GoalConfig } from "@getpaseo/protocol/goal/types";
 
 export type GoalPermissionPolicy = "fail" | "wait";
@@ -227,7 +228,9 @@ export type GoalSettingsSummaryPart =
   | { key: "runLimit"; duration: DurationParts }
   | { key: "deadline"; duration: DurationParts }
   | { key: "approvesPlan" | "asksPlan" | "asksMerge" | "mergesReviewed" | "runsTests" }
-  | { key: "waitsPermission" };
+  | { key: "waitsPermission" }
+  /** A role whose thinking level is set; `label` is the option's display label. */
+  | { key: "thinking"; role: GoalThinkingRole; label: string };
 
 /** The settings as a few clauses, read top to bottom as one sentence under the form. */
 export function summarizeGoalSettings(
@@ -309,4 +312,34 @@ export function normalizeGoalSettings(input: Partial<GoalSettings>): GoalSetting
     settings[key] = Number.isFinite(value) ? Math.min(range.max, Math.max(range.min, value)) : 0;
   }
   return settings;
+}
+
+/** The roles of a goal that each start agents with their own thinking level. */
+export type GoalThinkingRole = "lead" | "worker" | "reviewer" | "verifier";
+
+export const GOAL_THINKING_ROLES: readonly GoalThinkingRole[] = [
+  "lead",
+  "worker",
+  "reviewer",
+  "verifier",
+];
+
+export interface GoalTeamRole {
+  role: GoalThinkingRole;
+  /** `provider` or `provider/model`, as the daemon starts it. */
+  provider: string;
+  /** The thinking option asked for; null leaves the model's default. */
+  thinking: string | null;
+}
+
+/**
+ * Who runs each role of a managed goal and with what thinking, read from its config. Workers are
+ * the ones on `defaultProvider`; a task that names another provider keeps its own setting.
+ */
+export function goalTeam(config: GoalConfig): GoalTeamRole[] {
+  return GOAL_THINKING_ROLES.map((role) => ({
+    role,
+    provider: goalRoleProvider(config, role),
+    thinking: goalRoleThinking(config, role) ?? null,
+  }));
 }

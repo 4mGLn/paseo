@@ -7,7 +7,7 @@ export type GoalListFilter = "needs_you" | "running" | "done" | "all";
 
 export const GOAL_LIST_FILTERS: readonly GoalListFilter[] = ["needs_you", "running", "done", "all"];
 
-type AttentionInput = Pick<Goal, "status" | "changeSets" | "acknowledgedAt">;
+type AttentionInput = Pick<Goal, "status" | "changeSets" | "acknowledgedAt" | "archivedAt">;
 
 const DONE_STATUSES: ReadonlySet<GoalStatus> = new Set(["completed", "failed", "cancelled"]);
 
@@ -18,6 +18,10 @@ function awaitingChangeSetIds(goal: AttentionInput): string[] {
 }
 
 export function goalAttention(goal: AttentionInput): GoalAttentionKind | null {
+  // Archiving puts an ended goal away; it stops asking like a dismissed one.
+  if (goal.archivedAt) {
+    return null;
+  }
   if (goal.status === "awaiting_plan_approval") {
     return "plan_review";
   }
@@ -73,22 +77,31 @@ export function countGoalsByFilter(
 }
 
 export interface GoalListSections<T> {
-  /** Goals waiting on you, newest activity first. */
+  /** Goals waiting on you. */
   attention: T[];
   others: T[];
+  /** Archived goals, present only when the list shows them. */
+  archived: T[];
 }
 
-/** The goals the filter keeps, split into the ones waiting on you and the rest. */
+const byRecentUpdate = (a: Pick<Goal, "updatedAt">, b: Pick<Goal, "updatedAt">) =>
+  Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+
+/**
+ * The goals the filter keeps, split into the ones waiting on you, the rest, and the archived
+ * ones, each in `compare` order (newest activity first by default).
+ */
 export function buildGoalListSections<T extends AttentionInput & Pick<Goal, "updatedAt">>(
   goals: readonly T[],
   filter: GoalListFilter,
+  compare: (a: T, b: T) => number = byRecentUpdate,
 ): GoalListSections<T> {
-  const byRecent = goals
-    .filter((goal) => matchesGoalListFilter(goal, filter))
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const sorted = goals.filter((goal) => matchesGoalListFilter(goal, filter)).sort(compare);
+  const live = sorted.filter((goal) => !goal.archivedAt);
   return {
-    attention: byRecent.filter((goal) => goalAttention(goal) !== null),
-    others: byRecent.filter((goal) => goalAttention(goal) === null),
+    attention: live.filter((goal) => goalAttention(goal) !== null),
+    others: live.filter((goal) => goalAttention(goal) === null),
+    archived: sorted.filter((goal) => Boolean(goal.archivedAt)),
   };
 }
 
