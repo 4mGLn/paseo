@@ -407,6 +407,7 @@ const DEFAULT_MODES: AgentMode[] = [
     id: "bypassPermissions",
     label: "Bypass",
     description: "Skip all permission prompts (use with caution)",
+    isUnattended: true,
   },
 ];
 
