@@ -4,12 +4,14 @@ import {
   createGoalAgentPort,
   createGoalWorkspacePort,
   createTurnUsageMeter,
+  goalPolicyModeId,
   settleTurn,
   toTurnUsage,
   watchTurn,
   type GoalPortDeps,
 } from "./goal-ports.js";
 import type { AgentManagerEvent } from "../agent/agent-manager.js";
+import type { GoalMode } from "./goal-config-validation.js";
 
 const done = (lastMessage: string) => ({ status: "idle", permission: null, lastMessage });
 const asking = { status: "running", permission: { id: "p1" }, lastMessage: null };
@@ -57,6 +59,22 @@ describe("settleTurn", () => {
     );
     expect(result).toEqual({ outcome: "completed", text: "finished after approval" });
     expect(pauses).toEqual([1000, 1000, 1000]);
+  });
+
+  test("a waiting turn ends once the goal is switched to fail", async () => {
+    let policy: "fail" | "wait" = "wait";
+    let polls = 0;
+    const result = await settleTurn(
+      sequence(asking),
+      () => policy,
+      "a1",
+      async () => {
+        polls += 1;
+        if (polls === 2) policy = "fail";
+      },
+    );
+    expect(result).toEqual({ outcome: "needs_permission" });
+    expect(polls).toBe(2);
   });
 
   test("a request left pending on an agent that has stopped does not loop forever", async () => {
@@ -342,5 +360,116 @@ describe("agent port", () => {
       { unattended: false, mode: undefined },
       { unattended: false, mode: undefined },
     ]);
+  });
+
+  test("auto picks each provider's own auto mode from its real mode list", async () => {
+    const codexModes = CODEX_MODE_IDS;
+    const { port, calls } = setup(
+      {},
+      {
+        claude: ["default", "acceptEdits", "plan", "auto", "bypassPermissions"],
+        codex: codexModes,
+        // A provider without a preference entry keeps the `auto` id rule.
+        other: ["ask", "auto"],
+        none: ["ask", "yolo"],
+      },
+    );
+    for (const provider of ["claude", "codex/gpt-6-luna", "other", "none"]) {
+      await port.createAgent({ ...base, provider, permission: "auto" });
+    }
+    // A Codex too old for the auto-reviewer: its `auto` is Default Permissions, so it is not used.
+    const old = setup({}, { codex: codexModes.filter((id) => id !== "auto-review") });
+    await old.port.createAgent({ ...base, provider: "codex", permission: "auto" });
+    expect([...calls, ...old.calls].map((c) => c.mode)).toEqual([
+      "auto",
+      "auto-review",
+      "auto",
+      undefined,
+      undefined,
+    ]);
+  });
+});
+
+/** The mode ids the Codex provider lists when its version supports the auto-reviewer. */
+const CODEX_MODE_IDS = ["auto", "auto-review", "full-access"];
+
+describe("goalPolicyModeId", () => {
+  const catalogs: Record<string, GoalMode[]> = {
+    claude: [{ id: "default" }, { id: "auto" }, { id: "bypassPermissions", isUnattended: true }],
+    codex: [{ id: "auto" }, { id: "auto-review" }, { id: "full-access", isUnattended: true }],
+    plain: [{ id: "build" }],
+  };
+  const defaults: Record<string, string> = {
+    claude: "default",
+    codex: "auto-review",
+    plain: "build",
+  };
+  const deps = {
+    modeCatalog: async (provider: string) => catalogs[provider] ?? [],
+    defaultModeId: async (provider: string) => defaults[provider] ?? null,
+  };
+  const target = (provider: string, permission: "fail" | "wait" | "auto") =>
+    goalPolicyModeId(deps, { provider, cwd: "/repo", permission });
+
+  test("fail is the unattended mode, auto the auto mode, wait the default mode", async () => {
+    expect(await target("claude", "fail")).toBe("bypassPermissions");
+    expect(await target("claude", "auto")).toBe("auto");
+    expect(await target("claude", "wait")).toBe("default");
+    expect(await target("codex", "fail")).toBe("full-access");
+    expect(await target("codex", "auto")).toBe("auto-review");
+    expect(await target("codex", "wait")).toBe("auto-review");
+  });
+
+  test("auto without an auto mode is the default mode; fail without an unattended mode is none", async () => {
+    expect(await target("plain", "auto")).toBe("build");
+    // A Codex too old for the auto-reviewer starts in Default Permissions, its default.
+    const old = await goalPolicyModeId(
+      {
+        modeCatalog: async () => [{ id: "auto" }, { id: "full-access", isUnattended: true }],
+        defaultModeId: async () => "auto",
+      },
+      { provider: "codex", cwd: "/repo", permission: "auto" },
+    );
+    expect(old).toBe("auto");
+    expect(await target("plain", "fail")).toBeUndefined();
+  });
+});
+
+describe("agent port setPermissionMode", () => {
+  function setup(notice: { type: string; message: string } | null) {
+    const setModes: { agentId: string; modeId: string }[] = [];
+    const agent = { id: "agent-1", provider: "codex", cwd: "/repo/ws" };
+    const deps = {
+      logger: pino({ level: "silent" }),
+      modeCatalog: async () => [
+        { id: "auto" },
+        { id: "auto-review" },
+        { id: "full-access", isUnattended: true },
+      ],
+      defaultModeId: async () => "auto-review",
+      agentManager: {
+        getAgent: (agentId: string) => (agentId === agent.id ? agent : null),
+        setAgentMode: async (agentId: string, modeId: string) => {
+          setModes.push({ agentId, modeId });
+          return notice;
+        },
+      },
+    } as unknown as GoalPortDeps;
+    return { port: createGoalAgentPort(deps), setModes };
+  }
+
+  test("sets the policy's mode the way the mode picker does, and reports a next-turn switch", async () => {
+    const midTurn = setup({ type: "warning", message: "Permission mode applies next turn" });
+    expect(await midTurn.port.setPermissionMode("agent-1", "fail")).toEqual({
+      modeId: "full-access",
+      nextTurn: true,
+    });
+    expect(midTurn.setModes).toEqual([{ agentId: "agent-1", modeId: "full-access" }]);
+
+    const idle = setup(null);
+    expect(await idle.port.setPermissionMode("agent-1", "auto")).toEqual({
+      modeId: "auto-review",
+      nextTurn: false,
+    });
   });
 });

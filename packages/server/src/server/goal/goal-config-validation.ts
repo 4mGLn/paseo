@@ -10,11 +10,32 @@ export type GoalConfigValidator = (config: GoalConfig) => Promise<GoalConfig>;
 /** Checks a goal's changed settings; throws when they cannot be stored. */
 export type GoalConfigUpdateValidator = (next: GoalConfig, previous: GoalConfig) => Promise<void>;
 
-/** The permission modes a provider lists for a directory. */
-export type GoalModeCatalog = (provider: string, cwd: string) => Promise<{ id: string }[]>;
+/** A permission mode a provider lists; `isUnattended` marks its no-prompt mode. */
+export interface GoalMode {
+  id: string;
+  isUnattended?: boolean;
+}
 
-/** The mode id the `auto` permission policy starts agents in. */
-export const GOAL_AUTO_MODE_ID = "auto";
+/** The permission modes a provider lists for a directory. */
+export type GoalModeCatalog = (provider: string, cwd: string) => Promise<GoalMode[]>;
+
+/**
+ * The auto modes the `auto` policy may pick, per provider, most autonomous first. Only a
+ * mode that lets a classifier or reviewer answer prompts counts: Codex's `auto` mode is
+ * "Default Permissions" and asks for every command, so Codex needs `auto-review`. A provider
+ * not listed here uses a mode with the id `auto`.
+ */
+const GOAL_AUTO_MODES: Record<string, readonly string[]> = {
+  claude: ["auto"],
+  codex: ["auto-review"],
+};
+const GOAL_AUTO_MODES_FALLBACK: readonly string[] = ["auto"];
+
+/** The mode the `auto` policy picks from a provider's modes, if it lists one. */
+export function goalAutoModeId(provider: string, modes: GoalMode[]): string | undefined {
+  const preferred = GOAL_AUTO_MODES[baseProvider(provider)] ?? GOAL_AUTO_MODES_FALLBACK;
+  return preferred.find((id) => modes.some((mode) => mode.id === id));
+}
 
 export interface ConfigValidationDeps {
   git: Pick<GitPort, "head">;
@@ -135,13 +156,13 @@ async function assertAutoPolicy(
     const provider = baseProvider(value);
     if (checked.has(provider)) continue;
     checked.add(provider);
-    let modes: { id: string }[];
+    let modes: GoalMode[];
     try {
       modes = await deps.modeCatalog(provider, config.cwd);
     } catch {
       continue;
     }
-    if (modes.some((mode) => mode.id === GOAL_AUTO_MODE_ID)) continue;
+    if (goalAutoModeId(provider, modes)) continue;
     throw new Error(
       `onPermissionRequest "auto" needs an auto mode, and ${field} "${value}" has none. ` +
         `Available modes: ${modes.map((mode) => mode.id).join(", ") || "(none)"}. Use "wait" instead.`,
