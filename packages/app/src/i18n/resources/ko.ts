@@ -848,8 +848,8 @@ export const ko: TranslationResources = {
         maxTotalTokens: { label: "토큰", hint: "프로바이더가 이만큼 보고하면 목표가 중지됩니다" },
         maxCostUsd: { label: "비용", hint: "프로바이더가 이 금액을 보고하면 목표가 중지됩니다" },
         requireHumanApproval: {
-          label: "병합 전에 확인",
-          hint: "검토를 마친 모든 변경이 내 확인을 기다립니다",
+          label: "변경을 병합하기 전에 내게 확인",
+          hint: "리뷰어가 변경을 승인하면 내 확인을 기다립니다. 그 변경에 의존하는 작업도 함께 기다리므로 목표가 느려집니다.",
         },
         autoApprovePlan: {
           label: "계획 자동 승인",
@@ -3471,6 +3471,15 @@ export const ko: TranslationResources = {
         removeConfirmMessage: '"{{name}}"을(를) 제거할까요?',
         moveUp: "위로 이동",
         moveDown: "아래로 이동",
+      },
+      goalRunCap: {
+        sectionTitle: "목표",
+        title: "동시에 실행하는 워커",
+        unit: "개의 워커 동시 실행",
+        hint: "이 호스트의 모든 목표가 함께 씁니다. 값을 올리려면 그만큼의 에이전트를 동시에 돌릴 CPU, 메모리, 프로바이더 사용 한도가 필요합니다.",
+        defaultValue: "기본값 {{value}}",
+        save: "저장",
+        saving: "저장 중...",
       },
       agentTeams: {
         sectionTitle: "팀",

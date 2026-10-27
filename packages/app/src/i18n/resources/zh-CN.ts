@@ -838,8 +838,8 @@ export const zhCN: TranslationResources = {
         maxTotalTokens: { label: "Token", hint: "Provider 报告达到此数量后，目标会停止" },
         maxCostUsd: { label: "费用", hint: "Provider 报告达到此金额后，目标会停止" },
         requireHumanApproval: {
-          label: "合并前先问我",
-          hint: "每项已审查的变更都会等你处理",
+          label: "合并变更前先问我",
+          hint: "审查者批准变更后，它会等你确认。依赖它的任务也会等待，因此目标会变慢。",
         },
         autoApprovePlan: {
           label: "自动批准计划",
@@ -3418,6 +3418,15 @@ export const zhCN: TranslationResources = {
         removeConfirmMessage: "移除「{{name}}」？",
         moveUp: "上移",
         moveDown: "下移",
+      },
+      goalRunCap: {
+        sectionTitle: "目标",
+        title: "同时运行的工作者",
+        unit: "个工作者同时运行",
+        hint: "此主机上的所有目标共用。调高前，请确保有足够的 CPU、内存和提供方速率限制来同时运行这么多代理。",
+        defaultValue: "默认 {{value}}",
+        save: "保存",
+        saving: "正在保存...",
       },
       agentTeams: {
         sectionTitle: "团队",

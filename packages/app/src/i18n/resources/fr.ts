@@ -874,8 +874,8 @@ export const fr: TranslationResources = {
           hint: "L'objectif s'arrête quand les fournisseurs signalent ce montant",
         },
         requireHumanApproval: {
-          label: "Me demander avant de fusionner",
-          hint: "Chaque changement relu attend votre réponse",
+          label: "Me demander avant de fusionner les changements",
+          hint: "Une fois le changement approuvé par le relecteur, il attend votre réponse. Les tâches qui en dépendent attendent aussi, donc l'objectif avance plus lentement.",
         },
         autoApprovePlan: {
           label: "Approuver le plan automatiquement",
@@ -3543,6 +3543,15 @@ export const fr: TranslationResources = {
         removeConfirmMessage: "Supprimer « {{name}} » ?",
         moveUp: "Monter",
         moveDown: "Descendre",
+      },
+      goalRunCap: {
+        sectionTitle: "Objectifs",
+        title: "Exécutions de workers simultanées",
+        unit: "exécutions de workers simultanées",
+        hint: "Partagé par tous les objectifs de cet hôte. L'augmenter demande assez de CPU, de mémoire et de limite de débit chez le fournisseur pour autant d'agents à la fois.",
+        defaultValue: "Par défaut {{value}}",
+        save: "Enregistrer",
+        saving: "Enregistrement...",
       },
       agentTeams: {
         sectionTitle: "Équipes",

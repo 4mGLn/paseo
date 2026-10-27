@@ -870,8 +870,8 @@ export const ptBR: TranslationResources = {
           hint: "A meta para quando os provedores informam esse valor",
         },
         requireHumanApproval: {
-          label: "Perguntar antes de mesclar",
-          hint: "Toda alteração revisada espera por você",
+          label: "Perguntar antes de mesclar as alterações",
+          hint: "Depois que o revisor aprova uma alteração, ela espera por você. As tarefas que dependem dela também esperam, então o objetivo fica mais lento.",
         },
         autoApprovePlan: {
           label: "Aprovar o plano automaticamente",
@@ -3517,6 +3517,15 @@ export const ptBR: TranslationResources = {
         removeConfirmMessage: 'Remover "{{name}}"?',
         moveUp: "Mover para cima",
         moveDown: "Mover para baixo",
+      },
+      goalRunCap: {
+        sectionTitle: "Objetivos",
+        title: "Execuções de workers ao mesmo tempo",
+        unit: "execuções de workers simultâneas",
+        hint: "Compartilhado por todos os objetivos deste host. Aumentar exige CPU, memória e limite de uso do provedor suficientes para tantos agentes ao mesmo tempo.",
+        defaultValue: "Padrão {{value}}",
+        save: "Salvar",
+        saving: "Salvando...",
       },
       agentTeams: {
         sectionTitle: "Equipes",

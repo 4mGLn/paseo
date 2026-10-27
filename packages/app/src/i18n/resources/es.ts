@@ -865,8 +865,8 @@ export const es: TranslationResources = {
           hint: "El objetivo se detiene cuando los proveedores informan de este importe",
         },
         requireHumanApproval: {
-          label: "Preguntarme antes de fusionar",
-          hint: "Cada cambio revisado espera tu respuesta",
+          label: "Preguntarme antes de fusionar los cambios",
+          hint: "Cuando el revisor aprueba un cambio, espera tu respuesta. Las tareas que dependen de él también esperan, así que el objetivo avanza más despacio.",
         },
         autoApprovePlan: {
           label: "Aprobar el plan automáticamente",
@@ -3528,6 +3528,15 @@ export const es: TranslationResources = {
         removeConfirmMessage: '¿Eliminar "{{name}}"?',
         moveUp: "Mover hacia arriba",
         moveDown: "Mover hacia abajo",
+      },
+      goalRunCap: {
+        sectionTitle: "Objetivos",
+        title: "Ejecuciones de workers a la vez",
+        unit: "ejecuciones de workers simultáneas",
+        hint: "Lo comparten todos los objetivos de este host. Subirlo requiere suficiente CPU, memoria y límite de uso del proveedor para tantos agentes a la vez.",
+        defaultValue: "Predeterminado {{value}}",
+        save: "Guardar",
+        saving: "Guardando...",
       },
       agentTeams: {
         sectionTitle: "Equipos",
