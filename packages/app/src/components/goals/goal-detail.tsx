@@ -85,7 +85,13 @@ export function GoalDetail({
   return (
     <View style={styles.container} testID="goal-detail">
       <View style={styles.backRow}>
-        <Button variant="ghost" size="sm" leftIcon={ChevronLeft} onPress={onBack}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leftIcon={ChevronLeft}
+          onPress={onBack}
+          testID="goal-detail-back"
+        >
           {t("common.actions.back")}
         </Button>
       </View>
