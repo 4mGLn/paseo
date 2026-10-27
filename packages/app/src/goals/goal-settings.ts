@@ -1,8 +1,30 @@
-import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
+import {
+  DEFAULT_GOAL_PERMISSION_POLICY,
+  GOAL_CONFIG_BOUNDS,
+  type GoalPermissionPolicy,
+} from "@getpaseo/protocol/goal/config-bounds";
 import { goalRoleProvider, goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { GoalConfig } from "@getpaseo/protocol/goal/types";
 
-export type GoalPermissionPolicy = "fail" | "wait";
+export type { GoalPermissionPolicy };
+
+/**
+ * The policies to offer, safest first. `auto` needs a host with `goalConfigEdit`: an older
+ * daemon's schema rejects it.
+ */
+export function goalPermissionPolicyOptions(autoSupported: boolean): GoalPermissionPolicy[] {
+  return autoSupported ? ["wait", "auto", "fail"] : ["wait", "fail"];
+}
+
+/** Settings the host can take: a remembered `auto` becomes `wait` on a host without it. */
+export function supportedGoalSettings(
+  settings: GoalSettings,
+  autoSupported: boolean,
+): GoalSettings {
+  return !autoSupported && settings.onPermissionRequest === "auto"
+    ? { ...settings, onPermissionRequest: "wait" }
+    : settings;
+}
 
 /** Every tunable knob of a managed goal except who does the work and where. */
 export interface GoalSettings {
@@ -59,7 +81,7 @@ export const DAEMON_GOAL_SETTINGS: GoalSettings = {
   retryBackoffSeconds: BOUNDS.limits.retryBackoffSeconds.default,
   autoApprovePlan: false,
   requireHumanApproval: false,
-  onPermissionRequest: "fail",
+  onPermissionRequest: DEFAULT_GOAL_PERMISSION_POLICY,
   notifyLead: true,
 };
 
@@ -239,7 +261,8 @@ export type GoalSettingsSummaryPart =
   | { key: "runLimit"; duration: DurationParts }
   | { key: "deadline"; duration: DurationParts }
   | { key: "approvesPlan" | "asksPlan" | "asksMerge" | "mergesReviewed" | "runsTests" }
-  | { key: "waitsPermission" }
+  /** A permission policy other than the default `wait`. */
+  | { key: "autoPermission" | "failsPermission" }
   /** A role whose thinking level is set; `label` is the option's display label. */
   | { key: "thinking"; role: GoalThinkingRole; label: string };
 
@@ -258,8 +281,10 @@ export function summarizeGoalSettings(
   if (extra.hasTestCommand) {
     parts.push({ key: "runsTests" });
   }
-  if (settings.onPermissionRequest === "wait") {
-    parts.push({ key: "waitsPermission" });
+  if (settings.onPermissionRequest === "auto") {
+    parts.push({ key: "autoPermission" });
+  } else if (settings.onPermissionRequest === "fail") {
+    parts.push({ key: "failsPermission" });
   }
   return parts;
 }
@@ -291,7 +316,8 @@ export type GoalSettingsConfig = Pick<
 
 /**
  * The settings as `GoalConfig` fields. Optional fields equal to the daemon's default are left
- * out, so the daemon keeps owning its defaults.
+ * out, so the daemon keeps owning its defaults. The permission policy is the exception: a daemon
+ * from before `wait` became the default runs a goal without one as `fail`.
  */
 export function goalSettingsToConfig(settings: GoalSettings): GoalSettingsConfig {
   const limits: NonNullable<GoalConfig["limits"]> = {};
@@ -310,7 +336,7 @@ export function goalSettingsToConfig(settings: GoalSettings): GoalSettingsConfig
     ...(settings.requireHumanApproval ? { requireHumanApproval: true } : {}),
     ...(changedRework ? { maxReworkRounds: settings.maxReworkRounds } : {}),
     ...(hasLimits ? { limits } : {}),
-    ...(settings.onPermissionRequest === "wait" ? { onPermissionRequest: "wait" as const } : {}),
+    onPermissionRequest: settings.onPermissionRequest,
   };
 }
 

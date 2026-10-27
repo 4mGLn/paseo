@@ -129,6 +129,7 @@ export function useGoalFormHosts(model: GoalFormModel): void {
   const goals = useHostFeatureMap(serverIds, "goals");
   const budgets = useHostFeatureMap(serverIds, "goalBudgets");
   const thinking = useHostFeatureMap(serverIds, "goalThinking");
+  const configEdit = useHostFeatureMap(serverIds, "goalConfigEdit");
   const statuses = useHostRuntimeConnectionStatuses(serverIds);
   const hosts = useMemo<GoalFormHost[]>(
     () =>
@@ -141,8 +142,9 @@ export function useGoalFormHosts(model: GoalFormModel): void {
           label: host.label,
           budgetSupported: budgets.get(host.serverId) === true,
           thinkingSupported: thinking.get(host.serverId) === true,
+          autoPermissionSupported: configEdit.get(host.serverId) === true,
         })),
-    [budgets, goals, profiles, statuses, thinking],
+    [budgets, configEdit, goals, profiles, statuses, thinking],
   );
 
   useEffect(() => {

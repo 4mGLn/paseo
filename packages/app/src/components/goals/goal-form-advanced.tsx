@@ -1,22 +1,16 @@
-import { useCallback, useMemo, type ReactElement, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Check } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import type { FieldControlSize } from "@/components/ui/control-geometry";
-import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import type { GoalFormModel, GoalFormState } from "@/goals/goal-form-model";
-import { durationLabel } from "@/goals/goal-labels";
-import { formatCompactCount, formatUsd } from "@/goals/goal-progress";
-import { GOAL_BUDGET_FIELDS, GOAL_SETTING_FIELDS } from "@/goals/goal-number-fields";
 import {
-  minutesToDuration,
-  secondsToDuration,
+  goalPermissionPolicyOptions,
   type GoalBudgetKey,
   type GoalNumberSetting,
   type GoalPermissionPolicy,
-  type GoalSettings,
 } from "@/goals/goal-settings";
 import {
   ModelSelect,
@@ -25,7 +19,12 @@ import {
   SwitchSetting,
   ThinkingSelect,
 } from "./goal-form-fields";
-import { ScrubNumberField } from "./scrub-number-field";
+import {
+  GoalBudgetField,
+  GoalNumberSettingField,
+  GoalPermissionPolicyField,
+  GoalSettingsGroup as Group,
+} from "./goal-settings-fields";
 
 interface AdvancedProps {
   model: GoalFormModel;
@@ -50,22 +49,13 @@ export function GoalFormAdvanced(props: AdvancedProps): ReactElement {
       </Group>
       {props.state.budgetSupported ? (
         <Group title={t("goals.form.sections.budget")}>
-          <BudgetSetting {...props} budgetKey="maxTotalTokens" format={formatCompactCount} />
-          <BudgetSetting {...props} budgetKey="maxCostUsd" format={formatUsd} />
+          <BudgetSetting {...props} budgetKey="maxTotalTokens" />
+          <BudgetSetting {...props} budgetKey="maxCostUsd" />
         </Group>
       ) : null}
       <Group title={t("goals.form.sections.safety")}>
         <SafetySettings {...props} />
       </Group>
-    </View>
-  );
-}
-
-function Group({ title, children }: { title: string; children: ReactNode }): ReactElement {
-  return (
-    <View style={styles.group}>
-      <Text style={styles.groupTitle}>{title}</Text>
-      {children}
     </View>
   );
 }
@@ -253,12 +243,9 @@ function SafetySettings({ model, state, size }: AdvancedProps): ReactElement {
     (value: GoalPermissionPolicy) => model.setSetting("onPermissionRequest", value),
     [model],
   );
-  const permissionOptions = useMemo<SegmentedControlOption<GoalPermissionPolicy>[]>(
-    () => [
-      { value: "fail", label: t("goals.form.permissionFail"), testID: "goal-permission-fail" },
-      { value: "wait", label: t("goals.form.permissionWait"), testID: "goal-permission-wait" },
-    ],
-    [t],
+  const permissionOptions = useMemo(
+    () => goalPermissionPolicyOptions(state.autoPermissionSupported),
+    [state.autoPermissionSupported],
   );
   return (
     <>
@@ -277,19 +264,12 @@ function SafetySettings({ model, state, size }: AdvancedProps): ReactElement {
         testID="goal-auto-approve-switch"
       />
       <NumberSetting model={model} state={state} size={size} setting="maxReworkRounds" />
-      <View style={styles.block}>
-        <SettingRow
-          label={t("goals.form.settings.onPermissionRequest.label")}
-          hint={t("goals.form.settings.onPermissionRequest.hint")}
-        />
-        <SegmentedControl
-          options={permissionOptions}
-          value={settings.onPermissionRequest}
-          onValueChange={setPermission}
-          size={size}
-          testID="goal-permission"
-        />
-      </View>
+      <GoalPermissionPolicyField
+        value={settings.onPermissionRequest}
+        options={permissionOptions}
+        onChange={setPermission}
+        size={size}
+      />
       <SwitchSetting
         label={t("goals.form.settings.notifyLead.label")}
         hint={t("goals.form.settings.notifyLead.hint")}
@@ -301,20 +281,6 @@ function SafetySettings({ model, state, size }: AdvancedProps): ReactElement {
   );
 }
 
-function describeSetting(
-  t: ReturnType<typeof useTranslation>["t"],
-  setting: GoalNumberSetting,
-  value: number,
-): string {
-  if (setting === "runTimeoutMinutes" || setting === "goalTimeoutMinutes") {
-    return durationLabel(t, minutesToDuration(value));
-  }
-  if (setting === "retryBackoffSeconds") {
-    return durationLabel(t, secondsToDuration(value));
-  }
-  return String(value);
-}
-
 function NumberSetting({
   model,
   state,
@@ -323,35 +289,17 @@ function NumberSetting({
 }: Pick<AdvancedProps, "model" | "state" | "size"> & {
   setting: GoalNumberSetting;
 }): ReactElement {
-  const { t } = useTranslation();
-  const value: GoalSettings[GoalNumberSetting] = state.values.settings[setting];
-  const field = GOAL_SETTING_FIELDS[setting];
-  const label = t(`goals.form.settings.${setting}.label`);
   const handleChange = useCallback(
-    (next: number | null) => {
-      if (next !== null) {
-        model.setSetting(setting, next);
-      }
-    },
-    [model, setting],
-  );
-  const describeValue = useCallback(
-    (next: number | null) => (next === null ? "" : describeSetting(t, setting, next)),
-    [setting, t],
+    (key: GoalNumberSetting, value: number) => model.setSetting(key, value),
+    [model],
   );
   return (
-    <SettingRow label={label} hint={t(`goals.form.settings.${setting}.hint`)}>
-      <ScrubNumberField
-        label={label}
-        value={value}
-        onChange={handleChange}
-        scale={field.scale}
-        format={field.format}
-        describeValue={describeValue}
-        size={size}
-        testID={`goal-setting-${setting}`}
-      />
-    </SettingRow>
+    <GoalNumberSettingField
+      setting={setting}
+      value={state.values.settings[setting]}
+      onChange={handleChange}
+      size={size}
+    />
   );
 }
 
@@ -360,52 +308,26 @@ function BudgetSetting({
   state,
   size,
   budgetKey,
-  format,
 }: Pick<AdvancedProps, "model" | "state" | "size"> & {
   budgetKey: GoalBudgetKey;
-  format: (value: number) => string;
 }): ReactElement {
-  const { t } = useTranslation();
-  const value = state.values.budget[budgetKey];
-  const field = GOAL_BUDGET_FIELDS[budgetKey];
-  const label = t(`goals.form.settings.${budgetKey}.label`);
-  const noLimit = t("goals.form.noLimit");
   const handleChange = useCallback(
-    (next: number | null) => model.setBudget(budgetKey, next),
-    [budgetKey, model],
-  );
-  const describeValue = useCallback(
-    (next: number | null) => (next === null ? noLimit : format(next)),
-    [format, noLimit],
+    (key: GoalBudgetKey, value: number | null) => model.setBudget(key, value),
+    [model],
   );
   return (
-    <SettingRow label={label} hint={t(`goals.form.settings.${budgetKey}.hint`)}>
-      <ScrubNumberField
-        label={label}
-        value={value}
-        onChange={handleChange}
-        scale={field.scale}
-        format={field.format}
-        describeValue={describeValue}
-        placeholder={noLimit}
-        size={size}
-        testID={`goal-budget-${budgetKey}`}
-      />
-    </SettingRow>
+    <GoalBudgetField
+      budgetKey={budgetKey}
+      value={state.values.budget[budgetKey]}
+      onChange={handleChange}
+      size={size}
+    />
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   container: {
     gap: theme.spacing[6],
-  },
-  group: {
-    gap: theme.spacing[4],
-  },
-  groupTitle: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-    fontWeight: theme.fontWeight.medium,
   },
   block: {
     gap: theme.spacing[2],

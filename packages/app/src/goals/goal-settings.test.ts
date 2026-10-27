@@ -4,6 +4,7 @@ import {
   GOAL_PRESETS,
   GOAL_SETTING_RANGES,
   goalBudgetToLimits,
+  goalPermissionPolicyOptions,
   goalTeam,
   goalSettingSteps,
   goalSettingsToConfig,
@@ -14,6 +15,7 @@ import {
   stepGoalBudget,
   stepGoalSetting,
   summarizeGoalSettings,
+  supportedGoalSettings,
 } from "./goal-settings";
 
 describe("GOAL_SETTING_RANGES", () => {
@@ -89,13 +91,16 @@ describe("durations", () => {
 });
 
 describe("goalSettingsToConfig", () => {
-  it("sends only the required fields for the daemon defaults", () => {
+  it("sends only the required fields and the policy for the daemon defaults", () => {
+    // An older daemon runs a goal without a policy as `fail`, so the default is sent too.
     expect(goalSettingsToConfig(DAEMON_GOAL_SETTINGS)).toEqual({
       maxParallel: 2,
       maxAttempts: 2,
       autoApprovePlan: false,
       notifyLead: true,
+      onPermissionRequest: "wait",
     });
+    expect(DAEMON_GOAL_SETTINGS.onPermissionRequest).toBe("wait");
   });
 
   it("sends every changed optional", () => {
@@ -126,15 +131,19 @@ describe("summarizeGoalSettings", () => {
   it("describes the settings clause by clause", () => {
     expect(
       summarizeGoalSettings(GOAL_PRESETS.careful, { hasTestCommand: true }).map((p) => p.key),
-    ).toEqual([
-      "parallel",
-      "runLimit",
-      "deadline",
-      "asksPlan",
-      "asksMerge",
-      "runsTests",
-      "waitsPermission",
-    ]);
+    ).toEqual(["parallel", "runLimit", "deadline", "asksPlan", "asksMerge", "runsTests"]);
+    expect(
+      summarizeGoalSettings(
+        { ...GOAL_PRESETS.careful, onPermissionRequest: "auto" },
+        { hasTestCommand: false },
+      ).at(-1),
+    ).toEqual({ key: "autoPermission" });
+    expect(
+      summarizeGoalSettings(
+        { ...GOAL_PRESETS.careful, onPermissionRequest: "fail" },
+        { hasTestCommand: false },
+      ).at(-1),
+    ).toEqual({ key: "failsPermission" });
     expect(summarizeGoalSettings(GOAL_PRESETS.turbo, { hasTestCommand: false })).toEqual([
       { key: "parallel", n: 4 },
       { key: "runLimit", duration: { unit: "minutes", n: 90 } },
@@ -186,5 +195,20 @@ describe("goalTeam", () => {
       { role: "reviewer", provider: "opencode", thinking: null },
       { role: "verifier", provider: "opencode", thinking: "medium" },
     ]);
+  });
+});
+
+describe("permission policy support", () => {
+  it("offers auto only on a host that takes it, Ask me first", () => {
+    expect(goalPermissionPolicyOptions(true)).toEqual(["wait", "auto", "fail"]);
+    expect(goalPermissionPolicyOptions(false)).toEqual(["wait", "fail"]);
+  });
+
+  it("turns a remembered auto into wait for a host without it", () => {
+    const auto = { ...DAEMON_GOAL_SETTINGS, onPermissionRequest: "auto" as const };
+    expect(supportedGoalSettings(auto, false).onPermissionRequest).toBe("wait");
+    expect(supportedGoalSettings(auto, true)).toBe(auto);
+    const fail = { ...DAEMON_GOAL_SETTINGS, onPermissionRequest: "fail" as const };
+    expect(supportedGoalSettings(fail, false)).toBe(fail);
   });
 });
