@@ -75,6 +75,10 @@ export const CLIENT_CAPS = {
   // usageBreakdown and usageBreakdownTruncated out of goals sent to older clients, which
   // cannot show them. Remove after 2027-04-27.
   goalUsageBreakdown: "goal_usage_breakdown",
+  // COMPAT(goalIntegrationRetry): added in v0.13.10. The daemon omits
+  // changeset.integration_retried from goal.inspect events for older clients whose strict
+  // event union rejects it. Remove after 2027-04-27.
+  goalIntegrationRetry: "goal_integration_retry",
   browserHost: "browser_host",
   // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove after 2027-05-22 once client floor >= v0.17.2.
   // An agent sender's steer means wait-for-turn-end from clients without it, because older

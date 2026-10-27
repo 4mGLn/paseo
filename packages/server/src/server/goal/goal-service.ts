@@ -18,7 +18,7 @@ import {
 import type { GoalEventLog } from "./event-log.js";
 import type { GoalConfigUpdateValidator, GoalConfigValidator } from "./goal-config-validation.js";
 import { goalPriority, sortGoalsByPriority } from "./goal-priority.js";
-import { isTerminalGoalStatus } from "./goal-reducer.js";
+import { isIntegrationFailed, isTerminalGoalStatus } from "./goal-reducer.js";
 import type { GoalRemovedListener, GoalStore, GoalStoreListener } from "./goal-store.js";
 
 /** Client ids are namespaced so they cannot collide with the Manager's own event ids. */
@@ -344,37 +344,33 @@ export class GoalService {
    * that failed while planning has no tasks; it is reopened and a fresh Lead plans.
    */
   async retry(goalId: string, taskId: string | undefined, eventId?: string): Promise<Goal> {
-    if (
-      (await this.alreadyApplied(goalId, "goal.retried", taskId ?? "", eventId)) ||
-      (await this.alreadyApplied(goalId, "goal.reopened", "", eventId))
-    ) {
-      return this.requireGoal(goalId);
-    }
+    if (await this.retriedBefore(goalId, taskId, eventId)) return this.requireGoal(goalId);
     const goal = this.requireManaged(goalId, "retry");
     if (goal.status === "failed" && goal.tasks.length === 0) {
       if (taskId) throw new Error(`Task ${taskId} not found in goal ${goalId}`);
-      if (this.activity?.hasLiveWork(goalId)) {
-        throw new Error("The goal's agents are still stopping; retry again in a moment");
-      }
+      this.requireSettled(goalId);
       return this.dispatch(goalId, eventId, { type: "goal.reopened" });
     }
-    const retryable = goal.tasks
-      .filter((t) => t.status === "failed" || t.status === "cancelled")
-      .map((t) => t.id);
+    const retryable = retryableTaskIds(goal, taskId);
     const reopen = goal.status === "failed";
-    if (taskId && !retryable.includes(taskId)) {
-      const task = goal.tasks.find((t) => t.id === taskId);
+    // A failed goal's change sets whose merge failed are merged again, oldest first, with
+    // every failed and cancelled task. Change sets rejected by review stay rejected.
+    const remerge = reopen ? goal.changeSets.filter(isIntegrationFailed).map((c) => c.id) : [];
+    if (retryable.length === 0 && remerge.length === 0) {
       throw new Error(
-        task
-          ? `Task ${taskId} is ${task.status}; only a failed or cancelled task can be retried`
-          : `Task ${taskId} not found in goal ${goalId}`,
+        reopen
+          ? `Goal ${goalId} has no failed or cancelled task and no change set rejected by a failed integration to retry`
+          : `Goal ${goalId} has no failed or cancelled task to retry`,
       );
     }
-    if (retryable.length === 0) {
-      throw new Error(`Goal ${goalId} has no failed or cancelled task to retry`);
-    }
-    if (reopen && this.activity?.hasLiveWork(goalId)) {
-      throw new Error("The goal's agents are still stopping; retry again in a moment");
+    if (reopen) this.requireSettled(goalId);
+    if (remerge.length > 0) {
+      return this.dispatch(goalId, eventId, {
+        type: "changeset.integration_retried",
+        changeSetIds: remerge,
+        taskIds: retryable,
+        target: "",
+      });
     }
     return this.dispatch(goalId, eventId, {
       type: "goal.retried",
@@ -382,6 +378,25 @@ export class GoalService {
       reopen,
       target: taskId ?? "",
     });
+  }
+
+  private async retriedBefore(
+    goalId: string,
+    taskId: string | undefined,
+    eventId: string | undefined,
+  ): Promise<boolean> {
+    return (
+      (await this.alreadyApplied(goalId, "goal.retried", taskId ?? "", eventId)) ||
+      (await this.alreadyApplied(goalId, "goal.reopened", "", eventId)) ||
+      (await this.alreadyApplied(goalId, "changeset.integration_retried", "", eventId))
+    );
+  }
+
+  /** A failed goal is reopened only once the work it left stopping has ended. */
+  private requireSettled(goalId: string): void {
+    if (this.activity?.hasLiveWork(goalId)) {
+      throw new Error("The goal's agents are still stopping; retry again in a moment");
+    }
   }
 
   /**
@@ -490,4 +505,20 @@ function stableJson(value: unknown): string {
       ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => a.localeCompare(b)))
       : inner,
   );
+}
+
+/** The goal's failed and cancelled tasks. A named task must be one of them. */
+function retryableTaskIds(goal: Goal, taskId: string | undefined): string[] {
+  const retryable = goal.tasks
+    .filter((t) => t.status === "failed" || t.status === "cancelled")
+    .map((t) => t.id);
+  if (taskId && !retryable.includes(taskId)) {
+    const task = goal.tasks.find((t) => t.id === taskId);
+    throw new Error(
+      task
+        ? `Task ${taskId} is ${task.status}; only a failed or cancelled task can be retried`
+        : `Task ${taskId} not found in goal ${goal.id}`,
+    );
+  }
+  return retryable;
 }

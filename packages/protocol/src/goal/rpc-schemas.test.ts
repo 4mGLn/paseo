@@ -404,3 +404,34 @@ describe("goal RPC schemas", () => {
     expect(DEFAULT_GOAL_PERMISSION_POLICY).toBe("wait");
   });
 });
+
+describe("integration retry", () => {
+  const envelope = { id: "e", goalId: "g", seq: 2, at: "x" };
+
+  test("a rejection carries its reason, and a merge retry names change sets and tasks", () => {
+    expect(
+      GoalEventSchema.parse({
+        ...envelope,
+        type: "changeset.transitioned",
+        changeSetId: "cs1",
+        to: "rejected",
+        error: "Integration failed: boom",
+        reason: "integration_failed",
+      }),
+    ).toMatchObject({ reason: "integration_failed" });
+    const retried = {
+      ...envelope,
+      type: "changeset.integration_retried",
+      changeSetIds: ["cs1"],
+      taskIds: [],
+    };
+    expect(GoalEventSchema.parse(retried).type).toBe("changeset.integration_retried");
+    expect(GoalEventSchema.safeParse({ ...retried, changeSetIds: [] }).success).toBe(false);
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "goal.inspect.response",
+        payload: { requestId: "r", goal: null, events: [retried], error: null },
+      }).type,
+    ).toBe("goal.inspect.response");
+  });
+});

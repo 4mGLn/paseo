@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { buildConfigChanges } from "./config.js";
+import { createGoalCommand } from "./index.js";
 import { parseGoalListFilter } from "./ls.js";
 import { confirmGoalDelete, describeRetained } from "./manage.js";
 
@@ -126,5 +127,14 @@ describe("goal config flags", () => {
       /--max-parallel cannot be cleared/,
     );
     expect(() => buildConfigChanges({} as never)).toThrow(/at least one setting/);
+  });
+});
+
+describe("goal retry help", () => {
+  test("says a failed merge is retried and a review rejection is not", () => {
+    const retry = createGoalCommand().commands.find((command) => command.name() === "retry");
+    const help = retry?.description() ?? "";
+    expect(help).toContain("merges again change sets whose merge failed");
+    expect(help).toContain("A change set rejected by review is not retried");
   });
 });

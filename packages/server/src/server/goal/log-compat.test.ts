@@ -329,6 +329,79 @@ describe("goal logs written by earlier phases", () => {
     expect(goal?.usageBreakdown?.[2]).not.toHaveProperty("thinking");
   });
 
+  test("a merge that failed before the rejection reason was recorded can be merged again", async () => {
+    // As v0.13.9 wrote it: no `reason` on the transition, only the error text. Recent
+    // times, so the goal's time limit still leaves room for the reopen.
+    const now = new Date().toISOString();
+    const error = "Integration failed: Integration worktree has uncommitted changes:\n?? .gjc/";
+    await writeFile(
+      join(dir, "i1.jsonl"),
+      jsonl(
+        "i1",
+        [
+          {
+            type: "goal.created",
+            title: "Merge",
+            objective: "o",
+            criteria: [{ id: "c1", text: "w" }],
+            config: { ...config, requireHumanApproval: true },
+          },
+          { type: "plan.proposed", tasks: [spec("t2")] },
+          { type: "plan.approved" },
+          {
+            type: "integration.prepared",
+            branch: "paseo-goal/i1",
+            workspaceId: "wi",
+            cwd: "/i",
+            baseCommit: "base",
+          },
+          { type: "task.started", taskId: "t2" },
+          { type: "run.started", runId: "t2-a1", taskId: "t2", provider: "codex" },
+          { type: "run.attached", runId: "t2-a1", agentId: "ag", workspaceId: "ws", cwd: "/w" },
+          { type: "task.succeeded", taskId: "t2", summary: "done" },
+          { type: "run.finished", runId: "t2-a1", outcome: "succeeded" },
+          {
+            type: "changeset.captured",
+            changeSetId: "cs-t2-a1",
+            taskId: "t2",
+            runId: "t2-a1",
+            round: 0,
+            supersedes: null,
+            workspaceId: "ws",
+            cwd: "/w",
+            branch: "b",
+            baseCommit: "base",
+            headCommit: "h1",
+            files: [{ status: "A", path: "x.txt" }],
+          },
+          { type: "changeset.transitioned", changeSetId: "cs-t2-a1", to: "in_review" },
+          { type: "changeset.transitioned", changeSetId: "cs-t2-a1", to: "awaiting_human" },
+          { type: "changeset.transitioned", changeSetId: "cs-t2-a1", to: "approved" },
+          { type: "changeset.transitioned", changeSetId: "cs-t2-a1", to: "integrating" },
+          { type: "changeset.transitioned", changeSetId: "cs-t2-a1", to: "rejected", error },
+          { type: "goal.failed", reason: `Integrating cs-t2-a1 failed: ${error.slice(20)}` },
+        ].map((e) => Object.assign(e, { at: now })),
+      ),
+    );
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    const failed = store.get("i1");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.changeSets[0]).toMatchObject({
+      status: "rejected",
+      error,
+      rejectionReason: "integration_failed",
+    });
+    expect(GoalSchema.safeParse(failed).success).toBe(true);
+
+    const goal = await new GoalService(store, log).retry("i1", undefined);
+    expect(goal.status).toBe("executing");
+    expect(goal.failureReason).toBeNull();
+    expect(goal.changeSets[0]?.status).toBe("approved");
+    expect((await load()).get("i1")?.changeSets[0]?.status).toBe("approved");
+  });
+
   test("an event carrying fields this version does not know is still accepted", async () => {
     const log = phase1Log("x1").replace(
       '"type":"plan.approved"',

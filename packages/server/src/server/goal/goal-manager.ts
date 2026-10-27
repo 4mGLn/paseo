@@ -546,6 +546,11 @@ export class GoalManager {
       } else {
         this.track(this.pump(goal.id));
       }
+    } else if (event.type === "changeset.integration_retried") {
+      // Always a reopen: the change sets are approved again and recover() merges them.
+      for (const taskId of event.taskIds) this.cancelRetry(goal.id, taskId);
+      this.armDeadline(goal);
+      this.track(this.resumeReopened(goal.id));
     } else if (event.type === "usage.recorded") {
       const overBudget = budgetExceeded(goal);
       if (overBudget) this.track(this.failGoal(goal.id, overBudget));
