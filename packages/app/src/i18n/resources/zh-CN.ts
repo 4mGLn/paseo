@@ -614,6 +614,9 @@ export const zhCN: TranslationResources = {
       resume: "继续",
       retryGoal: "重试失败的任务",
       retryPlanning: "重试规划",
+      retryMerge: "重试合并",
+      mergeFailureHint:
+        "在集成工作树（{{path}}）中修复错误指出的问题，然后重试合并。审查和批准保持有效。",
       permissionFailureHint:
         "Agent 请求了权限，运行已结束。请在设置中选择“问我”或“Auto 模式”，然后重试。",
       retryTask: "重试",
@@ -716,6 +719,7 @@ export const zhCN: TranslationResources = {
       goalAcknowledged: "已忽略",
       goalConfigUpdated: "设置已更改",
       goalReopened: "重新规划中",
+      integrationRetried: "重新合并：{{subject}}",
     },
     toasts: {
       plan_review: "计划待审查：{{title}}",

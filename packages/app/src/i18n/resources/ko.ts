@@ -617,6 +617,9 @@ export const ko: TranslationResources = {
       resume: "재개",
       retryGoal: "실패한 작업 다시 시도",
       retryPlanning: "계획 다시 시도",
+      retryMerge: "병합 다시 시도",
+      mergeFailureHint:
+        "오류가 가리키는 문제를 통합 워크트리({{path}})에서 고친 뒤 병합 다시 시도를 누르세요. 검토와 승인은 그대로 유지됩니다.",
       permissionFailureHint:
         "에이전트가 권한을 요청해 실행이 끝났습니다. 설정에서 '내게 묻기'나 'Auto 모드'를 고른 뒤 다시 시도하세요.",
       retryTask: "다시 시도",
@@ -719,6 +722,7 @@ export const ko: TranslationResources = {
       goalAcknowledged: "닫음",
       goalConfigUpdated: "설정 변경됨",
       goalReopened: "다시 계획 중",
+      integrationRetried: "다시 병합: {{subject}}",
     },
     toasts: {
       plan_review: "검토할 계획이 있습니다: {{title}}",

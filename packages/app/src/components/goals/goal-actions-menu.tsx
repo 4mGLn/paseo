@@ -40,6 +40,7 @@ import {
   type GoalActions,
 } from "@/goals/goal-management";
 import { retainedSummary } from "@/goals/goal-labels";
+import { goalRetryLabelKey } from "@/goals/goal-phase";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useHostFeature } from "@/runtime/host-features";
 import type { Theme } from "@/styles/theme";
@@ -94,9 +95,17 @@ export function useGoalActions(serverId: string, goal: Goal): GoalActions {
   const acknowledge = useHostFeature(serverId, "goalAcknowledge");
   const management = useHostFeature(serverId, "goalManagement");
   const configEdit = useHostFeature(serverId, "goalConfigEdit");
+  const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
   return useMemo(
-    () => goalAvailableActions(goal, { controls, acknowledge, management, configEdit }),
-    [acknowledge, configEdit, controls, goal, management],
+    () =>
+      goalAvailableActions(goal, {
+        controls,
+        acknowledge,
+        management,
+        configEdit,
+        integrationRetry,
+      }),
+    [acknowledge, configEdit, controls, goal, integrationRetry, management],
   );
 }
 
@@ -383,7 +392,12 @@ function StateItems({ goal, actions, handlers, testID }: ItemGroupProps): ReactE
       ) : null}
       {actions.retry ? (
         <DropdownMenuItem leading={retryIcon} onSelect={handleRetry} testID={`${testID}-retry`}>
-          {actions.retryPlanning ? t("goals.detail.retryPlanning") : t("goals.detail.retryGoal")}
+          {t(
+            goalRetryLabelKey({
+              canRetryPlanning: actions.retryPlanning,
+              canRetryMerge: actions.retryMerge,
+            }),
+          )}
         </DropdownMenuItem>
       ) : null}
       {actions.dismiss ? (

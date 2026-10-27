@@ -12,19 +12,21 @@ import {
   type GoalActionFeatures,
 } from "./goal-management";
 import type { GoalProjectOption } from "./goal-projects";
-import { makeGoal } from "./test-utils/goal-fixture";
+import { makeChangeSet, makeGoal, makeTask } from "./test-utils/goal-fixture";
 
 const ALL_FEATURES: GoalActionFeatures = {
   controls: true,
   acknowledge: true,
   management: true,
   configEdit: true,
+  integrationRetry: true,
 };
 const NO_FEATURES: GoalActionFeatures = {
   controls: false,
   acknowledge: false,
   management: false,
   configEdit: false,
+  integrationRetry: false,
 };
 
 const projects: GoalProjectOption[] = [
@@ -220,6 +222,7 @@ describe("goalAvailableActions", () => {
       cancel: true,
       retry: false,
       retryPlanning: false,
+      retryMerge: false,
       editSettings: false,
       rename: false,
       priority: false,
@@ -264,6 +267,24 @@ describe("goalAvailableActions", () => {
     expect(
       goalAvailableActions(failedPlanning, { ...ALL_FEATURES, configEdit: false }),
     ).toMatchObject({ retry: false, retryPlanning: false });
+  });
+
+  it("labels the retry of a failed merge, on hosts that merge it again", () => {
+    const failedMerge = goal({
+      status: "failed",
+      tasks: [makeTask("t1", { status: "succeeded" })],
+      changeSets: [
+        makeChangeSet("c1", "t1", { status: "rejected", rejectionReason: "integration_failed" }),
+      ],
+    });
+    expect(goalAvailableActions(failedMerge, ALL_FEATURES)).toMatchObject({
+      retry: true,
+      retryMerge: true,
+      retryPlanning: false,
+    });
+    expect(
+      goalAvailableActions(failedMerge, { ...ALL_FEATURES, integrationRetry: false }),
+    ).toMatchObject({ retry: false, retryMerge: false });
   });
 
   it("leaves pause and retry off a manual goal", () => {

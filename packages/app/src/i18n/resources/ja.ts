@@ -622,6 +622,9 @@ export const ja: TranslationResources = {
       resume: "再開",
       retryGoal: "失敗したタスクを再試行",
       retryPlanning: "計画を再試行",
+      retryMerge: "マージを再試行",
+      mergeFailureHint:
+        "エラーが示す問題を統合ワークツリー ({{path}}) で直してから、マージを再試行してください。レビューと承認はそのまま有効です。",
       permissionFailureHint:
         "エージェントが権限を求めたため実行が終了しました。設定で「確認する」か「Auto モード」を選んでから再試行してください。",
       retryTask: "再試行",
@@ -724,6 +727,7 @@ export const ja: TranslationResources = {
       goalAcknowledged: "確認済みにしました",
       goalConfigUpdated: "設定を変更しました",
       goalReopened: "計画をやり直しています",
+      integrationRetried: "再マージ: {{subject}}",
     },
     toasts: {
       plan_review: "計画の確認待ち: {{title}}",

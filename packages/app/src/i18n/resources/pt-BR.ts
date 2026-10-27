@@ -620,6 +620,9 @@ export const ptBR: TranslationResources = {
       resume: "Retomar",
       retryGoal: "Tentar de novo as tarefas com falha",
       retryPlanning: "Tentar o planejamento de novo",
+      retryMerge: "Tentar a mesclagem de novo",
+      mergeFailureHint:
+        "Corrija o que o erro aponta na worktree de integração ({{path}}) e tente a mesclagem de novo. A revisão e a aprovação continuam valendo.",
       permissionFailureHint:
         "Um agente pediu uma permissão e a execução terminou. Escolha Perguntar a mim ou Modo Auto nas configurações e tente de novo.",
       retryTask: "Tentar de novo",
@@ -722,6 +725,7 @@ export const ptBR: TranslationResources = {
       goalAcknowledged: "Dispensada",
       goalConfigUpdated: "Configurações alteradas",
       goalReopened: "Planejando de novo",
+      integrationRetried: "Mesclando de novo: {{subject}}",
     },
     toasts: {
       plan_review: "Plano pronto para revisão: {{title}}",

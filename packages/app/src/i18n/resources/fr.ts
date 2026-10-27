@@ -622,6 +622,9 @@ export const fr: TranslationResources = {
       resume: "Reprendre",
       retryGoal: "Relancer les tâches en échec",
       retryPlanning: "Relancer la planification",
+      retryMerge: "Relancer la fusion",
+      mergeFailureHint:
+        "Corrigez ce que l’erreur signale dans le worktree d’intégration ({{path}}), puis relancez la fusion. La revue et l’approbation restent valables.",
       permissionFailureHint:
         "Un agent a demandé une autorisation et son exécution s'est terminée. Choisissez Me demander ou Mode Auto dans les réglages, puis relancez.",
       retryTask: "Relancer",
@@ -724,6 +727,7 @@ export const fr: TranslationResources = {
       goalAcknowledged: "Ignoré",
       goalConfigUpdated: "Réglages modifiés",
       goalReopened: "Nouvelle planification",
+      integrationRetried: "Nouvelle fusion : {{subject}}",
     },
     toasts: {
       plan_review: "Plan prêt à relire : {{title}}",
