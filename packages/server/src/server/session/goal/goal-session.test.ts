@@ -35,6 +35,7 @@ describe("GoalSession", () => {
     managementEvents?: boolean,
     configEdit?: boolean,
     usageBreakdown?: boolean,
+    integrationRetry?: boolean,
   ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
@@ -53,6 +54,9 @@ describe("GoalSession", () => {
         ...(usageBreakdown === undefined
           ? {}
           : { supportsGoalUsageBreakdown: () => usageBreakdown }),
+        ...(integrationRetry === undefined
+          ? {}
+          : { supportsGoalIntegrationRetry: () => integrationRetry }),
       },
       goalService: service,
       logger: pino({ level: "silent" }),
@@ -589,6 +593,70 @@ describe("GoalSession", () => {
           expect(goal).not.toHaveProperty("usageBreakdownTruncated");
         }
       }
+    });
+  }
+
+  for (const capable of [true, false]) {
+    test(`a merge retried by goal.retry ${capable ? "shows" : "is hidden from"} clients ${capable ? "with" : "without"} the capability`, async () => {
+      const at = new Date().toISOString();
+      const move = (to: string, extra: Record<string, unknown> = {}) => ({
+        type: "changeset.transitioned",
+        changeSetId: "cs1",
+        to,
+        ...extra,
+      });
+      const events = [
+        {
+          type: "goal.created",
+          title: "T",
+          objective: "o",
+          criteria: [{ id: "c1", text: "works" }],
+          config: {
+            cwd: "/repo",
+            leadProvider: "claude",
+            defaultProvider: "codex",
+            maxParallel: 2,
+            maxAttempts: 2,
+            autoApprovePlan: false,
+            notifyLead: false,
+          },
+        },
+        { type: "plan.proposed", tasks: [task("a")] },
+        { type: "plan.approved" },
+        { type: "task.started", taskId: "a" },
+        { type: "task.succeeded", taskId: "a" },
+        {
+          type: "changeset.captured",
+          changeSetId: "cs1",
+          taskId: "a",
+          runId: "a-a1",
+          round: 0,
+          supersedes: null,
+          workspaceId: "ws",
+          cwd: "/w",
+          branch: "b",
+          baseCommit: "base",
+          headCommit: "h1",
+          files: [],
+        },
+        move("in_review"),
+        move("approved"),
+        move("integrating"),
+        move("rejected", { error: "Integration failed: boom", reason: "integration_failed" }),
+        { type: "goal.failed", reason: "Integrating cs1 failed: boom" },
+      ];
+      await writeFile(
+        join(dir, "g1.jsonl"),
+        `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+      );
+      const session = await openSession(true, true, true, true, true, capable);
+      await send(session, { type: "goal.retry.request", requestId: "r1", goalId: "g1" });
+      await send(session, { type: "goal.inspect.request", requestId: "r2", goalId: "g1" });
+
+      expect(lastOf("goal.retry.response").payload.goal?.changeSets[0]?.status).toBe("approved");
+      const types = lastOf("goal.inspect.response").payload.events.map((e) => e.type);
+      expect(types.includes("changeset.integration_retried")).toBe(capable);
+      expect(types.at(-1)).toBe(capable ? "changeset.integration_retried" : "goal.failed");
     });
   }
 });

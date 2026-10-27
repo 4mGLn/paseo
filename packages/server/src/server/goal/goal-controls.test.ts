@@ -440,6 +440,60 @@ describe("goal controls in the Manager", () => {
     expect(toChat[1]).toMatch(/completed/);
   });
 
+  test("a merge that failed is merged again by retry, and the goal finishes", async () => {
+    env.script([task("a"), task("b")]);
+    env.harness.git.mergeErrors.push(
+      new Error("Integration worktree has uncommitted changes:\nM tracked.txt"),
+    );
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store);
+    await env.settle(manager);
+
+    const failed = env.goalOf(store);
+    expect(failed.status).toBe("failed");
+    expect(failed.failureReason).toMatch(/Integrating cs-.* failed: Integration worktree/);
+    const broken = failed.changeSets.find((c) => c.status === "rejected");
+    expect(broken).toMatchObject({ rejectionReason: "integration_failed" });
+    expect(broken?.error).toMatch(/^Integration failed: Integration worktree/);
+    const merges = env.harness.git.merges.length;
+
+    // The tree is clean now; retry merges the same change set again without a new review.
+    const reviews = env.harness.agents.filter((a) => a.labels["paseo.goal-role"] === "reviewer");
+    await service.retry("g1", undefined, "retry-merge");
+    await service.retry("g1", undefined, "retry-merge");
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("completed");
+    expect(goal.reopens).toBe(1);
+    expect(goal.changeSets.find((c) => c.id === broken?.id)?.status).toBe("integrated");
+    expect(env.harness.git.merges.slice(merges).map((m) => m.commit)).toContain(broken?.headCommit);
+    expect(
+      env.harness.agents.filter((a) => a.labels["paseo.goal-role"] === "reviewer"),
+    ).toHaveLength(reviews.length);
+    const events = await env.readEvents();
+    expect(events.filter((e) => e.type === "changeset.integration_retried")).toHaveLength(1);
+  });
+
+  test("a change set rejected by review or a failed verification gives retry nothing to do", async () => {
+    env.script([task("a")]);
+    env.stageReplies.review = () => ({
+      outcome: "completed",
+      text: env.fenced(JSON.stringify({ verdict: "request_changes", findings: ["wrong"] })),
+    });
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, maxReworkRounds: 0 });
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("failed");
+    expect(goal.changeSets[0]?.status).toBe("rejected");
+    expect(goal.changeSets[0]?.rejectionReason).toBeUndefined();
+    await expect(service.retry("g1", undefined)).rejects.toThrow(
+      "has no failed or cancelled task and no change set rejected by a failed integration to retry",
+    );
+  });
+
   test("a goal reopened just before a restart finishes after it", async () => {
     let failing = true;
     env.script([task("a")], () =>

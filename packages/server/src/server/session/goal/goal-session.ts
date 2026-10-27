@@ -16,6 +16,8 @@ export interface GoalSessionHost {
   supportsGoalConfigEdit?(): boolean;
   /** Whether the client shows the usage breakdown. Assumed when absent. */
   supportsGoalUsageBreakdown?(): boolean;
+  /** Whether the client parses changeset.integration_retried. Assumed when absent. */
+  supportsGoalIntegrationRetry?(): boolean;
 }
 
 // COMPAT(goalControlEvents): added in v0.13.0, remove after 2027-04-26.
@@ -41,6 +43,11 @@ const GOAL_MANAGEMENT_EVENT_TYPES: ReadonlySet<string> = new Set([
 const GOAL_CONFIG_EDIT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "goal.config_updated",
   "goal.reopened",
+]);
+
+// COMPAT(goalIntegrationRetry): added in v0.13.10, remove after 2027-04-27.
+const GOAL_INTEGRATION_RETRY_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "changeset.integration_retried",
 ]);
 
 // COMPAT(goalConfigEdit): added in v0.13.3, remove after 2027-04-27. An older client's
@@ -283,14 +290,16 @@ export class GoalSession {
       const hideAcknowledge = this.host.supportsGoalAcknowledgeEvents?.() === false;
       const hideManagement = this.host.supportsGoalManagementEvents?.() === false;
       const hideConfigEdit = this.host.supportsGoalConfigEdit?.() === false;
+      const hideIntegrationRetry = this.host.supportsGoalIntegrationRetry?.() === false;
       const visible =
-        hideControl || hideAcknowledge || hideManagement || hideConfigEdit
+        hideControl || hideAcknowledge || hideManagement || hideConfigEdit || hideIntegrationRetry
           ? events.filter(
               (e) =>
                 !(hideControl && GOAL_CONTROL_EVENT_TYPES.has(e.type)) &&
                 !(hideAcknowledge && GOAL_ACKNOWLEDGE_EVENT_TYPES.has(e.type)) &&
                 !(hideManagement && GOAL_MANAGEMENT_EVENT_TYPES.has(e.type)) &&
-                !(hideConfigEdit && GOAL_CONFIG_EDIT_EVENT_TYPES.has(e.type)),
+                !(hideConfigEdit && GOAL_CONFIG_EDIT_EVENT_TYPES.has(e.type)) &&
+                !(hideIntegrationRetry && GOAL_INTEGRATION_RETRY_EVENT_TYPES.has(e.type)),
             )
           : events;
       this.host.emit({
