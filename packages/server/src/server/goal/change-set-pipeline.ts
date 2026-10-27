@@ -327,6 +327,11 @@ export class ChangeSetPipeline {
     this.git.killCommands();
   }
 
+  /** The goal's reviewers and verifier that are running now. */
+  liveAgentIds(goalId: string): string[] {
+    return [...(this.liveAgents.get(goalId) ?? [])];
+  }
+
   /** The goal ended: stop its reviewers and verifier, and its test command. */
   async abort(goalId: string): Promise<void> {
     this.git.killCommands(goalId);

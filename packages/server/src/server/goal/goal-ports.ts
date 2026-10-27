@@ -12,9 +12,16 @@ import type { AgentStorage } from "../agent/agent-storage.js";
 import type { BoundCreateAgentCommand } from "../agent/create-agent/create.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../worktree-session.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
-import type { ManagerAgentPort, ManagerWorkspacePort, TurnResult } from "./goal-manager.js";
+import type {
+  ManagerAgentPort,
+  ManagerWorkspacePort,
+  TurnPermission,
+  TurnResult,
+} from "./goal-manager.js";
 import type { GoalModelCatalog } from "./goal-thinking.js";
-import { GOAL_AUTO_MODE_ID, type GoalModeCatalog } from "./goal-config-validation.js";
+import { goalAutoModeId, type GoalModeCatalog } from "./goal-config-validation.js";
+import { setAgentModeCommand } from "../agent/lifecycle-command.js";
+import { MODE_APPLIES_NEXT_TURN_NOTICE } from "../agent/provider-notices.js";
 import type { GoalPermissionPolicy } from "@getpaseo/protocol/goal/config-bounds";
 
 interface DirectoryWorkspaceInput {
@@ -154,23 +161,23 @@ interface AgentWait {
  * Turns the next agent event into a turn result. Under the `wait` policy a
  * permission request stays pending in Paseo for a person to answer, and this
  * keeps polling while the agent is still running; the caller's turn timeout is
- * what ends a request nobody answers.
+ * what ends a request nobody answers. A policy given as a function is read again
+ * on every poll, so a goal switched to `fail` ends a turn that is waiting.
  */
 export async function settleTurn(
   next: () => Promise<AgentWait>,
-  policy: "fail" | "wait",
+  policy: TurnPermission | (() => TurnPermission),
   agentId: string,
   pause: (ms: number) => Promise<void> = sleep,
   signal?: AbortSignal,
 ): Promise<TurnResult> {
+  const current = typeof policy === "function" ? policy : () => policy;
   let wait = await next();
-  if (policy === "wait") {
-    while (wait.permission && wait.status === "running") {
-      // The caller gave up on this turn: stop polling for a request nobody will answer.
-      if (signal?.aborted) break;
-      await pause(PERMISSION_POLL_MS);
-      wait = await next();
-    }
+  while (current() === "wait" && wait.permission && wait.status === "running") {
+    // The caller gave up on this turn: stop polling for a request nobody will answer.
+    if (signal?.aborted) break;
+    await pause(PERMISSION_POLL_MS);
+    wait = await next();
   }
   if (wait.permission) return { outcome: "needs_permission" };
   if (wait.status === "error") {
@@ -196,13 +203,15 @@ export interface GoalPortDeps {
   modelCatalog?: GoalModelCatalog;
   /** Mode catalog the `auto` policy looks for an auto mode in. Without it, `auto` acts as `wait`. */
   modeCatalog?: GoalModeCatalog;
+  /** The mode a provider starts in when none is asked for; the `wait` policy's mode. */
+  defaultModeId?: (provider: string, cwd: string) => Promise<string | null>;
 }
 
 /**
  * How a goal agent is created under each permission policy. `fail` uses the provider's
  * unattended mode. `wait` starts the provider's default mode, and its requests wait in
- * Paseo. `auto` asks for the provider's auto mode when the provider lists one, and
- * otherwise starts as under `wait`.
+ * Paseo. `auto` asks for the provider's auto mode (see goalAutoModeId) when the provider
+ * lists one, and otherwise starts as under `wait`.
  */
 export async function goalAgentMode(
   deps: Pick<GoalPortDeps, "modeCatalog" | "logger">,
@@ -213,9 +222,8 @@ export async function goalAgentMode(
   if (policy === "wait" || !deps.modeCatalog) return { unattended: false };
   try {
     const modes = await deps.modeCatalog(input.provider, input.cwd);
-    if (modes.some((mode) => mode.id === GOAL_AUTO_MODE_ID)) {
-      return { unattended: false, mode: GOAL_AUTO_MODE_ID };
-    }
+    const mode = goalAutoModeId(input.provider, modes);
+    if (mode) return { unattended: false, mode };
   } catch (error) {
     deps.logger.warn({ err: error, provider: input.provider }, "Could not read provider modes");
   }
@@ -224,6 +232,27 @@ export async function goalAgentMode(
     "Provider lists no auto mode; the goal agent starts in its default mode",
   );
   return { unattended: false };
+}
+
+/**
+ * The mode a running goal agent is switched to when its goal's permission policy changes:
+ * the mode a new agent would start in. Undefined when the provider names no such mode.
+ */
+export async function goalPolicyModeId(
+  deps: Pick<GoalPortDeps, "modeCatalog" | "defaultModeId">,
+  input: { provider: string; cwd: string; permission: GoalPermissionPolicy },
+): Promise<string | undefined> {
+  if (input.permission !== "wait" && deps.modeCatalog) {
+    const modes = await deps.modeCatalog(input.provider, input.cwd);
+    const mode =
+      input.permission === "fail"
+        ? modes.find((candidate) => candidate.isUnattended)?.id
+        : goalAutoModeId(input.provider, modes);
+    if (mode) return mode;
+    // A provider without an unattended mode cannot honour `fail` on a running agent.
+    if (input.permission === "fail") return undefined;
+  }
+  return (await deps.defaultModeId?.(input.provider, input.cwd)) ?? undefined;
 }
 
 /** A setup that never finishes must not hold a goal up forever. */
@@ -313,6 +342,26 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
       } finally {
         watcher.stop();
       }
+    },
+
+    async setPermissionMode(agentId, permission) {
+      const agent = await ensureAgentLoaded(agentId, {
+        agentManager: deps.agentManager,
+        agentStorage: deps.agentStorage,
+        logger: deps.logger,
+      });
+      const modeId = await goalPolicyModeId(deps, {
+        provider: agent.provider,
+        cwd: agent.cwd,
+        permission,
+      });
+      if (!modeId) return null;
+      // The path the app's mode picker takes.
+      const { notice } = await setAgentModeCommand(
+        { agentManager: deps.agentManager },
+        { agentId: agent.id, modeId },
+      );
+      return { modeId, nextTurn: notice?.message === MODE_APPLIES_NEXT_TURN_NOTICE.message };
     },
 
     knownProviders: () => deps.agentManager.getRegisteredProviderIds(),

@@ -636,7 +636,8 @@ describe("config edits and reopening in the Manager", () => {
     const seen: (string | undefined)[] = [];
     const runTurn = env.harness.agentPort.runTurn;
     env.harness.agentPort.runTurn = (agentId, prompt, options) => {
-      seen.push(options?.permission);
+      const permission = options?.permission;
+      seen.push(typeof permission === "function" ? permission() : permission);
       return runTurn(agentId, prompt, options);
     };
     env.script([task("a"), task("b"), task("c")], () => "hold");
@@ -657,6 +658,43 @@ describe("config edits and reopening in the Manager", () => {
     for (const turn of env.harness.turns) turn.resolve({ outcome: "completed", text: "ok" });
     await env.settle(manager);
     expect(env.goalOf(store).status).toBe("completed");
+  });
+
+  test("a policy change switches the goal's running agents; one that cannot switch does not fail the edit", async () => {
+    env.script([task("a"), task("b")], () => "hold");
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, onPermissionRequest: "wait" });
+    await tick();
+    const lead = env.goalOf(store).leadAgentId;
+    const workers = env.harness.agents
+      .filter((a) => a.labels["paseo.goal-task"])
+      .map((a) => a.agentId);
+    expect(workers).toHaveLength(2);
+
+    // Another setting leaves the agents' modes alone.
+    await service.updateConfig("g1", { maxParallel: 3 });
+    await tick();
+    expect(env.harness.modeSwitches).toEqual([]);
+
+    env.harness.failModeSwitch.add(workers[0] as string);
+    const updated = await service.updateConfig("g1", { onPermissionRequest: "fail" });
+    expect(updated.config?.onPermissionRequest).toBe("fail");
+    await tick();
+    expect(env.harness.modeSwitches).toEqual(
+      expect.arrayContaining(
+        [lead, ...workers].map((agentId) => ({ agentId, permission: "fail" })),
+      ),
+    );
+    expect(env.harness.modeSwitches).toHaveLength(3);
+
+    for (const turn of env.harness.turns) turn.resolve({ outcome: "completed", text: "ok" });
+    env.script([task("a"), task("b")]);
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("completed");
+    // An ended goal's agents are left alone.
+    await service.updateConfig("g1", { onPermissionRequest: "wait" });
+    await tick();
+    expect(env.harness.modeSwitches).toHaveLength(3);
   });
 
   test("a goal that used up its runs can be given more and retried", async () => {

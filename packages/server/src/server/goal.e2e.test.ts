@@ -759,13 +759,14 @@ test("config edits: settings change after creation, and a goal that failed while
   expect(failed.goal?.tasks).toEqual([]);
   const firstLead = failed.goal?.leadAgentId;
 
-  // Settings change on the failed goal; fixed fields are not part of the request.
+  // Settings change on the failed goal; fixed fields are not part of the request. The test
+  // "codex" lists no auto-review mode, so `auto` would be refused for it.
   const edited = await client.goalUpdateConfig({
     goalId: "g1",
-    changes: { onPermissionRequest: "auto", maxParallel: 1, limits: { maxRuns: 30 } },
+    changes: { onPermissionRequest: "fail", maxParallel: 1, limits: { maxRuns: 30 } },
   });
   expect(edited.goal?.config).toMatchObject({
-    onPermissionRequest: "auto",
+    onPermissionRequest: "fail",
     maxParallel: 1,
     limits: { maxRuns: 30 },
     leadProvider: "claude",
