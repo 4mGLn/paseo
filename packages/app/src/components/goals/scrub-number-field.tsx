@@ -8,11 +8,13 @@ import {
   type TextStyle,
 } from "react-native";
 import { useTranslation } from "react-i18next";
+import * as Haptics from "expo-haptics";
 import { ChevronsLeftRight } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { CONTROL_HEIGHTS, type FieldControlSize } from "@/components/ui/control-geometry";
 import { FormTextInput } from "@/components/ui/form-field";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
+import { isNative } from "@/constants/platform";
 import { ICON_SIZE } from "@/styles/theme";
 import {
   clampScrubValue,
@@ -38,6 +40,8 @@ export interface ScrubNumberFieldProps {
   describeValue?: (value: ScrubValue) => string;
   /** Shown in the empty input of a nullable field. */
   placeholder?: string;
+  /** The touch keyboard: "numeric" for whole numbers, "decimal" when a fraction is valid. */
+  inputMode?: "numeric" | "decimal";
   disabled?: boolean;
   /** An error from the caller; a typing error of the field's own wins over it. */
   error?: string | null;
@@ -60,6 +64,7 @@ export function ScrubNumberField({
   format,
   describeValue,
   placeholder,
+  inputMode = "decimal",
   disabled = false,
   error,
   size = "md",
@@ -68,6 +73,8 @@ export function ScrubNumberField({
   const { t } = useTranslation();
   const inputRef = useRef<EditingTextInputHandle | null>(null);
   const sessionRef = useRef<ScrubSession | null>(null);
+  // The last value the drag landed on: valueRef lags behind until the parent re-renders.
+  const scrubValueRef = useRef<ScrubValue>(null);
   const valueRef = useRef(value);
   valueRef.current = value;
   const [draftError, setDraftError] = useState<DraftError>(null);
@@ -174,6 +181,7 @@ export function ScrubNumberField({
     // A drag starts from the committed value, not from half-typed text.
     inputRef.current?.replaceText(formatValue(valueRef.current));
     sessionRef.current = createScrubSession(scale, valueRef.current);
+    scrubValueRef.current = valueRef.current;
     setDraftError(null);
     setScrubbing(true);
   }, [formatValue, scale]);
@@ -181,9 +189,18 @@ export function ScrubNumberField({
   const handleScrubMove = useCallback(
     (deltaPx: number, fine: boolean) => {
       const session = sessionRef.current;
-      if (session) {
-        commit(session.move(deltaPx, fine));
+      if (!session) {
+        return;
       }
+      const next = session.move(deltaPx, fine);
+      if (next !== scrubValueRef.current) {
+        scrubValueRef.current = next;
+        // One tick per value the drag lands on, as on a picker wheel; none past the range ends.
+        if (isNative) {
+          void Haptics.selectionAsync().catch(() => {});
+        }
+      }
+      commit(next);
     },
     [commit],
   );
@@ -240,7 +257,8 @@ export function ScrubNumberField({
             placeholder={placeholder}
             editable={!disabled}
             size={size}
-            inputMode="decimal"
+            inputMode={inputMode}
+            returnKeyType="done"
             autoCapitalize="none"
             autoCorrect={false}
             selectTextOnFocus
