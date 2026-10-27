@@ -19,6 +19,8 @@ import {
 export interface GoalNumberField {
   scale: ScrubScale;
   format: ScrubFormat;
+  /** The touch keyboard: whole numbers get the number pad, dollars the decimal pad. */
+  inputMode: "numeric" | "decimal";
 }
 
 const COUNT = plainNumberFormat({ integer: true });
@@ -26,7 +28,11 @@ const MINUTES = durationFormat("minutes");
 const SECONDS = durationFormat("seconds");
 
 function countField(setting: GoalNumberSetting, step = 1): GoalNumberField {
-  return { scale: { ...GOAL_SETTING_RANGES[setting], step, fineStep: 1 }, format: COUNT };
+  return {
+    scale: { ...GOAL_SETTING_RANGES[setting], step, fineStep: 1 },
+    format: COUNT,
+    inputMode: "numeric",
+  };
 }
 
 /** Durations walk the stepper's round values; a fine move is one unit. */
@@ -39,6 +45,9 @@ function durationField(setting: GoalNumberSetting, format: ScrubFormat): GoalNum
       ladder: goalSettingSteps(setting) ?? [],
     },
     format,
+    // On touch the number pad has no letters, so you type a bare number in the base unit;
+    // a hardware keyboard still takes "2h".
+    inputMode: "numeric",
   };
 }
 
@@ -65,6 +74,7 @@ export const GOAL_BUDGET_FIELDS: Record<GoalBudgetKey, GoalNumberField> = {
       nullable: true,
     },
     format: compactCountFormat(),
+    inputMode: "numeric",
   },
   maxCostUsd: {
     scale: {
@@ -75,5 +85,6 @@ export const GOAL_BUDGET_FIELDS: Record<GoalBudgetKey, GoalNumberField> = {
       nullable: true,
     },
     format: usdFormat(),
+    inputMode: "decimal",
   },
 };

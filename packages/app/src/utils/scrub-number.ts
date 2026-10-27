@@ -169,8 +169,13 @@ export function createScrubSession(scale: ScrubScale, start: ScrubValue): ScrubS
   };
 }
 
+// A decimal pad in a comma locale types "2,5". A lone comma that is not a thousands group
+// ("1,000") is the decimal point.
+const DECIMAL_COMMA = /^(\D*\d+),(\d{1,2}|\d{4,})(\D*)$/;
+
 function normalizeNumberText(text: string): string {
-  return text.trim().replace(/[\s,_]/g, "");
+  const compact = text.trim().replace(/[\s_]/g, "");
+  return compact.replace(DECIMAL_COMMA, "$1.$2$3").replace(/,/g, "");
 }
 
 const DECIMAL = /^(?:\d+(?:\.\d+)?|\.\d+)$/;

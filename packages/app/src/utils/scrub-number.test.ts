@@ -168,6 +168,13 @@ describe("plainNumberFormat", () => {
     expect(plainNumberFormat().parse("2.5")).toBe(2.5);
     expect(plainNumberFormat().parse(".5")).toBe(0.5);
   });
+
+  it("reads a lone comma that is not a thousands group as the decimal point", () => {
+    expect(plainNumberFormat().parse("2,5")).toBe(2.5);
+    expect(plainNumberFormat().parse("2,50")).toBe(2.5);
+    expect(integer.parse("2,5")).toBeUndefined();
+    expect(integer.parse("1,000,000")).toBe(1_000_000);
+  });
 });
 
 describe("durationFormat", () => {
@@ -200,6 +207,7 @@ describe("durationFormat", () => {
     expect(minutes.parse("2 hours")).toBe(120);
     expect(minutes.parse("1D")).toBe(1440);
     expect(minutes.parse("90s")).toBe(2);
+    expect(minutes.parse("1,5h")).toBe(90);
     expect(seconds.parse("30")).toBe(30);
     expect(seconds.parse("2m")).toBe(120);
   });
@@ -257,5 +265,11 @@ describe("usdFormat", () => {
     expect(usd.parse("$12.345")).toBe(12.35);
     expect(usd.parse("$")).toBeNull();
     expect(usd.parse("ten")).toBeUndefined();
+  });
+
+  it("reads a comma decimal from a comma-locale decimal pad", () => {
+    expect(usd.parse("2,5")).toBe(2.5);
+    expect(usd.parse("$0,75")).toBe(0.75);
+    expect(usd.parse("1,000")).toBe(1000);
   });
 });
