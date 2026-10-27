@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/website",
-  "version": "0.13.3-mgln-dev",
+  "version": "0.13.4-mgln-dev",
   "private": true,
   "type": "module",
   "scripts": {
