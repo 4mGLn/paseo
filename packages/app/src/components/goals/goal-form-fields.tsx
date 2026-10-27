@@ -1,10 +1,8 @@
 import { useCallback, useMemo, type ReactElement, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { Minus, Plus } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useProviderIcon } from "@/components/provider-icons";
-import { Button } from "@/components/ui/button";
 import { ComboboxItem } from "@/components/ui/combobox";
 import type { FieldControlSize } from "@/components/ui/control-geometry";
 import {
@@ -36,52 +34,6 @@ export function SettingRow({
         <Text style={styles.settingHint}>{hint}</Text>
       </View>
       {children ? <View style={styles.settingControl}>{children}</View> : null}
-    </View>
-  );
-}
-
-/** Minus, the value, plus. The value text is whatever the caller formats. */
-export function Stepper({
-  label,
-  display,
-  canDecrease,
-  canIncrease,
-  onStep,
-  testID,
-}: {
-  label: string;
-  display: string;
-  canDecrease: boolean;
-  canIncrease: boolean;
-  onStep: (direction: 1 | -1) => void;
-  testID: string;
-}): ReactElement {
-  const { t } = useTranslation();
-  const decrease = useCallback(() => onStep(-1), [onStep]);
-  const increase = useCallback(() => onStep(1), [onStep]);
-  return (
-    <View style={styles.stepper} testID={testID}>
-      <Button
-        variant="secondary"
-        size="sm"
-        leftIcon={Minus}
-        onPress={decrease}
-        disabled={!canDecrease}
-        accessibilityLabel={t("goals.form.decrease", { label })}
-        testID={`${testID}-decrease`}
-      />
-      <Text style={styles.stepperValue} testID={`${testID}-value`}>
-        {display}
-      </Text>
-      <Button
-        variant="secondary"
-        size="sm"
-        leftIcon={Plus}
-        onPress={increase}
-        disabled={!canIncrease}
-        accessibilityLabel={t("goals.form.increase", { label })}
-        testID={`${testID}-increase`}
-      />
     </View>
   );
 }
@@ -365,17 +317,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   settingControl: {
     flexShrink: 0,
-  },
-  stepper: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-  },
-  stepperValue: {
-    minWidth: 64,
-    textAlign: "center",
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
   },
   providerIcon: {
     color: theme.colors.foregroundMuted,

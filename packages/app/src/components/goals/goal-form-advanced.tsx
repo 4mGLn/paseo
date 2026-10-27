@@ -9,12 +9,10 @@ import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/s
 import type { GoalFormModel, GoalFormState } from "@/goals/goal-form-model";
 import { durationLabel } from "@/goals/goal-labels";
 import { formatCompactCount, formatUsd } from "@/goals/goal-progress";
+import { GOAL_BUDGET_FIELDS, GOAL_SETTING_FIELDS } from "@/goals/goal-number-fields";
 import {
-  GOAL_SETTING_RANGES,
   minutesToDuration,
   secondsToDuration,
-  stepGoalBudget,
-  stepGoalSetting,
   type GoalBudgetKey,
   type GoalNumberSetting,
   type GoalPermissionPolicy,
@@ -24,10 +22,10 @@ import {
   ModelSelect,
   ProviderSelect,
   SettingRow,
-  Stepper,
   SwitchSetting,
   ThinkingSelect,
 } from "./goal-form-fields";
+import { ScrubNumberField } from "./scrub-number-field";
 
 interface AdvancedProps {
   model: GoalFormModel;
@@ -278,7 +276,7 @@ function SafetySettings({ model, state, size }: AdvancedProps): ReactElement {
         onChange={setAutoApprove}
         testID="goal-auto-approve-switch"
       />
-      <NumberSetting model={model} state={state} setting="maxReworkRounds" />
+      <NumberSetting model={model} state={state} size={size} setting="maxReworkRounds" />
       <View style={styles.block}>
         <SettingRow
           label={t("goals.form.settings.onPermissionRequest.label")}
@@ -303,7 +301,7 @@ function SafetySettings({ model, state, size }: AdvancedProps): ReactElement {
   );
 }
 
-function formatSetting(
+function describeSetting(
   t: ReturnType<typeof useTranslation>["t"],
   setting: GoalNumberSetting,
   value: number,
@@ -320,24 +318,37 @@ function formatSetting(
 function NumberSetting({
   model,
   state,
+  size,
   setting,
-}: Pick<AdvancedProps, "model" | "state"> & { setting: GoalNumberSetting }): ReactElement {
+}: Pick<AdvancedProps, "model" | "state" | "size"> & {
+  setting: GoalNumberSetting;
+}): ReactElement {
   const { t } = useTranslation();
   const value: GoalSettings[GoalNumberSetting] = state.values.settings[setting];
-  const range = GOAL_SETTING_RANGES[setting];
+  const field = GOAL_SETTING_FIELDS[setting];
   const label = t(`goals.form.settings.${setting}.label`);
-  const handleStep = useCallback(
-    (direction: 1 | -1) => model.stepSetting(setting, direction),
+  const handleChange = useCallback(
+    (next: number | null) => {
+      if (next !== null) {
+        model.setSetting(setting, next);
+      }
+    },
     [model, setting],
+  );
+  const describeValue = useCallback(
+    (next: number | null) => (next === null ? "" : describeSetting(t, setting, next)),
+    [setting, t],
   );
   return (
     <SettingRow label={label} hint={t(`goals.form.settings.${setting}.hint`)}>
-      <Stepper
+      <ScrubNumberField
         label={label}
-        display={formatSetting(t, setting, value)}
-        canDecrease={value > range.min && stepGoalSetting(setting, value, -1) !== value}
-        canIncrease={value < range.max && stepGoalSetting(setting, value, 1) !== value}
-        onStep={handleStep}
+        value={value}
+        onChange={handleChange}
+        scale={field.scale}
+        format={field.format}
+        describeValue={describeValue}
+        size={size}
         testID={`goal-setting-${setting}`}
       />
     </SettingRow>
@@ -347,27 +358,37 @@ function NumberSetting({
 function BudgetSetting({
   model,
   state,
+  size,
   budgetKey,
   format,
-}: Pick<AdvancedProps, "model" | "state"> & {
+}: Pick<AdvancedProps, "model" | "state" | "size"> & {
   budgetKey: GoalBudgetKey;
   format: (value: number) => string;
 }): ReactElement {
   const { t } = useTranslation();
   const value = state.values.budget[budgetKey];
+  const field = GOAL_BUDGET_FIELDS[budgetKey];
   const label = t(`goals.form.settings.${budgetKey}.label`);
-  const handleStep = useCallback(
-    (direction: 1 | -1) => model.stepBudget(budgetKey, direction),
+  const noLimit = t("goals.form.noLimit");
+  const handleChange = useCallback(
+    (next: number | null) => model.setBudget(budgetKey, next),
     [budgetKey, model],
+  );
+  const describeValue = useCallback(
+    (next: number | null) => (next === null ? noLimit : format(next)),
+    [format, noLimit],
   );
   return (
     <SettingRow label={label} hint={t(`goals.form.settings.${budgetKey}.hint`)}>
-      <Stepper
+      <ScrubNumberField
         label={label}
-        display={value === null ? t("goals.form.noLimit") : format(value)}
-        canDecrease={value !== null}
-        canIncrease={stepGoalBudget(budgetKey, value, 1) !== value}
-        onStep={handleStep}
+        value={value}
+        onChange={handleChange}
+        scale={field.scale}
+        format={field.format}
+        describeValue={describeValue}
+        placeholder={noLimit}
+        size={size}
         testID={`goal-budget-${budgetKey}`}
       />
     </SettingRow>
