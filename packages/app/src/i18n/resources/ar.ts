@@ -473,6 +473,7 @@ export const ar: TranslationResources = {
       completed: "مكتمل",
       failed: "فشل",
       cancelled: "ملغى",
+      paused: "متوقف مؤقتًا",
     },
     taskStatus: {
       pending: "معلّقة",

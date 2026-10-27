@@ -454,6 +454,7 @@ export const ja: TranslationResources = {
       completed: "完了",
       failed: "失敗",
       cancelled: "キャンセル済み",
+      paused: "一時停止中",
     },
     taskStatus: {
       pending: "保留中",
