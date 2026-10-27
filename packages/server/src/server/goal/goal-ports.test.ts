@@ -43,7 +43,7 @@ describe("settleTurn", () => {
     const result = await settleTurn(sequence(asking), "fail", "a1", async (ms) => {
       pauses.push(ms);
     });
-    expect(result).toEqual({ outcome: "needs_permission" });
+    expect(result).toMatchObject({ outcome: "needs_permission" });
     expect(pauses).toEqual([]);
   });
 
@@ -73,7 +73,7 @@ describe("settleTurn", () => {
         if (polls === 2) policy = "fail";
       },
     );
-    expect(result).toEqual({ outcome: "needs_permission" });
+    expect(result).toMatchObject({ outcome: "needs_permission" });
     expect(polls).toBe(2);
   });
 
@@ -81,7 +81,87 @@ describe("settleTurn", () => {
     // After the caller cancels the agent, the request can still be reported.
     const stopped = { status: "idle", permission: { id: "p1" }, lastMessage: null };
     const result = await settleTurn(sequence(asking, stopped), "wait", "a1", async () => {});
-    expect(result).toEqual({ outcome: "needs_permission" });
+    expect(result).toMatchObject({ outcome: "needs_permission" });
+  });
+
+  // Shaped like Codex's request_user_input: the question rides in input.questions.
+  const question = {
+    id: "permission-q1",
+    name: "request_user_input",
+    kind: "question" as const,
+    title: "Question",
+    input: {
+      questions: [{ id: "0", header: "Question 1", question: "Record a setup decision?" }],
+    },
+  };
+
+  test("under fail a question ends the turn and says what was asked", async () => {
+    const result = await settleTurn(
+      sequence({ status: "running", permission: question, lastMessage: null }),
+      "fail",
+      "a1",
+      async () => {},
+    );
+    expect(result).toEqual({
+      outcome: "needs_permission",
+      request: { kind: "question", tool: "request_user_input", text: "Record a setup decision?" },
+    });
+  });
+
+  test("a permission says which tool and what for, cut to 300 characters", async () => {
+    const command = `rm -rf ${"x".repeat(400)}`;
+    const result = await settleTurn(
+      sequence({
+        status: "running",
+        permission: {
+          id: "p2",
+          name: "Bash",
+          kind: "tool",
+          detail: { type: "shell", command },
+        },
+        lastMessage: null,
+      }),
+      "fail",
+      "a1",
+    );
+    expect(result).toMatchObject({
+      outcome: "needs_permission",
+      request: { kind: "permission", tool: "Bash" },
+    });
+    const text = result.outcome === "needs_permission" ? result.request?.text : undefined;
+    expect(text).toHaveLength(300);
+    expect(text?.startsWith("rm -rf xxx")).toBe(true);
+  });
+
+  test("under wait a question asked while the turn runs keeps it waiting", async () => {
+    const pauses: number[] = [];
+    const result = await settleTurn(
+      sequence(
+        { status: "running", permission: question, lastMessage: null },
+        { status: "running", permission: question, lastMessage: null },
+        done("answered and done"),
+      ),
+      "wait",
+      "a1",
+      async (ms) => {
+        pauses.push(ms);
+      },
+    );
+    expect(result).toEqual({ outcome: "completed", text: "answered and done" });
+    expect(pauses).toEqual([1000, 1000]);
+  });
+
+  test("under wait a question left open after the turn waits, then for the turn its answer starts", async () => {
+    // Codex's async questions: the turn ends, the question stays, the answer starts a new turn.
+    const waiting = { status: "idle", permission: question, lastMessage: "Which setup?" };
+    const answered = { status: "idle", permission: null, lastMessage: "Which setup?" };
+    const result = await settleTurn(
+      sequence(waiting, waiting, answered, done("did the work after the answer")),
+      "wait",
+      "a1",
+      async () => {},
+    );
+    expect(result).toEqual({ outcome: "completed", text: "did the work after the answer" });
   });
 
   test("an abandoned turn stops polling for a request nobody will answer", async () => {
@@ -97,7 +177,7 @@ describe("settleTurn", () => {
       },
       controller.signal,
     );
-    expect(result).toEqual({ outcome: "needs_permission" });
+    expect(result).toMatchObject({ outcome: "needs_permission" });
     expect(polls).toBe(2);
   });
 });
