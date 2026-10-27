@@ -61,6 +61,17 @@ export type TurnResult = (
   usage?: TurnUsage;
 };
 
+/** Whose turn a usage.recorded event describes. */
+export interface TurnUsageLabel {
+  role: UsageRole;
+  /** A worker's run. */
+  runId?: string;
+  /** The change set a reviewer reviews. */
+  changeSetId?: string;
+  /** The agent's thinking option, when known. */
+  thinking?: string;
+}
+
 export interface CreateGoalAgentInput {
   provider: string;
   cwd: string;
@@ -160,6 +171,8 @@ interface LiveRun {
 
 interface LiveLead {
   agentId: string | null;
+  /** The Lead agent's thinking option once created, when known. */
+  thinking?: string;
   canceled: boolean;
 }
 
@@ -221,7 +234,7 @@ export class GoalManager {
         failGoal: (goalId, reason) => this.failGoal(goalId, reason),
         requestPump: (goalId) => this.track(this.pump(goalId)),
         discard: (agentId, workspaceId) => this.discard(agentId, workspaceId),
-        runTurn: (goalId, agentId, prompt, role) => this.turn(goalId, agentId, prompt, { role }),
+        runTurn: (goalId, agentId, prompt, usage) => this.turn(goalId, agentId, prompt, usage),
         notifyLeadFinal: (goal, text) => this.track(this.notifyLeadFinal(goal, text)),
       },
     });
@@ -356,7 +369,7 @@ export class GoalManager {
     goalId: string,
     agentId: string,
     prompt: string,
-    usage: { role: UsageRole; runId?: string },
+    usage: TurnUsageLabel,
   ): Promise<TurnResult> {
     // Keyed by the goal's position when the turn started: one agent never starts two turns there.
     const usageEventId = `${goalId}:usage:${agentId}:${this.store.get(goalId)?.lastSeq ?? 0}`;
@@ -369,6 +382,8 @@ export class GoalManager {
         role: usage.role,
         agentId,
         ...(usage.runId ? { runId: usage.runId } : {}),
+        ...(usage.changeSetId ? { changeSetId: usage.changeSetId } : {}),
+        ...(usage.thinking ? { thinking: usage.thinking } : {}),
         ...(result.usage ? { usage: result.usage } : {}),
       });
     }
@@ -577,7 +592,7 @@ export class GoalManager {
         title: `${goal.title} (lead)`,
         ...(config.baseCommit ? { baseRef: config.baseCommit } : {}),
       });
-      const { agentId } = await this.agents
+      const { agentId, thinking } = await this.agents
         .createAgent({
           provider: config.leadProvider,
           ...thinkingInput(goalRoleThinking(config, "lead")),
@@ -593,6 +608,7 @@ export class GoalManager {
           throw error;
         });
       lead.agentId = agentId;
+      if (thinking) lead.thinking = thinking;
       const attached =
         !lead.canceled &&
         !this.stopped &&
@@ -621,7 +637,10 @@ export class GoalManager {
     let prompt = buildLeadPlanningPrompt(goal);
     let problem = "";
     for (let attempt = 0; attempt < MAX_PLAN_ATTEMPTS; attempt += 1) {
-      const result = await this.turn(goal.id, agentId, prompt, { role: "lead" });
+      const result = await this.turn(goal.id, agentId, prompt, {
+        role: "lead",
+        ...(lead.thinking ? { thinking: lead.thinking } : {}),
+      });
       if (this.stopped || lead.canceled || this.store.get(goal.id)?.status !== "planning") return;
       if (result.outcome !== "completed") {
         await this.failGoal(goal.id, `Lead agent did not finish planning (${result.outcome}).`);
@@ -846,6 +865,7 @@ export class GoalManager {
       const result = await this.turn(goalId, agentId, this.promptFor(goal, task), {
         role: "worker",
         runId,
+        ...(thinking ? { thinking } : {}),
       });
       if (this.stopped) return;
       if (live.canceled || !this.isGoalLive(goalId)) return await this.abandon(live, false);

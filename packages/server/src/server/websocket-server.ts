@@ -13,7 +13,7 @@ import { DaemonLinkEndpoint, VirtualHostSocket } from "./connected-hosts/index.j
 import { ConnectedHosts } from "./connected-hosts/index.js";
 import type { GoalService } from "./goal/goal-service.js";
 import { GoalUpdatePublisher } from "./goal/goal-update-publisher.js";
-import { withoutAutoPolicy } from "./session/goal/goal-session.js";
+import { withoutAutoPolicy, withoutUsageBreakdown } from "./session/goal/goal-session.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -1042,13 +1042,19 @@ export class VoiceAssistantWebSocketServer {
       subscribeRemoved: (listener) => goalService.subscribeRemoved(listener),
       publish: (goal, options) => {
         const payload = options?.deleted ? { goal, deleted: true } : { goal };
-        // COMPAT(goalConfigEdit): added in v0.13.3, remove after 2027-04-27.
-        const legacyPayload = { ...payload, goal: withoutAutoPolicy(goal) };
+        // COMPAT(goalConfigEdit, goalUsageBreakdown): added in v0.13.3, remove after 2027-04-27.
+        const variants = new Map<string, typeof payload>();
         for (const session of this.listSessions()) {
-          session.publish({
-            type: "goal.update",
-            payload: session.supports(CLIENT_CAPS.goalConfigEdit) ? payload : legacyPayload,
-          });
+          const configEdit = session.supports(CLIENT_CAPS.goalConfigEdit);
+          const breakdown = session.supports(CLIENT_CAPS.goalUsageBreakdown);
+          const key = `${configEdit}:${breakdown}`;
+          let variant = variants.get(key);
+          if (!variant) {
+            const policy = configEdit ? goal : withoutAutoPolicy(goal);
+            variant = { ...payload, goal: breakdown ? policy : withoutUsageBreakdown(policy) };
+            variants.set(key, variant);
+          }
+          session.publish({ type: "goal.update", payload: variant });
         }
       },
     });
@@ -2002,6 +2008,7 @@ export class VoiceAssistantWebSocketServer {
               goalThinking: true,
               goalManagement: true,
               goalConfigEdit: true,
+              goalUsageBreakdown: true,
             }
           : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.

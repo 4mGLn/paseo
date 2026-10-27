@@ -3,7 +3,7 @@ import { withOutput } from "../../output/index.js";
 import { addJsonAndDaemonHostOptions } from "../../utils/command-options.js";
 import { runConfigCommand } from "./config.js";
 import { runCreateCommand } from "./create.js";
-import { runInspectCommand } from "./inspect.js";
+import { runInspectCommand, runInspectUsageCommand, type GoalInspectOptions } from "./inspect.js";
 import { runLsCommand } from "./ls.js";
 import { runChangesCommand } from "./changes.js";
 import { runNotificationsCommand } from "./notifications.js";
@@ -193,8 +193,13 @@ export function createGoalCommand(): Command {
     goal
       .command("inspect")
       .description("Show a goal's tasks (full goal and event history with --json)")
-      .argument("<id>", "Goal ID"),
-  ).action(withOutput(runInspectCommand));
+      .argument("<id>", "Goal ID")
+      .option("--usage", "Show usage per agent and role, with the goal's total, instead of tasks"),
+  ).action((id: string, options: GoalInspectOptions, command: Command) =>
+    options.usage
+      ? withOutput(runInspectUsageCommand)(id, options, command)
+      : withOutput(runInspectCommand)(id, options, command),
+  );
 
   addJsonAndDaemonHostOptions(
     goal

@@ -4,6 +4,12 @@ import type { Goal, Task } from "@getpaseo/protocol/goal/types";
 import type { ListResult, OutputSchema } from "../../output/index.js";
 import { formatDuration, formatUsage, taskTimes, taskUsage } from "./progress.js";
 import { connectGoalClient, toGoalCommandError, type GoalCommandOptions } from "./shared.js";
+import { goalUsageRows, goalUsageSchema, type GoalUsageRow } from "./usage.js";
+
+export interface GoalInspectOptions extends GoalCommandOptions {
+  /** List usage per agent, role and in total instead of the tasks. */
+  usage?: boolean;
+}
 
 interface GoalTaskRow {
   id: string;
@@ -44,6 +50,41 @@ function taskThinking(goal: Goal, task: Task): string {
     (goal.config ? goalRoleThinking(goal.config, "worker", task) : undefined) ??
     "-"
   );
+}
+
+/** `paseo goal inspect --usage`: usage per agent, then per role and the goal's total. */
+export async function runInspectUsageCommand(
+  id: string,
+  options: GoalCommandOptions,
+  _command: Command,
+): Promise<ListResult<GoalUsageRow>> {
+  const client = await connectGoalClient(options.daemonTarget);
+  try {
+    const payload = await client.goalInspect(id);
+    if (payload.error || !payload.goal) {
+      throw new Error(payload.error ?? `Goal not found: ${id}`);
+    }
+    const goal = payload.goal;
+    const rows = goalUsageRows(goal);
+    if (!rows) throw new Error("Update the host to see usage per agent.");
+    return {
+      type: "list",
+      data: rows,
+      schema: {
+        ...goalUsageSchema,
+        serialize: () => ({
+          usage: goal.usage ?? null,
+          usageByRole: goal.usageByRole ?? null,
+          usageBreakdown: goal.usageBreakdown ?? [],
+          usageBreakdownTruncated: goal.usageBreakdownTruncated ?? 0,
+        }),
+      },
+    };
+  } catch (error) {
+    throw toGoalCommandError("GOAL_INSPECT_FAILED", "inspect goal usage", error);
+  } finally {
+    await client.close().catch(() => {});
+  }
 }
 
 export async function runInspectCommand(

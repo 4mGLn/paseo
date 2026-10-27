@@ -3921,6 +3921,10 @@ export const ServerInfoStatusPayloadSchema = z
         // goal.update_config, the "auto" permission policy, and goal.retry reopening a goal
         // that failed while planning. Goals created here without a policy record "wait".
         goalConfigEdit: z.boolean().optional(),
+        // COMPAT(goalUsageBreakdown): added in v0.13.3, remove gate after 2027-10-27.
+        // Goals carry usageByRole and usageBreakdown, usage totals count turns that reported a
+        // cost or tokens, and tokens are recorded with one meaning for every provider.
+        goalUsageBreakdown: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
@@ -7858,6 +7862,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.goalAcknowledgeEvents]: z.boolean().optional(),
       [CLIENT_CAPS.goalManagementEvents]: z.boolean().optional(),
       [CLIENT_CAPS.goalConfigEdit]: z.boolean().optional(),
+      [CLIENT_CAPS.goalUsageBreakdown]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()

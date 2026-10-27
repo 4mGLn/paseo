@@ -18,7 +18,8 @@ export const GOAL_CONFIG_BOUNDS = {
     runTimeoutMinutes: { min: 1, max: 1440, default: 60 },
     goalTimeoutMinutes: { min: 1, max: 10080, default: 1440 },
     retryBackoffSeconds: { min: 0, max: 3600, default: 5 },
-    // Input plus output tokens the providers report, over the goal's life.
+    // Fresh input plus output tokens the providers report, over the goal's life; cache
+    // reads are not counted. See UsageTotalsSchema.
     maxTotalTokens: { min: 1000, max: 10_000_000_000, default: null },
     // US dollars the providers report, over the goal's life.
     maxCostUsd: { min: 0.01, max: 100_000, default: null },

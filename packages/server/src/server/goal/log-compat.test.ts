@@ -227,6 +227,107 @@ describe("goal logs written by earlier phases", () => {
     expect(store.get("pp")?.failureReason).toMatch(/needs_permission/);
   });
 
+  test("usage recorded before one token meaning replays unchanged, and is broken down per agent", async () => {
+    // Shaped like a real goal log: a Claude Lead whose input left out cache reads and whose
+    // cost was the session's running total, and Codex workers whose input counted cache
+    // reads and covered only the turn's last model call. No provider or thinking on events.
+    const usageLog = jsonl("u1", [
+      {
+        type: "goal.created",
+        title: "Usage",
+        objective: "o",
+        criteria: [{ id: "c1", text: "w" }],
+        config: {
+          ...config,
+          leadProvider: "claude/claude-opus-5-5",
+          defaultProvider: "codex/gpt-6-luna",
+          leadThinking: "medium",
+          onPermissionRequest: "wait",
+        },
+      },
+      { type: "lead.attached", agentId: "lead-1", workspaceId: "wks-lead" },
+      {
+        type: "usage.recorded",
+        role: "lead",
+        agentId: "lead-1",
+        usage: {
+          inputTokens: 8,
+          cachedInputTokens: 174852,
+          outputTokens: 7609,
+          costUsd: 0.5307984,
+        },
+      },
+      { type: "plan.proposed", tasks: [spec("t1"), spec("t2")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "t1" },
+      { type: "run.started", runId: "t1-a1", taskId: "t1", provider: "codex/gpt-6-luna" },
+      {
+        type: "run.attached",
+        runId: "t1-a1",
+        agentId: "w-1",
+        workspaceId: "wks-1",
+        cwd: "/w1",
+        thinking: "max",
+      },
+      {
+        type: "usage.recorded",
+        role: "worker",
+        agentId: "w-1",
+        runId: "t1-a1",
+        usage: { inputTokens: 179133, cachedInputTokens: 178560, outputTokens: 2983 },
+      },
+      { type: "task.started", taskId: "t2" },
+      { type: "run.started", runId: "t2-a1", taskId: "t2", provider: "codex/gpt-6-luna" },
+      { type: "run.attached", runId: "t2-a1", agentId: "w-2", workspaceId: "wks-2", cwd: "/w2" },
+      { type: "usage.recorded", role: "worker", agentId: "w-2", runId: "t2-a1" },
+    ]);
+    await writeFile(join(dir, "u1.jsonl"), usageLog);
+    const goal = (await load()).get("u1");
+    expect(GoalSchema.safeParse(goal).success).toBe(true);
+    // The totals keep the sums those events always gave.
+    expect(goal?.usage).toEqual({
+      inputTokens: 179141,
+      cachedInputTokens: 353412,
+      outputTokens: 10592,
+      totalTokens: 189733,
+      costUsd: 0.5307984,
+      reportedTurns: 2,
+      totalTurns: 3,
+      costReportedTurns: 1,
+      tokenReportedTurns: 2,
+    });
+    expect(goal?.usageByRole?.lead).toMatchObject({ totalTokens: 7617, costReportedTurns: 1 });
+    expect(goal?.usageByRole?.worker).toMatchObject({
+      totalTokens: 182116,
+      totalTurns: 2,
+      costReportedTurns: 0,
+    });
+    expect(goal?.usageBreakdown).toEqual([
+      expect.objectContaining({
+        agentId: "lead-1",
+        role: "lead",
+        provider: "claude",
+        model: "claude-opus-5-5",
+        thinking: "medium",
+      }),
+      expect.objectContaining({
+        agentId: "w-1",
+        role: "worker",
+        taskId: "t1",
+        runId: "t1-a1",
+        provider: "codex",
+        model: "gpt-6-luna",
+        thinking: "max",
+      }),
+      expect.objectContaining({
+        agentId: "w-2",
+        taskId: "t2",
+        usage: expect.objectContaining({ reportedTurns: 0, totalTurns: 1 }),
+      }),
+    ]);
+    expect(goal?.usageBreakdown?.[2]).not.toHaveProperty("thinking");
+  });
+
   test("an event carrying fields this version does not know is still accepted", async () => {
     const log = phase1Log("x1").replace(
       '"type":"plan.approved"',
