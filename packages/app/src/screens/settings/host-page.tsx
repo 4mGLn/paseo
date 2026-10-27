@@ -66,6 +66,7 @@ import { BrowserToolsRow } from "./browser-tools-card";
 import { HostPaseoToolsRow } from "./paseo-tools-card";
 import { RestartRecoveryRow } from "./restart-recovery-card";
 import { IdleRuntimeCleanupRow } from "./idle-runtime-cleanup-card";
+import { GoalRunCapSection } from "./goal-run-cap-card";
 import { restartDaemonFromSettings, updateDaemonFromSettings } from "./daemon-lifecycle";
 
 const ThemedRestart = withUnistyles(RotateCw);

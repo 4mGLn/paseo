@@ -865,8 +865,8 @@ export const en = {
         maxTotalTokens: { label: "Tokens", hint: "The goal stops once providers report this many" },
         maxCostUsd: { label: "Cost", hint: "The goal stops once providers report this much" },
         requireHumanApproval: {
-          label: "Ask me before merging",
-          hint: "Every reviewed change waits for you",
+          label: "Ask me before changes are merged",
+          hint: "After the reviewer approves a change, it waits for you. Tasks that depend on it wait too, so the goal runs slower.",
         },
         autoApprovePlan: {
           label: "Approve the plan automatically",
@@ -3964,6 +3964,15 @@ export const en = {
           runtime: "Model & runtime",
           whenToUse: "When to use",
         },
+      },
+      goalRunCap: {
+        sectionTitle: "Goals",
+        title: "Worker runs at once",
+        unit: "concurrent worker runs",
+        hint: "Shared by all goals on this host. Raising it needs enough CPU, memory and provider rate limit for that many agents at once.",
+        defaultValue: "Default {{value}}",
+        save: "Save",
+        saving: "Saving...",
       },
       agentTeams: {
         sectionTitle: "Teams",
