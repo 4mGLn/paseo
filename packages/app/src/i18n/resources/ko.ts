@@ -336,6 +336,14 @@ export const ko: TranslationResources = {
       all: "모든 우선순위",
       label: "우선순위: {{priority}}",
     },
+    toolbar: {
+      status: "상태",
+      statusWithCount: "상태 · {{label}} {{n}}",
+      statusLabel: "상태: {{status}}",
+      statusLabelWithCount: "상태: {{status}} · {{label}} {{n}}",
+      project: "프로젝트",
+      sort: "정렬",
+    },
     sort: {
       label: "정렬: {{sort}}",
       priority: "우선순위",
@@ -396,7 +404,7 @@ export const ko: TranslationResources = {
       usageNotReported: "사용량 보고되지 않음",
     },
     filters: {
-      needs_you: "확인 필요",
+      needs_you: "확인",
       running: "실행 중",
       done: "완료",
       all: "전체",

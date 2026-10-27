@@ -335,6 +335,14 @@ export const zhCN: TranslationResources = {
       all: "任意优先级",
       label: "优先级：{{priority}}",
     },
+    toolbar: {
+      status: "状态",
+      statusWithCount: "状态 · {{label}} {{n}}",
+      statusLabel: "状态：{{status}}",
+      statusLabelWithCount: "状态：{{status}} · {{label}} {{n}}",
+      project: "项目",
+      sort: "排序",
+    },
     sort: {
       label: "排序：{{sort}}",
       priority: "优先级",
@@ -395,7 +403,7 @@ export const zhCN: TranslationResources = {
       usageNotReported: "未报告用量",
     },
     filters: {
-      needs_you: "待你处理",
+      needs_you: "待办",
       running: "运行中",
       done: "已完成",
       all: "全部",

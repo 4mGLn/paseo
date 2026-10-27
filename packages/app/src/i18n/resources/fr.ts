@@ -340,6 +340,14 @@ export const fr: TranslationResources = {
       all: "Toutes priorités",
       label: "Priorité : {{priority}}",
     },
+    toolbar: {
+      status: "Statut",
+      statusWithCount: "Statut · {{label}} {{n}}",
+      statusLabel: "Statut : {{status}}",
+      statusLabelWithCount: "Statut : {{status}} · {{label}} {{n}}",
+      project: "Projet",
+      sort: "Tri",
+    },
     sort: {
       label: "Tri : {{sort}}",
       priority: "Priorité",
@@ -400,7 +408,7 @@ export const fr: TranslationResources = {
       usageNotReported: "Usage non communiqué",
     },
     filters: {
-      needs_you: "À traiter",
+      needs_you: "Action",
       running: "En cours",
       done: "Terminés",
       all: "Tous",

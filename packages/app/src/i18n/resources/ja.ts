@@ -340,6 +340,14 @@ export const ja: TranslationResources = {
       all: "すべての優先度",
       label: "優先度: {{priority}}",
     },
+    toolbar: {
+      status: "ステータス",
+      statusWithCount: "ステータス · {{label}} {{n}}",
+      statusLabel: "ステータス: {{status}}",
+      statusLabelWithCount: "ステータス: {{status}} · {{label}} {{n}}",
+      project: "プロジェクト",
+      sort: "並べ替え",
+    },
     sort: {
       label: "並べ替え: {{sort}}",
       priority: "優先度",
@@ -400,7 +408,7 @@ export const ja: TranslationResources = {
       usageNotReported: "使用量の報告なし",
     },
     filters: {
-      needs_you: "要対応",
+      needs_you: "対応",
       running: "実行中",
       done: "完了",
       all: "すべて",
