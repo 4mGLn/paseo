@@ -116,6 +116,8 @@ export interface GoalActionFeatures {
   management: boolean;
   /** `goalConfigEdit`: settings changes and reopening a goal that failed while planning. */
   configEdit: boolean;
+  /** `goalIntegrationRetry`: retry merges again change sets whose merge failed. */
+  integrationRetry: boolean;
 }
 
 export interface GoalActions {
@@ -126,6 +128,8 @@ export interface GoalActions {
   retry: boolean;
   /** The retry reopens a goal that failed while planning; label it so. */
   retryPlanning: boolean;
+  /** The retry merges again change sets whose merge failed; label it so. */
+  retryMerge: boolean;
   /** Change the settings of a managed goal that is not archived. */
   editSettings: boolean;
   rename: boolean;
@@ -144,6 +148,7 @@ export interface GoalActions {
 export function goalAvailableActions(goal: Goal, features: GoalActionFeatures): GoalActions {
   const controls = goalControlsAvailable(goal, features.controls, {
     configEdit: features.configEdit,
+    integrationRetry: features.integrationRetry,
   });
   const ended = isGoalTerminal(goal.status);
   const archived = isGoalArchived(goal);
@@ -153,6 +158,7 @@ export function goalAvailableActions(goal: Goal, features: GoalActionFeatures): 
     cancel: !ended,
     retry: controls.canRetry,
     retryPlanning: controls.canRetryPlanning,
+    retryMerge: controls.canRetryMerge,
     editSettings: features.configEdit && goal.config !== null && !archived,
     rename: features.management,
     priority: features.management,

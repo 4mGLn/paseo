@@ -145,6 +145,12 @@ function describeOutcomeEvent(event: GoalEvent, goal: FeedGoal): Described | nul
         detail: event.findings ?? event.error ?? event.testSummary ?? null,
       };
     }
+    case "changeset.integration_retried":
+      return {
+        key: "integrationRetried",
+        tone: "default",
+        subject: event.changeSetIds.map((id) => changeSetTitle(goal, id)).join(", "),
+      };
     case "notification.attempted":
       if (event.outcome === "failed") {
         return {

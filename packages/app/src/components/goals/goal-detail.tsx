@@ -17,6 +17,8 @@ import { canApproveGoalPlan, isGoalTerminal } from "@/goals/goal-derivation";
 import { goalBadge } from "@/goals/goal-labels";
 import {
   goalControlsAvailable,
+  goalRetryLabelKey,
+  isIntegrationFailedChangeSet,
   goalFailedOnPermission,
   goalGuidance,
   goalSteps,
@@ -155,7 +157,8 @@ function GoalSummary({
   const hasControls = useHostFeature(serverId, "goalControls");
   const canAcknowledge = useHostFeature(serverId, "goalAcknowledge");
   const configEdit = useHostFeature(serverId, "goalConfigEdit");
-  const controls = goalControlsAvailable(goal, hasControls, { configEdit });
+  const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
+  const controls = goalControlsAvailable(goal, hasControls, { configEdit, integrationRetry });
   const showDismiss = canAcknowledge && canAcknowledgeGoal(goal);
   const showApprove = canApproveGoalPlan(goal.status);
   const showCancel = !isGoalTerminal(goal.status);
@@ -291,9 +294,7 @@ function GoalSummary({
             loading={mutations.pendingRetryTaskId === ""}
             testID="goal-retry"
           >
-            {controls.canRetryPlanning
-              ? t("goals.detail.retryPlanning")
-              : t("goals.detail.retryGoal")}
+            {t(goalRetryLabelKey(controls))}
           </Button>
         ) : null}
         {showDismiss ? (
@@ -386,6 +387,13 @@ function GoalGuidanceBanner({ serverId, goal }: { serverId: string; goal: Goal }
   // The fix for a run that ended on a permission request is a different policy, then a retry.
   const showPermissionHint =
     configEdit && goal.config !== null && !goal.archivedAt && goalFailedOnPermission(goal);
+  // A failed merge is fixed in the integration worktree, then merged again by the retry.
+  const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
+  const showMergeHint =
+    integrationRetry &&
+    goal.status === "failed" &&
+    !goal.archivedAt &&
+    goal.changeSets.some(isIntegrationFailedChangeSet);
   const guidance = goalGuidance(goal);
   const description = [t(`goals.guidance.${guidance.phase}.description`, guidance.params)];
   if (guidance.phase === "failed" && goal.failureReason) {
@@ -416,6 +424,15 @@ function GoalGuidanceBanner({ serverId, goal }: { serverId: string; goal: Goal }
                 {t("goals.actions.editSettings")}
               </Button>
             </View>
+          </View>
+        ) : null}
+        {showMergeHint ? (
+          <View style={styles.bannerHint} testID="goal-merge-failure-hint">
+            <Text style={styles.meta}>
+              {t("goals.detail.mergeFailureHint", {
+                path: goal.integration?.cwd ?? goal.integration?.branch ?? "",
+              })}
+            </Text>
           </View>
         ) : null}
       </Alert>

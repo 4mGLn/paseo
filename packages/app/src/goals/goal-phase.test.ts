@@ -4,6 +4,7 @@ import {
   goalFailedOnPermission,
   goalGuidance,
   goalPhase,
+  goalRetryLabelKey,
   goalSteps,
 } from "./goal-phase";
 import { makeChangeSet, makeGoal, makeRun, makeTask } from "./test-utils/goal-fixture";
@@ -179,6 +180,40 @@ describe("goalControlsAvailable", () => {
     });
     expect(goalControlsAvailable(archived, true).canRetry).toBe(false);
     expect(goalControlsAvailable({ ...archived, archivedAt: null }, true).canRetry).toBe(true);
+  });
+});
+
+describe("retrying a failed merge", () => {
+  const tasks = [makeTask("t1", { status: "succeeded" })];
+  const mergeFailed = makeChangeSet("c1", "t1", {
+    status: "rejected",
+    rejectionReason: "integration_failed",
+  });
+  const failedMerge = makeGoal({ status: "failed", tasks, changeSets: [mergeFailed] });
+
+  it("is offered as a merge retry only by a host that merges it again", () => {
+    expect(goalControlsAvailable(failedMerge, true)).toMatchObject({
+      canRetry: false,
+      canRetryMerge: false,
+    });
+    const controls = goalControlsAvailable(failedMerge, true, { integrationRetry: true });
+    expect(controls).toMatchObject({ canRetry: true, canRetryMerge: true });
+    expect(goalRetryLabelKey(controls)).toBe("goals.detail.retryMerge");
+  });
+
+  it("is not offered when a change set was rejected by review, or while archived", () => {
+    const reviewRejected = makeChangeSet("c2", "t1", { status: "rejected" });
+    const both = { ...failedMerge, changeSets: [mergeFailed, reviewRejected] };
+    expect(goalControlsAvailable(both, true, { integrationRetry: true }).canRetry).toBe(false);
+    const archived = { ...failedMerge, archivedAt: "2026-10-22T00:00:00Z" };
+    expect(goalControlsAvailable(archived, true, { integrationRetry: true }).canRetry).toBe(false);
+  });
+
+  it("labels a plain task retry as such", () => {
+    const failed = makeGoal({ status: "failed", tasks: [makeTask("t1", { status: "failed" })] });
+    expect(goalRetryLabelKey(goalControlsAvailable(failed, true, { integrationRetry: true }))).toBe(
+      "goals.detail.retryGoal",
+    );
   });
 });
 

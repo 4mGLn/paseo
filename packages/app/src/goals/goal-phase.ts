@@ -178,6 +178,8 @@ export interface GoalControls {
   canRetry: boolean;
   /** The retry reopens a goal that failed while planning: a fresh Lead plans again. */
   canRetryPlanning: boolean;
+  /** The retry merges again change sets whose merge failed (`goalIntegrationRetry`). */
+  canRetryMerge: boolean;
   /** Retry one failed or cancelled task of a live goal. */
   canRetryTasks: boolean;
 }
@@ -188,18 +190,38 @@ const NO_CONTROLS: GoalControls = {
   canResume: false,
   canRetry: false,
   canRetryPlanning: false,
+  canRetryMerge: false,
   canRetryTasks: false,
 };
+
+/** The translation key that labels the retry: planning, merge, or the failed tasks. */
+export function goalRetryLabelKey(
+  controls: Pick<GoalControls, "canRetryPlanning" | "canRetryMerge">,
+): "goals.detail.retryPlanning" | "goals.detail.retryMerge" | "goals.detail.retryGoal" {
+  if (controls.canRetryPlanning) return "goals.detail.retryPlanning";
+  if (controls.canRetryMerge) return "goals.detail.retryMerge";
+  return "goals.detail.retryGoal";
+}
+
+/**
+ * A rejected change set whose merge step failed after review and approval. A host with
+ * `goalIntegrationRetry` merges it again on retry; one rejected by review stays rejected.
+ */
+export function isIntegrationFailedChangeSet(changeSet: Goal["changeSets"][number]): boolean {
+  return changeSet.status === "rejected" && changeSet.rejectionReason === "integration_failed";
+}
 
 /**
  * Which controls to offer: only on hosts with goal controls, only for managed goals, and only in
  * the states the daemon accepts them in. A goal that failed while planning has no tasks; only a
- * host with `goalConfigEdit` reopens it, an older one refuses the retry.
+ * host with `goalConfigEdit` reopens it, an older one refuses the retry. A change set rejected
+ * by review keeps a failed goal from reopening; one whose merge failed does not on a host with
+ * `goalIntegrationRetry`, which merges it again.
  */
 export function goalControlsAvailable(
   goal: Goal,
   hostHasControls: boolean,
-  host: { configEdit?: boolean } = {},
+  host: { configEdit?: boolean; integrationRetry?: boolean } = {},
 ): GoalControls {
   if (!hostHasControls || !goal.config) {
     return NO_CONTROLS;
@@ -207,7 +229,11 @@ export function goalControlsAvailable(
   const isLive =
     goal.status !== "completed" && goal.status !== "failed" && goal.status !== "cancelled";
   const rejections = goal.planRejections?.length ?? 0;
-  const hasRejectedChange = goal.changeSets.some((changeSet) => changeSet.status === "rejected");
+  const remergeable = (changeSet: Goal["changeSets"][number]) =>
+    host.integrationRetry === true && isIntegrationFailedChangeSet(changeSet);
+  const hasRejectedChange = goal.changeSets.some(
+    (changeSet) => changeSet.status === "rejected" && !remergeable(changeSet),
+  );
   // The daemon reopens an archived failed goal only after it is unarchived.
   const retryable = goal.status === "failed" && !hasRejectedChange && !goal.archivedAt;
   const failedPlanning = goal.tasks.length === 0;
@@ -217,6 +243,7 @@ export function goalControlsAvailable(
     canResume: isLive && Boolean(goal.pausedAt),
     canRetry: retryable && (!failedPlanning || host.configEdit === true),
     canRetryPlanning: retryable && failedPlanning && host.configEdit === true,
+    canRetryMerge: retryable && goal.changeSets.some(remergeable),
     canRetryTasks: goal.status === "executing",
   };
 }

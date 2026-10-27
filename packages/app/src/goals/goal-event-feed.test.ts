@@ -53,6 +53,15 @@ describe("describeGoalEvent", () => {
     });
   });
 
+  it("tells a failed merge retried, naming the change", () => {
+    expect(
+      describeGoalEvent(
+        event({ type: "changeset.integration_retried", changeSetIds: ["c1"], taskIds: [] }),
+        goal,
+      ),
+    ).toEqual({ key: "integrationRetried", tone: "default", subject: "Fix bug" });
+  });
+
   it("falls back to the id for something it cannot find", () => {
     expect(describeGoalEvent(event({ type: "task.retried", taskId: "gone" }), goal)).toMatchObject({
       subject: "gone",
