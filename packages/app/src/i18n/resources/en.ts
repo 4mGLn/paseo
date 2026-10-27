@@ -347,6 +347,14 @@ export const en = {
       all: "Any priority",
       label: "Priority: {{priority}}",
     },
+    toolbar: {
+      status: "Status",
+      statusWithCount: "Status · {{label}} {{n}}",
+      statusLabel: "Status: {{status}}",
+      statusLabelWithCount: "Status: {{status}} · {{label}} {{n}}",
+      project: "Project",
+      sort: "Sort",
+    },
     sort: {
       label: "Sort: {{sort}}",
       priority: "Priority",
@@ -407,7 +415,7 @@ export const en = {
       usageNotReported: "Usage not reported",
     },
     filters: {
-      needs_you: "Needs you",
+      needs_you: "Action",
       running: "Running",
       done: "Done",
       all: "All",

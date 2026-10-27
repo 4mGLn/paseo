@@ -352,6 +352,14 @@ export const ru: TranslationResources = {
       all: "Любой приоритет",
       label: "Приоритет: {{priority}}",
     },
+    toolbar: {
+      status: "Статус",
+      statusWithCount: "Статус · {{label}} {{n}}",
+      statusLabel: "Статус: {{status}}",
+      statusLabelWithCount: "Статус: {{status}} · {{label}} {{n}}",
+      project: "Проект",
+      sort: "Сортировка",
+    },
     sort: {
       label: "Сортировка: {{sort}}",
       priority: "Приоритет",
@@ -412,7 +420,7 @@ export const ru: TranslationResources = {
       usageNotReported: "Нет данных об использовании",
     },
     filters: {
-      needs_you: "Ждут вас",
+      needs_you: "Действие",
       running: "Выполняются",
       done: "Завершены",
       all: "Все",
