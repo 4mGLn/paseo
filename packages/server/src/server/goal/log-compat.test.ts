@@ -207,7 +207,8 @@ describe("goal logs written by earlier phases", () => {
     const permissions: (string | undefined)[] = [];
     const runTurn = harness.agentPort.runTurn;
     harness.agentPort.runTurn = (agentId, prompt, options) => {
-      permissions.push(options?.permission);
+      const permission = options?.permission;
+      permissions.push(typeof permission === "function" ? permission() : permission);
       return runTurn(agentId, prompt, options);
     };
     harness.respond = () => ({ outcome: "needs_permission" });

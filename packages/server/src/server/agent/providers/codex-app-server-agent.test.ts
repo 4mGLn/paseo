@@ -841,6 +841,15 @@ describe("Codex app-server provider", () => {
     );
   });
 
+  test("marks only the full-access mode as unattended", async () => {
+    const session = createSession({}, { autoReviewEnabled: true });
+
+    const modes = await session.getAvailableModes();
+    expect(modes.filter((mode) => mode.isUnattended === true).map((mode) => mode.id)).toEqual([
+      "full-access",
+    ]);
+  });
+
   test("getAvailableModes excludes auto-review when the Codex version is too old", async () => {
     const session = createSession({}, { autoReviewEnabled: false });
 

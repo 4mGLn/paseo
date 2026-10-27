@@ -195,7 +195,8 @@ describe("limits and policies", () => {
     const seen: (string | undefined)[] = [];
     const runTurn = h().agentPort.runTurn;
     h().agentPort.runTurn = (agentId, prompt, options) => {
-      seen.push(options?.permission);
+      const permission = options?.permission;
+      seen.push(typeof permission === "function" ? permission() : permission);
       return runTurn(agentId, prompt, options);
     };
     env.script([task("a")]);
@@ -328,6 +329,33 @@ describe("limits and policies", () => {
     // A deadline already stored is not re-checked when something else changes.
     const past = { ...CONFIG, limits: { deadlineAt: "2026-05-01T00:00:00Z" } };
     await expect(update({ ...past, maxParallel: 3 }, past)).resolves.toBeUndefined();
+  });
+
+  test("auto on Codex needs its auto-review mode; its Default Permissions mode does not count", async () => {
+    const codexModes = ["auto", "auto-review", "full-access"];
+    let modes = codexModes;
+    const modeCatalog = async (provider: string) =>
+      (provider === "claude" ? ["default", "auto", "bypassPermissions"] : modes).map((id) => ({
+        id,
+      }));
+    const validate = createGoalConfigValidator({
+      git: { head: async () => "abc" },
+      knownProviders: () => ["claude", "codex"],
+      modeCatalog,
+    });
+    const update = createGoalConfigUpdateValidator({ modeCatalog });
+    await expect(validate({ ...CONFIG, onPermissionRequest: "auto" })).resolves.toBeDefined();
+    await expect(update({ ...CONFIG, onPermissionRequest: "auto" }, CONFIG)).resolves.toBe(
+      undefined,
+    );
+    // A Codex too old for the auto-reviewer lists `auto`, which asks for every command.
+    modes = codexModes.filter((id) => id !== "auto-review");
+    await expect(validate({ ...CONFIG, onPermissionRequest: "auto" })).rejects.toThrow(
+      /defaultProvider "codex" has none/,
+    );
+    await expect(update({ ...CONFIG, onPermissionRequest: "auto" }, CONFIG)).rejects.toThrow(
+      /needs an auto mode/,
+    );
   });
 
   test("an absolute deadline earlier than the time limit fails the goal when it passes", async () => {

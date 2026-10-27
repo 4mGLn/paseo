@@ -88,6 +88,9 @@ export interface CreateGoalAgentInput {
   permission?: GoalPermissionPolicy;
 }
 
+/** How a turn treats a permission request: end the turn, or wait for a person. */
+export type TurnPermission = "fail" | "wait";
+
 /** What the Manager needs from Paseo's agent layer. */
 export interface ManagerAgentPort {
   /** `thinking` is the agent's thinking option once created, when known. */
@@ -100,7 +103,7 @@ export interface ManagerAgentPort {
   runTurn(
     agentId: string,
     prompt: string,
-    options?: { permission?: "fail" | "wait"; signal?: AbortSignal },
+    options?: { permission?: TurnPermission | (() => TurnPermission); signal?: AbortSignal },
   ): Promise<TurnResult>;
   cancel(agentId: string): Promise<void>;
   /**
@@ -108,6 +111,15 @@ export interface ManagerAgentPort {
    * agent layer has accepted the prompt; rejects with the reason it did not.
    */
   notify(agentId: string, text: string): Promise<void>;
+  /**
+   * Switch a running agent to the mode a new agent would start in under `permission`.
+   * Resolves with the mode set, and `nextTurn` when the provider only applies it from the
+   * agent's next turn; null when the provider has no mode for the policy.
+   */
+  setPermissionMode(
+    agentId: string,
+    permission: GoalPermissionPolicy,
+  ): Promise<{ modeId: string; nextTurn: boolean } | null>;
   /** Provider ids a plan may name. */
   knownProviders(): string[];
   /** Model catalog a plan's thinking ids are checked against; absent accepts them. */
@@ -195,6 +207,8 @@ export class GoalManager {
   private readonly maxConcurrentRuns: number;
   private readonly inFlight = new Map<string, LiveRun>();
   private readonly leads = new Map<string, LiveLead>();
+  /** Each goal's permission policy as of its last event, so a change to it can be told apart. */
+  private readonly policies = new Map<string, GoalPermissionPolicy>();
   private readonly pipeline: ChangeSetPipeline;
   private readonly pumpQueues = new Map<string, Promise<unknown>>();
   private readonly settled = new Set<Promise<unknown>>();
@@ -244,6 +258,9 @@ export class GoalManager {
   async start(): Promise<void> {
     this.stopped = false;
     this.unsubscribe = this.store.subscribe((goal, event) => this.onEvent(goal, event));
+    for (const goal of this.store.list()) {
+      if (goal.config) this.policies.set(goal.id, goalPermissionPolicy(goal.config));
+    }
     for (const goal of this.store.list()) {
       if (goal.config && !isTerminalGoalStatus(goal.status)) {
         this.armDeadline(goal);
@@ -418,7 +435,9 @@ export class GoalManager {
     }, runTimeoutMs);
     const running = this.agents.runTurn(agentId, prompt, {
       // Under `auto` an agent may still ask; the request waits for a person as under `wait`.
-      permission: goalPermissionPolicy(config) === "fail" ? "fail" : "wait",
+      // Read on every poll: a goal switched to `fail` ends a turn that is waiting.
+      permission: () =>
+        goalPermissionPolicy(this.store.get(goalId)?.config) === "fail" ? "fail" : "wait",
       signal: abort.signal,
     });
     // If the turn is abandoned, its eventual outcome is of no interest.
@@ -452,6 +471,8 @@ export class GoalManager {
 
   private onEvent(goal: Goal, event: GoalEvent): void {
     if (!goal.config || this.stopped) return;
+    const previousPolicy = this.policies.get(goal.id);
+    this.policies.set(goal.id, goalPermissionPolicy(goal.config));
     this.pipeline.onEvent(goal, event);
     switch (event.type) {
       case "goal.created":
@@ -499,13 +520,17 @@ export class GoalManager {
         this.track(this.pipeline.abort(goal.id));
         break;
       default:
-        this.onControlEvent(goal, event);
+        this.onControlEvent(goal, event, previousPolicy);
         break;
     }
   }
 
   /** Reactions to a person's controls and to recorded usage. */
-  private onControlEvent(goal: Goal, event: GoalEvent): void {
+  private onControlEvent(
+    goal: Goal,
+    event: GoalEvent,
+    previousPolicy: GoalPermissionPolicy | undefined,
+  ): void {
     if (event.type === "goal.resumed") {
       this.track(this.pump(goal.id));
     } else if (event.type === "goal.retried") {
@@ -524,16 +549,23 @@ export class GoalManager {
       this.armDeadline(goal);
       this.track(this.plan(goal.id));
     } else if (event.type === "goal.config_updated") {
-      this.onConfigUpdated(goal, event.id);
+      this.onConfigUpdated(goal, event.id, previousPolicy);
     }
   }
 
   /**
    * New settings apply from the next turn or run, since every check reads the config
-   * from the store. Only what is armed ahead of time needs a nudge here.
+   * from the store. Only what is armed ahead of time needs a nudge here, and a new
+   * permission policy is carried to the agents already running.
    */
-  private onConfigUpdated(goal: Goal, eventId: string): void {
+  private onConfigUpdated(
+    goal: Goal,
+    eventId: string,
+    previousPolicy: GoalPermissionPolicy | undefined,
+  ): void {
     if (isTerminalGoalStatus(goal.status)) return;
+    const policy = goalPermissionPolicy(goal.config);
+    if (policy !== previousPolicy) this.track(this.applyPolicy(goal, policy));
     // The time limit or deadline may have moved either way.
     this.clearDeadline(goal.id);
     this.armDeadline(goal);
@@ -549,6 +581,43 @@ export class GoalManager {
       // A higher maxParallel may let more tasks start.
       this.track(this.pump(goal.id));
     }
+  }
+
+  /**
+   * Switch the goal's running agents (Lead, workers, reviewers, verifier) to the mode the
+   * new policy starts agents in. One agent that cannot be switched does not stop the rest.
+   * Reviewers stay read-only either way: that is checked on the worktree, not by mode.
+   */
+  private async applyPolicy(goal: Goal, policy: GoalPermissionPolicy): Promise<void> {
+    const agentIds = new Set<string>();
+    const leadAgentId = goal.leadAgentId ?? this.leads.get(goal.id)?.agentId;
+    if (leadAgentId) agentIds.add(leadAgentId);
+    for (const run of this.inFlight.values()) {
+      if (run.goalId === goal.id && run.agentId && !run.canceled) agentIds.add(run.agentId);
+    }
+    for (const agentId of this.pipeline.liveAgentIds(goal.id)) agentIds.add(agentId);
+    const switched: string[] = [];
+    const nextTurn: string[] = [];
+    const unchanged: string[] = [];
+    await Promise.all(
+      [...agentIds].map(async (agentId) => {
+        try {
+          const result = await this.agents.setPermissionMode(agentId, policy);
+          if (!result) unchanged.push(agentId);
+          else (result.nextTurn ? nextTurn : switched).push(agentId);
+        } catch (error) {
+          unchanged.push(agentId);
+          this.logger.warn(
+            { err: error, goalId: goal.id, agentId, policy },
+            "Could not apply the goal's permission policy to a running agent",
+          );
+        }
+      }),
+    );
+    this.logger.info(
+      { goalId: goal.id, policy, switched, nextTurn, unchanged },
+      "Applied the goal's permission policy to its running agents",
+    );
   }
 
   private async dispatchOutcome(goalId: string, input: GoalEventInput): Promise<DispatchOutcome> {

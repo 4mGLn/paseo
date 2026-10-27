@@ -259,6 +259,8 @@ const CODEX_MODES: AgentMode[] = [
     id: "full-access",
     label: "Full Access",
     description: "Edit files, run commands, and access the network without additional prompts.",
+    // Unattended creates (a goal's `fail` policy, unattended parents) pick this mode.
+    isUnattended: true,
   },
 ];
 

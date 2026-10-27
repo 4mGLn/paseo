@@ -1498,6 +1498,9 @@ export async function createPaseoDaemon(
     waitForWorkspaceSetup: (workspaceId: string) => workspaceSetupRuntime.wait(workspaceId),
     modelCatalog: goalModelCatalog,
     modeCatalog: goalModeCatalog,
+    defaultModeId: async (provider: string, cwd: string) =>
+      (await providerSnapshotManager.getProvider({ provider, cwd, wait: true })).defaultModeId ??
+      null,
   };
   const goalManager = new GoalManager({
     store: goalStore,
