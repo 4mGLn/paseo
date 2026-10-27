@@ -12,7 +12,6 @@ import {
   goalElapsedMs,
   goalListProgress,
   goalPercent,
-  goalUsageStatus,
   stageSamples,
   taskCompletion,
   taskDurationMs,
@@ -482,33 +481,7 @@ const USAGE = {
   totalTurns: 3,
 };
 
-describe("goalUsageStatus", () => {
-  it("reports nothing for a goal without usage or with only unreported turns", () => {
-    expect(goalUsageStatus(makeGoal())).toEqual({
-      tokens: { kind: "not_reported" },
-      cost: { kind: "not_reported" },
-      reportedTurns: 0,
-      totalTurns: 0,
-    });
-    const unreported = { ...USAGE, totalTokens: 0, costUsd: 0, reportedTurns: 0 };
-    expect(goalUsageStatus(makeGoal({ usage: unreported })).tokens).toEqual({
-      kind: "not_reported",
-    });
-  });
-
-  it("measures usage against the goal's caps", () => {
-    const goal = makeGoal({
-      usage: USAGE,
-      config: { ...makeGoal().config!, limits: { maxTotalTokens: 4000 } },
-    });
-    expect(goalUsageStatus(goal)).toEqual({
-      tokens: { kind: "limited", used: 1000, limit: 4000, fraction: 0.25, isOver: false },
-      cost: { kind: "unlimited", used: 0.5 },
-      reportedTurns: 2,
-      totalTurns: 3,
-    });
-  });
-
+describe("taskTokens", () => {
   it("sums a task's reported runs", () => {
     const goal = makeGoal({
       runs: [

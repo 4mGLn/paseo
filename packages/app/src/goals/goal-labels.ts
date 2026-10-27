@@ -5,14 +5,9 @@ import type { StatusBadgeVariant } from "@/components/ui/status-badge";
 import { formatDuration } from "@/utils/time";
 import { goalAttention } from "./goal-attention";
 import { GOAL_STATUS_BADGE } from "./goal-derivation";
-import {
-  formatCompactCount,
-  formatUsd,
-  goalUsageStatus,
-  type BudgetStatus,
-  type GoalEstimate,
-} from "./goal-progress";
+import { formatUsd, type GoalEstimate } from "./goal-progress";
 import type { DurationParts, GoalSettingsSummaryPart } from "./goal-settings";
+import { compactUsageBudgetLabel, formatTokenCount, goalUsageBudgets } from "./goal-usage";
 
 export function durationLabel(t: TFunction, parts: DurationParts): string {
   return t(`goals.duration.${parts.unit}`, { n: parts.n });
@@ -76,53 +71,26 @@ export function estimateLabel(t: TFunction, estimate: GoalEstimate): string | nu
   }
 }
 
-export function budgetLabel(
-  t: TFunction,
-  status: BudgetStatus,
-  format: (value: number) => string,
-): string {
-  switch (status.kind) {
-    case "not_reported":
-      return t("goals.progress.notReported");
-    case "unlimited":
-      return t("goals.progress.usedNoLimit", { used: format(status.used) });
-    case "limited":
-      return t("goals.progress.usedOf", { used: format(status.used), limit: format(status.limit) });
-  }
-}
-
-/** A budget in a list row: the amount, against its cap when one is set. */
-function compactBudgetLabel(
-  t: TFunction,
-  status: BudgetStatus,
-  format: (value: number) => string,
-): string {
-  switch (status.kind) {
-    case "not_reported":
-      return t("goals.row.notReported");
-    case "unlimited":
-      return format(status.used);
-    case "limited":
-      return t("goals.progress.usedOf", { used: format(status.used), limit: format(status.limit) });
-  }
-}
-
 /** Tokens and cost for a managed goal's list row; null for a manual goal, which runs nothing. */
 export function rowUsageLabel(t: TFunction, goal: Pick<Goal, "usage" | "config">): string | null {
   if (!goal.config) {
     return null;
   }
-  const usage = goalUsageStatus(goal);
-  if (usage.tokens.kind === "not_reported" && usage.cost.kind === "not_reported") {
+  const { tokens, cost } = goalUsageBudgets(goal);
+  const costReported = cost.amount.kind === "exact" || cost.amount.kind === "at_least";
+  if (tokens.amount.kind === "not_reported" && !costReported) {
     return t("goals.row.usageNotReported");
   }
-  const tokens = compactBudgetLabel(t, usage.tokens, formatCompactCount);
-  // Most providers report tokens without cost; a bare $0.00 would read as free.
-  const noCost = usage.cost.kind === "unlimited" && usage.cost.used === 0;
-  if (noCost) {
-    return t("goals.row.tokensOnly", { tokens });
+  const tokenText = compactUsageBudgetLabel(t, tokens, formatTokenCount);
+  // An older host sums no cost without saying whether any turn reported one; a bare $0.00
+  // would read as free.
+  if (cost.amount.kind === "untracked") {
+    return t("goals.row.tokensOnly", { tokens: tokenText });
   }
-  return t("goals.row.usage", { tokens, cost: compactBudgetLabel(t, usage.cost, formatUsd) });
+  return t("goals.row.usage", {
+    tokens: tokenText,
+    cost: compactUsageBudgetLabel(t, cost, formatUsd),
+  });
 }
 
 const MAX_RETAINED_LINES = 4;
