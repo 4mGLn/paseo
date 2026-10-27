@@ -872,8 +872,8 @@ export const ar: TranslationResources = {
         maxTotalTokens: { label: "الرموز", hint: "يتوقف الهدف عندما يبلّغ المزوّدون عن هذا العدد" },
         maxCostUsd: { label: "التكلفة", hint: "يتوقف الهدف عندما يبلّغ المزوّدون عن هذا المبلغ" },
         requireHumanApproval: {
-          label: "اسألني قبل الدمج",
-          hint: "كل تغيير تمت مراجعته ينتظرك",
+          label: "اسألني قبل دمج التغييرات",
+          hint: "بعد أن يوافق المراجع على تغيير، ينتظرك. وتنتظر المهام التي تعتمد عليه أيضًا، لذا يصبح الهدف أبطأ.",
         },
         autoApprovePlan: {
           label: "الموافقة على الخطة تلقائيًا",
@@ -3617,6 +3617,15 @@ export const ar: TranslationResources = {
         removeConfirmMessage: 'إزالة "{{name}}"؟',
         moveUp: "نقل لأعلى",
         moveDown: "نقل لأسفل",
+      },
+      goalRunCap: {
+        sectionTitle: "الأهداف",
+        title: "تشغيلات العمّال في وقت واحد",
+        unit: "تشغيلات عمّال متزامنة",
+        hint: "تتشاركه كل الأهداف على هذا المضيف. رفعه يحتاج ما يكفي من المعالج والذاكرة وحد معدل المزوّد لهذا العدد من الوكلاء في وقت واحد.",
+        defaultValue: "الافتراضي {{value}}",
+        save: "حفظ",
+        saving: "جارٍ الحفظ...",
       },
       agentTeams: {
         sectionTitle: "الفرق",

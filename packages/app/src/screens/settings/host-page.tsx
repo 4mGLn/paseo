@@ -69,6 +69,7 @@ import { BrowserToolsOptInCard } from "./browser-tools-card";
 import { PaseoToolsCard } from "./paseo-tools-card";
 import { RestartRecoveryCard } from "./restart-recovery-card";
 import { IdleRuntimeCleanupCard } from "./idle-runtime-cleanup-card";
+import { GoalRunCapSection } from "./goal-run-cap-card";
 import { restartDaemonFromSettings, updateDaemonFromSettings } from "./daemon-lifecycle";
 
 const ThemedRestart = withUnistyles(RotateCw);
@@ -306,6 +307,7 @@ export function HostAgentsPage({ serverId }: { serverId: string }) {
       <AgentSkillsSection serverId={serverId} />
       <AgentProfilesSection serverId={serverId} />
       <AgentTeamsSection serverId={serverId} />
+      <GoalRunCapSection serverId={serverId} />
     </View>
   );
 }

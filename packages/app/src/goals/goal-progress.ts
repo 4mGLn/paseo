@@ -1,3 +1,4 @@
+import { GOAL_DAEMON_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
 import { summarizeGoalProgress } from "@getpaseo/protocol/goal/progress";
 import type {
   AgentRun,
@@ -147,8 +148,9 @@ export function taskDurationMs(goal: Pick<Goal, "runs">, task: Task, now: number
 
 /** Fewer finished tasks than this and any estimate would be a guess. */
 export const MIN_SAMPLES_FOR_ESTIMATE = 2;
-// The Manager runs at most this many workers across the daemon (docs/goals.md "Concurrency").
-const DAEMON_WORKER_LIMIT = 4;
+// The daemon's default cap on workers across all goals (docs/goals.md "Concurrency"). The
+// estimate does not read the host's configured cap: other goals share it anyway.
+const DAEMON_WORKER_LIMIT = GOAL_DAEMON_BOUNDS.maxConcurrentRuns.default;
 
 export type GoalEstimate =
   | { kind: "none" }

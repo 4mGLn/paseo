@@ -868,8 +868,8 @@ export const ja: TranslationResources = {
           hint: "プロバイダーがこの金額を報告するとゴールは停止します",
         },
         requireHumanApproval: {
-          label: "マージ前に確認する",
-          hint: "レビュー済みの変更はすべて、あなたの確認を待ちます",
+          label: "変更をマージする前に確認する",
+          hint: "レビュアーが変更を承認すると、あなたの確認を待ちます。その変更に依存するタスクも待つため、ゴールの進みが遅くなります。",
         },
         autoApprovePlan: {
           label: "計画を自動で承認",
@@ -3604,6 +3604,15 @@ export const ja: TranslationResources = {
         removeConfirmMessage: '"{{name}}"を削除しますか？',
         moveUp: "上に移動",
         moveDown: "下に移動",
+      },
+      goalRunCap: {
+        sectionTitle: "ゴール",
+        title: "同時に実行するワーカー",
+        unit: "件のワーカーを同時実行",
+        hint: "このホストのすべてのゴールで共有します。上げるには、その数のエージェントを同時に動かせる CPU、メモリ、プロバイダーのレート制限が必要です。",
+        defaultValue: "既定値 {{value}}",
+        save: "保存",
+        saving: "保存中...",
       },
       agentTeams: {
         sectionTitle: "チーム",
