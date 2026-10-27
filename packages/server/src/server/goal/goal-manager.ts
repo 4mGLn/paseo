@@ -56,11 +56,21 @@ export type TurnResult = (
   | { outcome: "completed"; text: string }
   | { outcome: "failed"; error: string }
   | { outcome: "canceled" }
-  | { outcome: "needs_permission" }
+  | { outcome: "needs_permission"; request?: PendingTurnRequest }
 ) & {
   /** What the provider reported for the turn; absent when it reported nothing. */
   usage?: TurnUsage;
 };
+
+/** What a turn that ended on `needs_permission` was waiting for. */
+export interface PendingTurnRequest {
+  /** `question` when the agent asked the person something; `permission` for anything it wants approved. */
+  kind: "permission" | "question";
+  /** The tool or request name the provider gave. */
+  tool: string;
+  /** The question, or what the permission is for, as the request states it, shortened. */
+  text?: string;
+}
 
 /** Whose turn a usage.recorded event describes. */
 export interface TurnUsageLabel {
@@ -183,6 +193,8 @@ interface LiveRun {
   cwd?: string;
   /** Set when the goal ended while the run was being set up or running. */
   canceled: boolean;
+  /** The permission policy its agent was started under. */
+  policy?: GoalPermissionPolicy;
 }
 
 interface LiveLead {
@@ -440,9 +452,12 @@ export class GoalManager {
     }, runTimeoutMs);
     const running = this.agents.runTurn(agentId, prompt, {
       // Under `auto` an agent may still ask; the request waits for a person as under `wait`.
-      // Read on every poll: a goal switched to `fail` ends a turn that is waiting.
-      permission: () =>
-        goalPermissionPolicy(this.store.get(goalId)?.config) === "fail" ? "fail" : "wait",
+      // Read on every poll: a goal switched to `fail`, or one that ended, ends a turn that is waiting.
+      permission: () => {
+        const goal = this.store.get(goalId);
+        if (!goal || isTerminalGoalStatus(goal.status)) return "fail";
+        return goalPermissionPolicy(goal.config) === "fail" ? "fail" : "wait";
+      },
       signal: abort.signal,
     });
     // If the turn is abandoned, its eventual outcome is of no interest.
@@ -722,7 +737,13 @@ export class GoalManager {
       });
       if (this.stopped || lead.canceled || this.store.get(goal.id)?.status !== "planning") return;
       if (result.outcome !== "completed") {
-        await this.failGoal(goal.id, `Lead agent did not finish planning (${result.outcome}).`);
+        const policy = goalPermissionPolicy(this.store.get(goal.id)?.config);
+        const detail =
+          result.outcome === "needs_permission" ? ` ${describeFailure(result, policy)}` : "";
+        await this.failGoal(
+          goal.id,
+          `Lead agent did not finish planning (${result.outcome}).${detail}`,
+        );
         return;
       }
       try {
@@ -929,10 +950,11 @@ export class GoalManager {
       live.cwd = workspace.cwd;
       if (!alive()) return await this.abandon(live, this.stopped);
 
+      live.policy = goalPermissionPolicy(goal.config);
       const { agentId, thinking } = await this.agents.createAgent({
         provider,
         ...thinkingInput(goalRoleThinking(goal.config, "worker", task)),
-        permission: goalPermissionPolicy(goal.config),
+        permission: live.policy,
         cwd: workspace.cwd,
         workspaceId: workspace.workspaceId,
         title: `${goal.title}: ${task.title}`,
@@ -970,7 +992,8 @@ export class GoalManager {
         await this.completeRun(goalId, task, runId, live, result.text);
         return;
       }
-      await this.failRun(goalId, taskId, runId, live, describeFailure(result));
+      const policy = goalPermissionPolicy(this.store.get(goalId)?.config);
+      await this.failRun(goalId, taskId, runId, live, describeFailure(result, policy));
     } catch (error) {
       if (this.stopped) return;
       await this.failRun(goalId, taskId, runId, live, errorMessage(error));
@@ -1107,7 +1130,16 @@ export class GoalManager {
     });
     const goal = this.store.get(goalId);
     const task = goal?.tasks.find((t) => t.id === taskId);
-    if (goal?.config && task) {
+    // A retry under the policy the agent ran with asks the same thing again: wait for a
+    // person. A policy changed since then gets its retry, in the new mode.
+    const unchangedPolicy = live.policy === goalPermissionPolicy(goal?.config);
+    if (goal?.config && task && isPendingRequestFailure(error) && unchangedPolicy) {
+      await this.notifyLeadOnce(
+        goal,
+        `task-${task.id}-needs-person-a${task.attempts}`,
+        `task ${task.id} stopped: ${error}`,
+      );
+    } else if (goal?.config && task) {
       // Only attempts that failed count against the limit: a restart interrupts a
       // run without the provider having failed.
       const failed = countedFailures(goal, taskId);
@@ -1158,7 +1190,17 @@ export class GoalManager {
     const failed = goal.tasks.filter((t) => t.status === "failed");
     if (failed.length > 0 || blocked.length > 0) {
       const ids = [...failed, ...blocked].map((t) => t.id).join(", ");
-      await this.failGoal(goal.id, `No task can make progress. Failed or blocked: ${ids}`);
+      // Name the request a person has to deal with; `needs_permission` is what the app looks for.
+      const asking = failed
+        .map((t) => ({ id: t.id, error: lastRunError(goal, t.id) }))
+        .find((t) => isPendingRequestFailure(t.error));
+      const request = asking
+        ? `. Task ${asking.id} stopped on a request (needs_permission): ${asking.error}`
+        : "";
+      await this.failGoal(
+        goal.id,
+        `No task can make progress. Failed or blocked: ${ids}${request}`,
+      );
     }
   }
 
@@ -1304,10 +1346,12 @@ export class GoalManager {
       // An interrupted run says nothing about the provider, so it is always retried.
       // A task left failed is retried only while failed attempts remain.
       const interrupted = task.status === "running";
+      // One that stopped on a request waits for a person, as it did before the restart.
       const strandedFailure =
         task.status === "failed" &&
         goal !== undefined &&
-        countedFailures(goal, task.id) < maxAttempts;
+        countedFailures(goal, task.id) < maxAttempts &&
+        !isPendingRequestFailure(lastRunError(goal, task.id));
       if (!interrupted && !strandedFailure) continue;
       await this.dispatch(goalId, {
         id: `${goalId}:${task.id}-a${task.attempts}:recovered-${task.status}`,
@@ -1519,15 +1563,62 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function describeFailure(result: TurnResult): string {
+/** What the run of a goal under `policy` ended on, in words a person can act on. */
+function describeFailure(result: TurnResult, policy: GoalPermissionPolicy): string {
   switch (result.outcome) {
     case "failed":
       return result.error;
     case "canceled":
       return "Agent run was canceled";
     case "needs_permission":
-      return "Agent is waiting for a permission approval; unattended runs cannot continue";
+      return describePendingRequest(result.request, policy);
     case "completed":
       return "";
   }
+}
+
+/** How each pending-request failure starts; isPendingRequestFailure reads them back from the log. */
+const PENDING_QUESTION_PREFIX = "Agent asked a question";
+const PENDING_PERMISSION_PREFIX = "Agent is waiting for permission";
+/** The wording before requests were described; older logs carry it. */
+const LEGACY_PERMISSION_FAILURE =
+  "Agent is waiting for a permission approval; unattended runs cannot continue";
+
+function describePendingRequest(
+  request: PendingTurnRequest | undefined,
+  policy: GoalPermissionPolicy,
+): string {
+  if (!request) return LEGACY_PERMISSION_FAILURE;
+  const quoted = request.text ? `: "${request.text}"` : "";
+  if (request.kind === "question") {
+    const advice =
+      policy === "fail"
+        ? "Change the policy to wait or auto, or resolve what triggers the question, then retry."
+        : "Retry and answer it in the agent's chat, or resolve what triggers the question.";
+    return `${PENDING_QUESTION_PREFIX} and the goal's permission policy (${policy}) cannot answer it${quoted}. ${advice}`;
+  }
+  const advice =
+    policy === "fail"
+      ? "Change the policy to wait or auto, then retry."
+      : "Retry and answer it in the agent's chat.";
+  return `${PENDING_PERMISSION_PREFIX} to use ${request.tool}${quoted} and the goal's permission policy (${policy}) cannot grant it. ${advice}`;
+}
+
+/**
+ * The run ended on a permission or a question nobody could answer. Retrying it under the
+ * same policy asks the same thing again, so such a failure is never retried automatically.
+ */
+export function isPendingRequestFailure(error: string | null | undefined): boolean {
+  return (
+    !!error &&
+    (error.startsWith(PENDING_QUESTION_PREFIX) ||
+      error.startsWith(PENDING_PERMISSION_PREFIX) ||
+      error.startsWith(LEGACY_PERMISSION_FAILURE))
+  );
+}
+
+/** The error of the task's latest failed run. */
+function lastRunError(goal: Goal, taskId: string): string | null {
+  const runs = goal.runs.filter((r) => r.taskId === taskId && r.status === "failed");
+  return runs[runs.length - 1]?.error ?? null;
 }
