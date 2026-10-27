@@ -14,6 +14,7 @@ import type {
   UsageRole,
   UsageTotals,
 } from "@getpaseo/protocol/goal/types";
+import { CHANGE_SET_INTEGRATION_FAILED } from "@getpaseo/protocol/goal/types";
 import { budgetExceeded, goalDeadlineMs, resolveLimits } from "./goal-limits.js";
 import { readyTasks, validateTaskGraph } from "./task-graph.js";
 
@@ -122,7 +123,10 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
   // failed goal can be reopened by a retry. Nothing else reaches an ended goal
   // except an acknowledgement, handled above.
   const reopening =
-    (event.type === "goal.retried" || event.type === "goal.reopened") && goal.status === "failed";
+    (event.type === "goal.retried" ||
+      event.type === "goal.reopened" ||
+      event.type === "changeset.integration_retried") &&
+    goal.status === "failed";
   if (isTerminalGoalStatus(goal.status) && !event.type.startsWith("notification.") && !reopening) {
     throw new GoalTransitionError(event.type, `goal is ${goal.status}`);
   }
@@ -540,6 +544,7 @@ const CHANGE_SET_TRANSITIONS: Record<ChangeSetStatus, readonly ChangeSetStatus[]
 };
 
 function applyChangeSetEvent(goal: Goal, event: GoalEvent): Goal {
+  if (event.type === "changeset.integration_retried") return applyIntegrationRetry(goal, event);
   requireStatus(goal, event, "executing");
   switch (event.type) {
     case "integration.prepared":
@@ -666,6 +671,7 @@ function transitionChangeSet(
     // A change set that ends keeps the reason it needed fixing; live ones start clean.
     error:
       event.error ?? (event.to === "superseded" || event.to === "rejected" ? current.error : null),
+    ...rejectionReason(current, event),
     updatedAt: event.at,
   };
   return {
@@ -676,6 +682,27 @@ function transitionChangeSet(
         ? { ...goal.integration, headCommit: event.integratedCommit as string }
         : goal.integration,
   };
+}
+
+/**
+ * Why a change set is rejected, when the merge step failed. Events from before v0.13.10
+ * carry no reason; for them a rejection out of `integrating` whose error says the
+ * integration failed means the same, since only the merge step writes that.
+ */
+function rejectionReason(
+  current: ChangeSet,
+  event: Extract<GoalEvent, { type: "changeset.transitioned" }>,
+): Pick<ChangeSet, "rejectionReason"> {
+  if (event.to !== "rejected") return {};
+  if (event.reason) return { rejectionReason: event.reason };
+  const legacyIntegrationFailure =
+    current.status === "integrating" && event.error?.startsWith("Integration failed") === true;
+  return legacyIntegrationFailure ? { rejectionReason: CHANGE_SET_INTEGRATION_FAILED } : {};
+}
+
+/** True for a change set rejected because its merge step failed, which a retry can merge again. */
+export function isIntegrationFailed(cs: ChangeSet): boolean {
+  return cs.status === "rejected" && cs.rejectionReason === CHANGE_SET_INTEGRATION_FAILED;
 }
 
 /** Times a change set entered and left review and merge; the first entry into merging counts. */
@@ -1024,10 +1051,62 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
       reopen ? "the goal failed; a retry must reopen it" : "only a failed goal can be reopened",
     );
   }
+  return retryTasks(goal, event, event.taskIds, reopen, new Set());
+}
+
+/**
+ * A person retries the merge of change sets whose integration failed. The goal failed
+ * with them, so it is reopened, and every failed and cancelled task is retried with them
+ * as in a reopening goal.retried. Each change set goes back to approved: its review and
+ * approval were recorded before the merge was tried, and stand.
+ */
+function applyIntegrationRetry(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "changeset.integration_retried" }>,
+): Goal {
+  if (!goal.config) {
+    throw new GoalTransitionError(event.type, "a manual goal runs nothing to retry");
+  }
+  requireStatus(goal, event, "failed");
+  if (goal.archivedAt) {
+    throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
+  }
+  for (const id of event.changeSetIds) {
+    const cs = goal.changeSets.find((c) => c.id === id);
+    if (!cs) throw new GoalTransitionError(event.type, `unknown change set ${id}`);
+    if (!isIntegrationFailed(cs)) {
+      throw new GoalTransitionError(
+        event.type,
+        `change set ${id} is ${cs.status}${cs.status === "rejected" ? " by review" : ""}; only a change set whose integration failed can be merged again`,
+      );
+    }
+  }
+  const retried = retryTasks(goal, event, event.taskIds, true, new Set(event.changeSetIds));
+  const ids = new Set(event.changeSetIds);
+  return {
+    ...retried,
+    changeSets: retried.changeSets.map((c) => (ids.has(c.id) ? reapprove(c, event.at) : c)),
+  };
+}
+
+/** Back to approved, as before the merge was tried; the failure's error and reason go. */
+function reapprove(cs: ChangeSet, at: string): ChangeSet {
+  const { rejectionReason: _reason, ...rest } = cs;
+  return { ...rest, status: "approved", error: null, updatedAt: at };
+}
+
+/** Return tasks to pending; on a reopen, check the goal can still finish. */
+function retryTasks(
+  goal: Goal,
+  event: GoalEvent,
+  taskIds: readonly string[],
+  reopen: boolean,
+  remergedChangeSetIds: ReadonlySet<string>,
+): Goal {
   const retryable = new Set(
     goal.tasks.filter((t) => t.status === "failed" || t.status === "cancelled").map((t) => t.id),
   );
-  for (const id of event.taskIds) {
+  for (const id of taskIds) {
     if (!retryable.has(id)) {
       const known = goal.tasks.find((t) => t.id === id);
       throw new GoalTransitionError(
@@ -1040,14 +1119,16 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
   }
   assertRoomToRun(goal, event);
   if (reopen) {
-    const missing = [...retryable].filter((id) => !event.taskIds.includes(id));
+    const missing = [...retryable].filter((id) => !taskIds.includes(id));
     if (missing.length > 0) {
       throw new GoalTransitionError(
         event.type,
         `reopening needs every failed or cancelled task retried; missing ${missing.join(", ")}`,
       );
     }
-    const rejected = goal.changeSets.filter((c) => c.status === "rejected");
+    const rejected = goal.changeSets.filter(
+      (c) => c.status === "rejected" && !remergedChangeSetIds.has(c.id),
+    );
     if (rejected.length > 0) {
       throw new GoalTransitionError(
         event.type,
@@ -1055,7 +1136,7 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
       );
     }
   }
-  const retried = new Set(event.taskIds);
+  const retried = new Set(taskIds);
   const failedRuns = (taskId: string) =>
     goal.runs.filter((r) => r.taskId === taskId && r.status === "failed").length;
   return {

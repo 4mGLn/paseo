@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -120,11 +120,52 @@ describe("git ops against real repositories", () => {
     expect(await readFile(join(integration, "shared.txt"), "utf8")).toBe("integration side\n");
   });
 
-  test("merge refuses to run on a dirty integration worktree", async () => {
-    await writeFile(join(integration, "stray.txt"), "oops\n");
+  test("merge refuses to run when a tracked file in the integration worktree is modified", async () => {
+    await writeFile(join(integration, "shared.txt"), "edited in place\n");
     await expect(
       port.merge({ cwd: integration, commit: git(repo, "rev-parse", "main"), message: "m" }),
-    ).rejects.toThrow(/uncommitted/);
+    ).rejects.toThrow("Integration worktree has uncommitted changes:\nM shared.txt");
+  });
+
+  test("an unrelated untracked file does not block a merge and is left alone", async () => {
+    await mkdir(join(integration, ".gjc"));
+    await writeFile(join(integration, ".gjc", "state.json"), "{}\n");
+    await writeFile(join(work, "feature.txt"), "new\n");
+    const captured = await port.capture({
+      cwd: work,
+      integrationCommit: "goal/integration",
+      message: "task",
+    });
+
+    const result = await port.merge({
+      cwd: integration,
+      commit: captured?.headCommit ?? "",
+      message: "Integrate",
+    });
+
+    expect(result).toEqual({ ok: true, headCommit: git(integration, "rev-parse", "HEAD") });
+    expect(await readFile(join(integration, "feature.txt"), "utf8")).toBe("new\n");
+    expect(git(integration, "status", "--porcelain")).toBe("?? .gjc/");
+  });
+
+  test("a merge that would overwrite an untracked file fails with git's message and changes nothing", async () => {
+    await writeFile(join(work, "feature.txt"), "incoming\n");
+    const captured = await port.capture({
+      cwd: work,
+      integrationCommit: "goal/integration",
+      message: "task",
+    });
+    await writeFile(join(integration, "feature.txt"), "local untracked\n");
+    const before = git(integration, "rev-parse", "HEAD");
+
+    await expect(
+      port.merge({ cwd: integration, commit: captured?.headCommit ?? "", message: "Integrate" }),
+    ).rejects.toThrow(/git merge failed: .*untracked working tree files would be overwritten/s);
+
+    expect(git(integration, "rev-parse", "HEAD")).toBe(before);
+    expect(git(integration, "status", "--porcelain")).toBe("?? feature.txt");
+    expect(await readFile(join(integration, "feature.txt"), "utf8")).toBe("local untracked\n");
+    expect(() => git(integration, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
   });
 
   test("resetHard returns the branch to an earlier commit and removes new files", async () => {

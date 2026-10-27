@@ -389,6 +389,61 @@ test("a failing test command sends the change back, and the branch is never left
   expect(git(repo, "log", "paseo-goal/g1", "--format=%s")).not.toContain("first try\n\n");
 }, 90_000);
 
+test("a merge that git refuses fails the goal, and retry merges it again without a new review", async () => {
+  const repo = createGitRepo(root);
+  const client = await boot(
+    scriptedAgents([implementTask("a")], (_prompt, cwd) => {
+      writeFileSync(path.join(cwd, "a.txt"), "from a\n");
+      commitAll(cwd, "add a");
+      return "built a";
+    }),
+  );
+  await client.goalCreate({
+    goalId: "g1",
+    title: "Merge",
+    objective: "add a",
+    criteria: ["a.txt exists"],
+    config: managedConfig(repo, { requireHumanApproval: true }),
+  });
+  const held = await waitFor(
+    () => client.goalInspect("g1"),
+    (r) => r.goal?.changeSets[0]?.status === "awaiting_human",
+  );
+  const integration = held.goal?.integration;
+  const cs = held.goal?.changeSets[0];
+  if (!integration || !cs) throw new Error("no integration or change set");
+  // An unrelated untracked file does not block the merge; one the merge would overwrite does.
+  writeFileSync(path.join(integration.cwd, "notes.local"), "tool state\n");
+  writeFileSync(path.join(integration.cwd, "a.txt"), "in the way\n");
+  await client.goalApproveChangeSet({ goalId: "g1", changeSetId: cs.id });
+
+  const failed = (await waitFor(() => client.goalInspect("g1"), isFinished)).goal;
+  expect(failed?.status).toBe("failed");
+  expect(failed?.changeSets[0]).toMatchObject({
+    status: "rejected",
+    rejectionReason: "integration_failed",
+  });
+  expect(failed?.changeSets[0]?.error).toMatch(/untracked working tree files would be overwritten/);
+  // Nothing was half merged, and the failed attempt reset the worktree, untracked files too.
+  expect(git(integration.cwd, "rev-parse", "HEAD")).toBe(integration.headCommit);
+  expect(existsSync(path.join(integration.cwd, "a.txt"))).toBe(false);
+
+  await client.goalRetry({ goalId: "g1" });
+  const done = await waitFor(
+    () => client.goalInspect("g1"),
+    (r) => r.goal?.status === "completed" || (r.goal?.status === "failed" && r.goal.reopens === 1),
+  );
+  expect(done.goal?.failureReason).toBeNull();
+  expect(done.goal?.status).toBe("completed");
+  expect(done.goal?.changeSets.map((c) => c.status)).toEqual(["integrated"]);
+  expect(readFileSync(path.join(integration.cwd, "a.txt"), "utf8")).toBe("from a\n");
+  const types = done.events.map((e) => e.type);
+  expect(types.filter((t) => t === "changeset.integration_retried")).toHaveLength(1);
+  expect(
+    done.events.filter((e) => e.type === "changeset.transitioned" && e.to === "in_review"),
+  ).toHaveLength(1);
+}, 90_000);
+
 test("a goal interrupted mid-run is recovered and finished after a restart", async () => {
   const first = await boot();
   const repo = createGitRepo(root);

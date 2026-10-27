@@ -9,6 +9,7 @@ import type {
   Integration,
   Task,
 } from "@getpaseo/protocol/goal/types";
+import { CHANGE_SET_INTEGRATION_FAILED } from "@getpaseo/protocol/goal/types";
 import {
   DEFAULT_GOAL_BRANCH_PREFIX,
   goalPermissionPolicy,
@@ -354,6 +355,7 @@ export class ChangeSetPipeline {
       testSummary?: string;
       integratedCommit?: string;
       error?: string;
+      reason?: string;
     } = {},
   ): Promise<boolean> {
     const seq = this.store.get(goalId)?.lastSeq ?? 0;
@@ -544,7 +546,10 @@ export class ChangeSetPipeline {
         .resetHard({ cwd: integration.cwd, commit: integration.headCommit })
         .catch(() => undefined);
       const message = error instanceof Error ? error.message : String(error);
-      await this.reject(goalId, cs.id, `Integration failed: ${message}`);
+      await this.transition(goalId, cs.id, "rejected", {
+        error: `Integration failed: ${message}`,
+        reason: CHANGE_SET_INTEGRATION_FAILED,
+      });
       await this.host.failGoal(goalId, `Integrating ${cs.id} failed: ${message}`);
     }
   }

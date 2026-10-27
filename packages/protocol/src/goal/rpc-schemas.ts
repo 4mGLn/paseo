@@ -112,7 +112,9 @@ export const GoalRetryRequestSchema = z.object({
   goalId: z.string(),
   // Omit to retry every failed or cancelled task. A failed goal always retries all of them.
   // With server_info.features.goalConfigEdit, a goal that failed while planning (no tasks)
-  // is reopened with a fresh Lead; send no taskId then.
+  // is reopened with a fresh Lead; send no taskId then. With
+  // server_info.features.goalIntegrationRetry, a failed goal's change sets whose merge
+  // failed are merged again too, even when no task failed.
   taskId: z.string().trim().min(1).optional(),
   eventId,
 });

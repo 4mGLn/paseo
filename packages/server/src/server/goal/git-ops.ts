@@ -34,7 +34,11 @@ export interface GitPort {
   isClean(cwd: string): Promise<boolean>;
   head(cwd: string): Promise<string>;
   currentBranch(cwd: string): Promise<string>;
-  /** Merge a commit into the branch checked out at cwd. A conflict is aborted and reported. */
+  /**
+   * Merge a commit into the branch checked out at cwd. A conflict is aborted and reported.
+   * Refuses when a tracked file has uncommitted changes. Untracked files do not block it:
+   * git itself refuses a merge that would overwrite one, and that failure is thrown.
+   */
   merge(input: { cwd: string; commit: string; message: string }): Promise<MergeOutcome>;
   /** Discard a half-finished merge and move the checked-out branch back to a commit. */
   resetHard(input: { cwd: string; commit: string }): Promise<void>;
@@ -123,20 +127,25 @@ export function createGitPort(): GitPort {
     },
 
     async merge({ cwd, commit, message }) {
-      const dirty = (await git(cwd, ["status", "--porcelain"])).stdout.trim();
+      // Tools leave untracked files (caches, state directories) in worktrees. They do not
+      // affect the merge result, so only changes to tracked files block it.
+      const dirty = (
+        await git(cwd, ["status", "--porcelain", "--untracked-files=no"])
+      ).stdout.trim();
       if (dirty.length > 0) {
         throw new Error(`Integration worktree has uncommitted changes:\n${dirty}`);
       }
       const result = await git(
         cwd,
         [...COMMIT_IDENTITY, "merge", "--no-ff", "-m", message, commit],
-        [0, 1],
+        // 2: git refused before merging, e.g. an incoming file would overwrite an untracked one.
+        [0, 1, 2],
       );
       if (result.exitCode === 0) return { ok: true, headCommit: await rev(cwd, "HEAD") };
       const unmerged = await git(cwd, ["diff", "--name-only", "--diff-filter=U"]);
       const conflicts = unmerged.stdout.split("\n").filter((line) => line.trim().length > 0);
       if (conflicts.length === 0) {
-        // Exit 1 without conflicts is a real failure, not a conflict.
+        // A failure without conflicts is a real failure, not a conflict.
         await git(cwd, ["merge", "--abort"], [0, 128]);
         throw new Error(`git merge failed: ${result.stderr.trim() || result.stdout.trim()}`);
       }
