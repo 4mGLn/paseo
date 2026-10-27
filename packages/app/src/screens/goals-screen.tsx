@@ -175,19 +175,40 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
       />
     );
   } else if (bodyState.kind === "content") {
-    body = (
-      <GoalsListContent
-        // Filters belong to one host's goals; another host starts unfiltered.
-        key={serverId}
-        serverId={serverId}
-        goals={allGoals}
-        search={search}
-        onClearSearch={clearSearch}
-        supportsManagement={supportsManagement}
-        showArchived={showArchived}
-        onShowArchivedChange={setShowArchived}
-        onSelect={setSelectedGoalId}
-      />
+    // The list owns the toolbar and the scroll area: its filters sit beside the search field
+    // and its rows fill the width, as in History.
+    return (
+      <View style={styles.container}>
+        <MenuHeader title={t("goals.title")} />
+        <GoalsListContent
+          // Filters belong to one host's goals; another host starts unfiltered.
+          key={serverId}
+          serverId={serverId}
+          goals={allGoals}
+          search={search}
+          onClearSearch={clearSearch}
+          supportsManagement={supportsManagement}
+          showArchived={showArchived}
+          onShowArchivedChange={setShowArchived}
+          onSelect={setSelectedGoalId}
+          searchInput={searchInput}
+          onSearchInputChange={setSearchInput}
+          searchFieldKey={searchFieldKey}
+          hosts={hosts}
+          onSelectHost={selectHost}
+          canCreate={canCreate}
+          onCreate={openForm}
+        />
+        {form ? (
+          <GoalFormSheet
+            key={form.key}
+            serverId={serverId}
+            prefill={form.prefill}
+            onClose={closeForm}
+            onCreated={selectCreatedGoal}
+          />
+        ) : null}
+      </View>
     );
   } else if (bodyState.kind === "empty") {
     body = (
@@ -210,17 +231,6 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
       <MenuHeader title={t("goals.title")} />
       <View style={styles.toolbar}>
         <View style={styles.toolbarStart}>
-          {bodyState.kind === "content" && !detailGoalId ? (
-            <SearchField
-              key={searchFieldKey}
-              value={searchInput}
-              onChangeText={setSearchInput}
-              placeholder={t("goals.search.placeholder")}
-              clearAccessibilityLabel={t("goals.search.clear")}
-              testID="goals-search-input"
-              clearTestID="goals-search-clear"
-            />
-          ) : null}
           <GoalsHostFilter hosts={hosts} serverId={serverId} onSelectHost={selectHost} />
         </View>
         <GoalsNewButton visible={canCreate} onPress={openForm} />
@@ -261,6 +271,13 @@ function GoalsListContent({
   showArchived,
   onShowArchivedChange,
   onSelect,
+  searchInput,
+  onSearchInputChange,
+  searchFieldKey,
+  hosts,
+  onSelectHost,
+  canCreate,
+  onCreate,
 }: {
   serverId: string;
   goals: readonly GoalSummary[];
@@ -270,6 +287,14 @@ function GoalsListContent({
   showArchived: boolean;
   onShowArchivedChange: (value: boolean) => void;
   onSelect: (goalId: string) => void;
+  searchInput: string;
+  onSearchInputChange: (value: string) => void;
+  /** Remounts the field so a cleared filter also empties what the person typed. */
+  searchFieldKey: number;
+  hosts: ReturnType<typeof useHosts>;
+  onSelectHost: (serverId: string) => void;
+  canCreate: boolean;
+  onCreate: () => void;
 }): ReactElement {
   const { t } = useTranslation();
   const [filter, setFilter] = useState<GoalListFilter>("all");
@@ -314,7 +339,19 @@ function GoalsListContent({
 
   return (
     <>
-      <View style={styles.filters}>
+      <View style={styles.listToolbar}>
+        <View style={styles.searchSlot}>
+          <SearchField
+            key={searchFieldKey}
+            value={searchInput}
+            onChangeText={onSearchInputChange}
+            placeholder={t("goals.search.placeholder")}
+            clearAccessibilityLabel={t("goals.search.clear")}
+            testID="goals-search-input"
+            clearTestID="goals-search-clear"
+          />
+        </View>
+        <GoalsHostFilter hosts={hosts} serverId={serverId} onSelectHost={onSelectHost} />
         <GoalListFilters goals={goals} filter={filter} onChange={setFilter} />
         {projectFilterOptions.length > 1 ? (
           <GoalProjectFilter
@@ -330,17 +367,29 @@ function GoalsListContent({
         {supportsManagement ? (
           <GoalArchivedToggle value={showArchived} onChange={onShowArchivedChange} />
         ) : null}
+        <View style={styles.toolbarEnd}>
+          <GoalsNewButton visible={canCreate} onPress={onCreate} />
+        </View>
       </View>
-      <GoalList
-        serverId={serverId}
-        goals={goals}
-        projects={projects}
-        filter={filter}
-        compare={compare}
-        onSelect={onSelect}
-        dismiss={dismiss}
-        onClearFilters={isNarrowed ? clearFilters : null}
-      />
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.listScrollContent}
+        showsVerticalScrollIndicator={false}
+        // A row or filter takes the first tap while the search keyboard is up.
+        keyboardShouldPersistTaps="handled"
+        testID="goals-list"
+      >
+        <GoalList
+          serverId={serverId}
+          goals={goals}
+          projects={projects}
+          filter={filter}
+          compare={compare}
+          onSelect={onSelect}
+          dismiss={dismiss}
+          onClearFilters={isNarrowed ? clearFilters : null}
+        />
+      </ScrollView>
     </>
   );
 }
@@ -503,12 +552,28 @@ const styles = StyleSheet.create((theme) => ({
     maxWidth: 720,
     alignSelf: "center",
   },
-  filters: {
+  // Search, filters and the new-goal button share one wrapping row. On a phone the search
+  // field takes the whole first line; on a wide window it is a third of what it used to be.
+  listToolbar: {
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
     gap: theme.spacing[2],
-    marginBottom: theme.spacing[4],
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingTop: theme.spacing[4],
+  },
+  searchSlot: {
+    width: { xs: "100%", md: 240 },
+    minWidth: 0,
+  },
+  toolbarEnd: {
+    marginLeft: "auto",
+  },
+  listScrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingTop: theme.spacing[3],
+    paddingBottom: theme.spacing[6],
   },
   emptyArchived: {
     alignItems: "center",
