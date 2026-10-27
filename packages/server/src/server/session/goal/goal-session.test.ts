@@ -33,6 +33,7 @@ describe("GoalSession", () => {
     controlEvents?: boolean,
     acknowledgeEvents?: boolean,
     managementEvents?: boolean,
+    configEdit?: boolean,
   ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
@@ -47,6 +48,7 @@ describe("GoalSession", () => {
         ...(managementEvents === undefined
           ? {}
           : { supportsGoalManagementEvents: () => managementEvents }),
+        ...(configEdit === undefined ? {} : { supportsGoalConfigEdit: () => configEdit }),
       },
       goalService: service,
       logger: pino({ level: "silent" }),
@@ -470,6 +472,57 @@ describe("GoalSession", () => {
             ]
           : ["goal.created", "goal.cancelled"],
       );
+    });
+  }
+
+  for (const capable of [true, false]) {
+    test(`config edits and the auto policy ${capable ? "reach" : "are hidden from"} clients ${capable ? "with" : "without"} the capability`, async () => {
+      const session = await openSession(true, true, true, capable);
+      await send(session, {
+        type: "goal.create.request",
+        requestId: "r0",
+        goalId: "g1",
+        title: "T",
+        objective: "o",
+        criteria: ["works"],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "claude",
+          maxParallel: 2,
+          maxAttempts: 2,
+          autoApprovePlan: false,
+          notifyLead: true,
+          onPermissionRequest: "auto",
+        },
+      });
+      await send(session, {
+        type: "goal.update_config.request",
+        requestId: "r1",
+        goalId: "g1",
+        changes: { maxParallel: 3, limits: { maxRuns: 80 } },
+        eventId: "edit-1",
+      });
+      await send(session, { type: "goal.list.request", requestId: "r2" });
+      await send(session, { type: "goal.inspect.request", requestId: "r3", goalId: "g1" });
+
+      const policy = capable ? "auto" : "wait";
+      const updated = lastOf("goal.update_config.response").payload.goal;
+      expect(updated?.config).toMatchObject({
+        maxParallel: 3,
+        limits: { maxRuns: 80 },
+        onPermissionRequest: policy,
+      });
+      expect(lastOf("goal.list.response").payload.goals[0]?.config?.onPermissionRequest).toBe(
+        policy,
+      );
+      const inspected = lastOf("goal.inspect.response").payload;
+      expect(inspected.goal?.config?.onPermissionRequest).toBe(policy);
+      expect(inspected.events.map((e) => e.type)).toEqual(
+        capable ? ["goal.created", "goal.config_updated"] : ["goal.created"],
+      );
+      const created = inspected.events[0];
+      expect(created?.type === "goal.created" && created.config?.onPermissionRequest).toBe(policy);
     });
   }
 });

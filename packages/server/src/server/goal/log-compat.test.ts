@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { goalPermissionPolicy } from "@getpaseo/protocol/goal/config-bounds";
 import { GoalSchema } from "@getpaseo/protocol/goal/types";
 import { GoalEventLog } from "./event-log.js";
 import { GoalManager } from "./goal-manager.js";
@@ -176,6 +177,54 @@ describe("goal logs written by earlier phases", () => {
     // Neither the Lead nor the chat hears about a goal that ended before the upgrade.
     expect(harness.notifyAttempts).toBe(0);
     expect(store.get("n1")?.lastSeq).toBe(10);
+  });
+
+  test("a goal stored without a permission policy keeps running under fail, also after a config edit", async () => {
+    // Written before "wait" became the default: no onPermissionRequest at all.
+    await writeFile(
+      join(dir, "pp.jsonl"),
+      jsonl("pp", [
+        {
+          type: "goal.created",
+          title: "Policy",
+          objective: "o",
+          criteria: [{ id: "c1", text: "w" }],
+          config,
+        },
+      ]),
+    );
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    expect(goalPermissionPolicy(store.get("pp")?.config)).toBe("fail");
+
+    // Editing another setting leaves the policy unset, so it still means fail.
+    const service = new GoalService(store, log);
+    const edited = await service.updateConfig("pp", { maxParallel: 3 });
+    expect(edited.config).not.toHaveProperty("onPermissionRequest");
+
+    const harness = new Harness();
+    const permissions: (string | undefined)[] = [];
+    const runTurn = harness.agentPort.runTurn;
+    harness.agentPort.runTurn = (agentId, prompt, options) => {
+      permissions.push(options?.permission);
+      return runTurn(agentId, prompt, options);
+    };
+    harness.respond = () => ({ outcome: "needs_permission" });
+    const manager = new GoalManager({
+      store,
+      agents: harness.agentPort,
+      workspaces: harness.workspacePort,
+      git: harness.git,
+      clock: new FakeClock(),
+      logger: pino({ level: "silent" }),
+    });
+    await manager.start();
+    await manager.idle();
+    manager.stop();
+    expect(harness.agents.map((a) => a.permission)).toEqual(["fail"]);
+    expect(permissions).toEqual(["fail"]);
+    expect(store.get("pp")?.failureReason).toMatch(/needs_permission/);
   });
 
   test("an event carrying fields this version does not know is still accepted", async () => {

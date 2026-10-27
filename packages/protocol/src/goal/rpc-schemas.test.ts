@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { SessionInboundMessageSchema, SessionOutboundMessageSchema } from "../messages.js";
+import { DEFAULT_GOAL_PERMISSION_POLICY, goalPermissionPolicy } from "./config-bounds.js";
 import { summarizeGoalProgress, toGoalSummary } from "./progress.js";
 import { type Goal, GoalConfigSchema, GoalEventSchema } from "./types.js";
 
@@ -332,5 +333,74 @@ describe("goal RPC schemas", () => {
         event.type,
       );
     }
+  });
+
+  test("config edits: the request, the new events and the auto policy parse", () => {
+    const request = SessionInboundMessageSchema.parse({
+      type: "goal.update_config.request",
+      requestId: "r",
+      goalId: "g",
+      eventId: "e",
+      changes: {
+        onPermissionRequest: "auto",
+        notifyLead: false,
+        maxParallel: 3,
+        maxReworkRounds: null,
+        testCommand: null,
+        limits: { maxRuns: 120, maxTotalTokens: null, deadlineAt: "2026-12-01T00:00:00Z" },
+      },
+    });
+    expect(request.type).toBe("goal.update_config.request");
+    // An empty change set is a valid request; the daemon returns the goal unchanged.
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "goal.update_config.request",
+        requestId: "r",
+        goalId: "g",
+        changes: {},
+      }).success,
+    ).toBe(true);
+    // Bounds are the create bounds.
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "goal.update_config.request",
+        requestId: "r",
+        goalId: "g",
+        changes: { maxParallel: 9 },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "goal.update_config.request",
+        requestId: "r",
+        goalId: "g",
+        changes: { onPermissionRequest: "ask" },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "goal.update_config.response",
+        payload: { requestId: "r", goal: null, error: "nope" },
+      }).type,
+    ).toBe("goal.update_config.response");
+
+    expect(GoalConfigSchema.parse({ ...config, onPermissionRequest: "auto" })).toMatchObject({
+      onPermissionRequest: "auto",
+    });
+    for (const event of [
+      { type: "goal.config_updated", config: { ...config, onPermissionRequest: "wait" } },
+      { type: "goal.reopened" },
+    ]) {
+      expect(GoalEventSchema.parse({ id: "e", goalId: "g", seq: 2, at: "x", ...event }).type).toBe(
+        event.type,
+      );
+    }
+  });
+
+  test("a stored config without a policy reads as fail; new goals record wait", () => {
+    expect(goalPermissionPolicy(GoalConfigSchema.parse(config))).toBe("fail");
+    expect(goalPermissionPolicy({ onPermissionRequest: "auto" })).toBe("auto");
+    expect(goalPermissionPolicy(null)).toBe("fail");
+    expect(DEFAULT_GOAL_PERMISSION_POLICY).toBe("wait");
   });
 });

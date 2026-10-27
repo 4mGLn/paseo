@@ -1,5 +1,9 @@
 import { stat } from "node:fs/promises";
 import type pino from "pino";
+import {
+  goalPermissionPolicy,
+  type GoalPermissionPolicy,
+} from "@getpaseo/protocol/goal/config-bounds";
 import type { GoalRetainedResource } from "@getpaseo/protocol/goal/rpc-schemas";
 import type {
   Goal,
@@ -65,6 +69,12 @@ export interface CreateGoalAgentInput {
   labels: Record<string, string>;
   /** Thinking option id; absent leaves the model's default. */
   thinking?: string;
+  /**
+   * The goal's permission policy, which picks the mode the agent starts in: `fail` the
+   * provider's unattended mode, `wait` its default mode, `auto` its auto mode when it
+   * lists one. Absent is `fail`.
+   */
+  permission?: GoalPermissionPolicy;
 }
 
 /** What the Manager needs from Paseo's agent layer. */
@@ -392,7 +402,8 @@ export class GoalManager {
       }, this.cancelGraceMs);
     }, runTimeoutMs);
     const running = this.agents.runTurn(agentId, prompt, {
-      permission: config?.onPermissionRequest ?? "fail",
+      // Under `auto` an agent may still ask; the request waits for a person as under `wait`.
+      permission: goalPermissionPolicy(config) === "fail" ? "fail" : "wait",
       signal: abort.signal,
     });
     // If the turn is abandoned, its eventual outcome is of no interest.
@@ -493,6 +504,35 @@ export class GoalManager {
     } else if (event.type === "usage.recorded") {
       const overBudget = budgetExceeded(goal);
       if (overBudget) this.track(this.failGoal(goal.id, overBudget));
+    } else if (event.type === "goal.reopened") {
+      // A goal that failed while planning: a fresh Lead plans, as when it was created.
+      this.armDeadline(goal);
+      this.track(this.plan(goal.id));
+    } else if (event.type === "goal.config_updated") {
+      this.onConfigUpdated(goal, event.id);
+    }
+  }
+
+  /**
+   * New settings apply from the next turn or run, since every check reads the config
+   * from the store. Only what is armed ahead of time needs a nudge here.
+   */
+  private onConfigUpdated(goal: Goal, eventId: string): void {
+    if (isTerminalGoalStatus(goal.status)) return;
+    // The time limit or deadline may have moved either way.
+    this.clearDeadline(goal.id);
+    this.armDeadline(goal);
+    if (goal.status === "awaiting_plan_approval" && goal.config?.autoApprovePlan) {
+      this.track(
+        this.dispatch(goal.id, {
+          id: `${goal.id}:auto-approve:${eventId}`,
+          goalId: goal.id,
+          type: "plan.approved",
+        }),
+      );
+    } else if (goal.status === "executing") {
+      // A higher maxParallel may let more tasks start.
+      this.track(this.pump(goal.id));
     }
   }
 
@@ -541,6 +581,7 @@ export class GoalManager {
         .createAgent({
           provider: config.leadProvider,
           ...thinkingInput(goalRoleThinking(config, "lead")),
+          permission: goalPermissionPolicy(config),
           cwd: workspace.cwd,
           workspaceId: workspace.workspaceId,
           title: `Lead: ${goal.title}`,
@@ -590,7 +631,8 @@ export class GoalManager {
         const tasks = extractPlan(
           result.text,
           this.providersFor(goal),
-          resolveLimits(goal.config).maxTasks,
+          // Read now: the limit may have been changed while the Lead was planning.
+          resolveLimits(this.store.get(goal.id)?.config ?? goal.config).maxTasks,
         );
         await this.checkPlanThinking(goal, tasks);
         await this.dispatch(goal.id, {
@@ -777,6 +819,7 @@ export class GoalManager {
       const { agentId, thinking } = await this.agents.createAgent({
         provider,
         ...thinkingInput(goalRoleThinking(goal.config, "worker", task)),
+        permission: goalPermissionPolicy(goal.config),
         cwd: workspace.cwd,
         workspaceId: workspace.workspaceId,
         title: `${goal.title}: ${task.title}`,

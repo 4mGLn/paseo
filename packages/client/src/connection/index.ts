@@ -146,6 +146,7 @@ export const DEFAULT_CLIENT_CAPABILITIES = {
   [CLIENT_CAPS.goalControlEvents]: true,
   [CLIENT_CAPS.goalAcknowledgeEvents]: true,
   [CLIENT_CAPS.goalManagementEvents]: true,
+  [CLIENT_CAPS.goalConfigEdit]: true,
 } satisfies Record<Exclude<ClientCapability, typeof CLIENT_CAPS.browserHost>, true>;
 
 /** Calling releases demand; ready waits for membership, or local attachment on broadcast hosts. */

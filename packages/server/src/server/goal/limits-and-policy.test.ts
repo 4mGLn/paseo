@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { GoalConfig } from "@getpaseo/protocol/goal/types";
-import { createGoalConfigValidator } from "./goal-config-validation.js";
+import {
+  createGoalConfigUpdateValidator,
+  createGoalConfigValidator,
+} from "./goal-config-validation.js";
 import { CONFIG, createGoalTestEnv, planBlock, task, type GoalTestEnv } from "./goal-test-env.js";
 
 const tick = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -177,7 +180,7 @@ describe("limits and policies", () => {
 
   // ---- permissions ------------------------------------------------------
 
-  test("by default a run that asks for a permission fails and its agent is stopped", async () => {
+  test("under fail, or with no policy stored, a run that asks for a permission fails and its agent is stopped", async () => {
     env.script([task("a")], () => ({ outcome: "needs_permission" }));
     const { store, manager } = await start(withConfig({ maxAttempts: 1 }));
     await env.settle(manager);
@@ -283,6 +286,48 @@ describe("limits and policies", () => {
     await expect(
       validate({ ...CONFIG, limits: { deadlineAt: "2026-07-01T00:00:00Z" } }),
     ).resolves.toBeDefined();
+  });
+
+  test("the auto policy needs every role provider to list an auto mode", async () => {
+    const modeCatalog = async (provider: string) => {
+      if (provider === "opencode") throw new Error("catalog still loading");
+      return (provider === "claude" ? ["default", "auto"] : ["read-only", "full-access"]).map(
+        (id) => ({ id }),
+      );
+    };
+    const validate = createGoalConfigValidator({
+      git: { head: async () => "abc" },
+      knownProviders: () => ["claude", "codex", "opencode"],
+      modeCatalog,
+    });
+    const claudeOnly = { ...CONFIG, defaultProvider: "claude/opus" };
+    await expect(validate({ ...claudeOnly, onPermissionRequest: "auto" })).resolves.toBeDefined();
+    await expect(validate({ ...CONFIG, onPermissionRequest: "auto" })).rejects.toThrow(
+      /defaultProvider "codex" has none. Available modes: read-only, full-access/,
+    );
+    await expect(
+      validate({ ...claudeOnly, reviewProvider: "codex", onPermissionRequest: "auto" }),
+    ).rejects.toThrow(/reviewProvider "codex"/);
+    // A catalog that cannot be read does not block the goal; the agent falls back to wait.
+    await expect(
+      validate({ ...claudeOnly, reviewProvider: "opencode", onPermissionRequest: "auto" }),
+    ).resolves.toBeDefined();
+    await expect(validate({ ...CONFIG, onPermissionRequest: "wait" })).resolves.toBeDefined();
+
+    // Changes are checked the same way, and only what changed.
+    const update = createGoalConfigUpdateValidator({
+      modeCatalog,
+      now: () => Date.parse("2026-06-01T00:00:00Z"),
+    });
+    await expect(update({ ...CONFIG, onPermissionRequest: "auto" }, CONFIG)).rejects.toThrow(
+      /needs an auto mode/,
+    );
+    await expect(
+      update({ ...CONFIG, limits: { deadlineAt: "2026-05-01T00:00:00Z" } }, CONFIG),
+    ).rejects.toThrow(/in the past/);
+    // A deadline already stored is not re-checked when something else changes.
+    const past = { ...CONFIG, limits: { deadlineAt: "2026-05-01T00:00:00Z" } };
+    await expect(update({ ...past, maxParallel: 3 }, past)).resolves.toBeUndefined();
   });
 
   test("an absolute deadline earlier than the time limit fails the goal when it passes", async () => {

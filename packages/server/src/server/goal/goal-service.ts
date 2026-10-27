@@ -3,17 +3,20 @@ import type {
   GoalListArchivedFilter,
   GoalRetainedResource,
 } from "@getpaseo/protocol/goal/rpc-schemas";
-import type {
-  Goal,
-  GoalConfig,
-  GoalEvent,
-  GoalEventInput,
-  GoalPriority,
-  GoalStatus,
-  TaskSpec,
+import { DEFAULT_GOAL_PERMISSION_POLICY } from "@getpaseo/protocol/goal/config-bounds";
+import {
+  GoalConfigSchema,
+  type Goal,
+  type GoalConfig,
+  type GoalConfigChanges,
+  type GoalEvent,
+  type GoalEventInput,
+  type GoalPriority,
+  type GoalStatus,
+  type TaskSpec,
 } from "@getpaseo/protocol/goal/types";
 import type { GoalEventLog } from "./event-log.js";
-import type { GoalConfigValidator } from "./goal-config-validation.js";
+import type { GoalConfigUpdateValidator, GoalConfigValidator } from "./goal-config-validation.js";
 import { goalPriority, sortGoalsByPriority } from "./goal-priority.js";
 import { isTerminalGoalStatus } from "./goal-reducer.js";
 import type { GoalRemovedListener, GoalStore, GoalStoreListener } from "./goal-store.js";
@@ -95,6 +98,7 @@ export class GoalService {
     private readonly store: GoalStore,
     private readonly log: GoalEventLog,
     private readonly validateConfig?: GoalConfigValidator,
+    private readonly validateConfigUpdate?: GoalConfigUpdateValidator,
   ) {}
 
   /** The Manager is built after the service; it reports whether a goal still has work stopping. */
@@ -131,8 +135,15 @@ export class GoalService {
     if (input.config && input.criteria.length === 0) {
       throw new Error("A managed goal needs at least one acceptance criterion");
     }
-    const config = input.config
+    const validated = input.config
       ? ((await this.validateConfig?.(input.config)) ?? input.config)
+      : null;
+    // The default is recorded, so a later change of default leaves this goal as it was.
+    const config = validated
+      ? {
+          ...validated,
+          onPermissionRequest: validated.onPermissionRequest ?? DEFAULT_GOAL_PERMISSION_POLICY,
+        }
       : null;
     const goalId = input.goalId ?? randomUUID();
     const { goal } = await this.store.dispatch(goalId, {
@@ -159,6 +170,30 @@ export class GoalService {
     const goal = this.requireGoal(goalId);
     if (goal.title === trimmed) return goal;
     return this.dispatch(goalId, eventId, { type: "goal.renamed", title: trimmed });
+  }
+
+  /**
+   * Change a managed goal's settings, in any state but archived. The changes are merged
+   * into the current config and checked as on create. A live goal picks them up at its
+   * next turn or run. The same settings again return the goal unchanged.
+   */
+  async updateConfig(goalId: string, changes: GoalConfigChanges, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.config_updated", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const goal = this.requireManaged(goalId, "change");
+    if (goal.archivedAt) {
+      throw new Error(`Goal ${goalId} is archived; unarchive it before changing its settings`);
+    }
+    const previous = goal.config as GoalConfig;
+    const parsed = GoalConfigSchema.safeParse(mergeConfigChanges(previous, changes));
+    if (!parsed.success) {
+      throw new Error(`Invalid goal settings: ${parsed.error.issues[0]?.message ?? "unknown"}`);
+    }
+    const next = parsed.data;
+    if (stableJson(next) === stableJson(previous)) return goal;
+    await this.validateConfigUpdate?.(next, previous);
+    return this.dispatch(goalId, eventId, { type: "goal.config_updated", config: next });
   }
 
   /** Allowed in any state. The current priority again returns the goal unchanged. */
@@ -305,13 +340,24 @@ export class GoalService {
 
   /**
    * Retry one failed or cancelled task, or all of them. A failed goal is reopened,
-   * and then every failed and cancelled task is retried whichever one is named.
+   * and then every failed and cancelled task is retried whichever one is named. A goal
+   * that failed while planning has no tasks; it is reopened and a fresh Lead plans.
    */
   async retry(goalId: string, taskId: string | undefined, eventId?: string): Promise<Goal> {
-    if (await this.alreadyApplied(goalId, "goal.retried", taskId ?? "", eventId)) {
+    if (
+      (await this.alreadyApplied(goalId, "goal.retried", taskId ?? "", eventId)) ||
+      (await this.alreadyApplied(goalId, "goal.reopened", "", eventId))
+    ) {
       return this.requireGoal(goalId);
     }
     const goal = this.requireManaged(goalId, "retry");
+    if (goal.status === "failed" && goal.tasks.length === 0) {
+      if (taskId) throw new Error(`Task ${taskId} not found in goal ${goalId}`);
+      if (this.activity?.hasLiveWork(goalId)) {
+        throw new Error("The goal's agents are still stopping; retry again in a moment");
+      }
+      return this.dispatch(goalId, eventId, { type: "goal.reopened" });
+    }
     const retryable = goal.tasks
       .filter((t) => t.status === "failed" || t.status === "cancelled")
       .map((t) => t.id);
@@ -413,4 +459,35 @@ export class GoalService {
     }
     return goal;
   }
+}
+
+/** The config with `changes` applied: absent keeps a setting, null clears an optional one. */
+export function mergeConfigChanges(config: GoalConfig, changes: GoalConfigChanges): GoalConfig {
+  const { limits: limitChanges, ...topLevel } = changes;
+  const next: Record<string, unknown> = { ...config };
+  for (const [key, value] of Object.entries(topLevel)) {
+    if (value === undefined) continue;
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  if (limitChanges) {
+    const limits: Record<string, unknown> = { ...config.limits };
+    for (const [key, value] of Object.entries(limitChanges)) {
+      if (value === undefined) continue;
+      if (value === null) delete limits[key];
+      else limits[key] = value;
+    }
+    if (Object.keys(limits).length > 0) next.limits = limits;
+    else delete next.limits;
+  }
+  return next as GoalConfig;
+}
+
+/** JSON with object keys sorted, so two configs compare by content alone. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) =>
+    inner && typeof inner === "object" && !Array.isArray(inner)
+      ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => a.localeCompare(b)))
+      : inner,
+  );
 }

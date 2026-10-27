@@ -58,6 +58,10 @@ export const CLIENT_CAPS = {
   // goal.priority_set, goal.archived and goal.unarchived from goal.inspect events for
   // older clients whose strict event union rejects them. Remove after 2027-04-26.
   goalManagementEvents: "goal_management_events",
+  // COMPAT(goalConfigEdit): added in v0.13.3. The daemon omits goal.config_updated and
+  // goal.reopened from goal.inspect events, and sends an "auto" permission policy as "wait",
+  // for older clients whose strict schemas reject them. Remove after 2027-04-27.
+  goalConfigEdit: "goal_config_edit",
   browserHost: "browser_host",
 } as const;
 

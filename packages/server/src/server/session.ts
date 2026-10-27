@@ -1025,6 +1025,7 @@ export class Session {
         supportsGoalControlEvents: () => this.supports(CLIENT_CAPS.goalControlEvents),
         supportsGoalAcknowledgeEvents: () => this.supports(CLIENT_CAPS.goalAcknowledgeEvents),
         supportsGoalManagementEvents: () => this.supports(CLIENT_CAPS.goalManagementEvents),
+        supportsGoalConfigEdit: () => this.supports(CLIENT_CAPS.goalConfigEdit),
       },
       goalService,
       logger: this.sessionLogger,
