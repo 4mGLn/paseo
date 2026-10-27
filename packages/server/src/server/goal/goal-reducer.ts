@@ -10,6 +10,8 @@ import type {
   Task,
   TaskSpec,
   TurnUsage,
+  UsageBreakdownEntry,
+  UsageRole,
   UsageTotals,
 } from "@getpaseo/protocol/goal/types";
 import { budgetExceeded, goalDeadlineMs, resolveLimits } from "./goal-limits.js";
@@ -701,9 +703,17 @@ const EMPTY_USAGE: UsageTotals = {
 
 function addUsage(totals: UsageTotals | undefined, turn: TurnUsage | undefined): UsageTotals {
   const base = totals ?? EMPTY_USAGE;
-  if (!turn) return { ...base, totalTurns: base.totalTurns + 1 };
+  const costReportedTurns = base.costReportedTurns ?? 0;
+  const tokenReportedTurns = base.tokenReportedTurns ?? 0;
+  if (!turn) {
+    return { ...base, totalTurns: base.totalTurns + 1, costReportedTurns, tokenReportedTurns };
+  }
   const input = turn.inputTokens ?? 0;
   const output = turn.outputTokens ?? 0;
+  const reportedTokens =
+    turn.inputTokens !== undefined ||
+    turn.cachedInputTokens !== undefined ||
+    turn.outputTokens !== undefined;
   return {
     inputTokens: base.inputTokens + input,
     cachedInputTokens: base.cachedInputTokens + (turn.cachedInputTokens ?? 0),
@@ -712,10 +722,99 @@ function addUsage(totals: UsageTotals | undefined, turn: TurnUsage | undefined):
     costUsd: base.costUsd + (turn.costUsd ?? 0),
     reportedTurns: base.reportedTurns + 1,
     totalTurns: base.totalTurns + 1,
+    costReportedTurns: costReportedTurns + (turn.costUsd !== undefined ? 1 : 0),
+    tokenReportedTurns: tokenReportedTurns + (reportedTokens ? 1 : 0),
   };
 }
 
-/** An agent turn ended; add what its provider reported to the goal and, for a worker, its run. */
+/** Agents the breakdown keeps; the least recently active ones are dropped past this. */
+export const MAX_USAGE_BREAKDOWN_ENTRIES = 200;
+
+/** "codex/<model>" names a provider and model; a bare id names the provider only. */
+function splitProvider(value: string | undefined): { provider?: string; model?: string } {
+  if (!value) return {};
+  const slash = value.indexOf("/");
+  return slash < 0
+    ? { provider: value }
+    : { provider: value.slice(0, slash), model: value.slice(slash + 1) };
+}
+
+/** The provider and thinking a role's agents start with, from the run or the goal's config. */
+function roleDefaults(
+  config: GoalConfig | null,
+  role: UsageRole,
+  run: AgentRun | undefined,
+): { provider?: string; thinking?: string } {
+  if (role === "worker") return { provider: run?.provider, thinking: run?.thinking };
+  if (!config) return {};
+  if (role === "lead") return { provider: config.leadProvider, thinking: config.leadThinking };
+  const reviewProvider = config.reviewProvider ?? config.leadProvider;
+  if (role === "reviewer") return { provider: reviewProvider, thinking: config.reviewThinking };
+  return { provider: config.verifyProvider ?? reviewProvider, thinking: config.verifyThinking };
+}
+
+/** The entries of `fields` that have a value. */
+function defined<T extends Record<string, string | undefined>>(fields: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
+}
+
+/**
+ * Who the agent behind a usage event is. The provider comes from what the goal fixed at
+ * creation, or the run's own provider for a worker, so logs written before events named
+ * it describe their agents the same way.
+ */
+function describeUsageAgent(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "usage.recorded" }>,
+): Omit<UsageBreakdownEntry, "usage" | "firstAt" | "lastAt"> {
+  const run = event.runId ? goal.runs.find((r) => r.id === event.runId) : undefined;
+  const changeSet = event.changeSetId
+    ? goal.changeSets.find((c) => c.id === event.changeSetId)
+    : undefined;
+  const defaults = roleDefaults(goal.config, event.role, run);
+  return {
+    agentId: event.agentId,
+    role: event.role,
+    ...defined({
+      taskId: run?.taskId ?? changeSet?.taskId,
+      runId: event.runId,
+      changeSetId: event.changeSetId,
+    }),
+    ...splitProvider(defaults.provider),
+    ...defined({ thinking: event.thinking ?? defaults.thinking }),
+  };
+}
+
+/** Adds the turn to its agent's entry and moves the entry to the end, the most recently active. */
+function addToBreakdown(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "usage.recorded" }>,
+): Pick<Goal, "usageBreakdown" | "usageBreakdownTruncated"> {
+  const entries = goal.usageBreakdown ?? [];
+  const existing = entries.find((e) => e.agentId === event.agentId && e.role === event.role);
+  const updated: UsageBreakdownEntry = existing
+    ? { ...existing, usage: addUsage(existing.usage, event.usage), lastAt: event.at }
+    : {
+        ...describeUsageAgent(goal, event),
+        usage: addUsage(undefined, event.usage),
+        firstAt: event.at,
+        lastAt: event.at,
+      };
+  const next = [...entries.filter((e) => e !== existing), updated];
+  const dropped = Math.max(0, next.length - MAX_USAGE_BREAKDOWN_ENTRIES);
+  const truncated = (goal.usageBreakdownTruncated ?? 0) + dropped;
+  return {
+    usageBreakdown: dropped > 0 ? next.slice(dropped) : next,
+    ...(truncated > 0 ? { usageBreakdownTruncated: truncated } : {}),
+  };
+}
+
+/**
+ * An agent turn ended; add what its provider reported to the goal, its role, its agent's
+ * breakdown entry and, for a worker, its run.
+ */
 function applyUsageEvent(goal: Goal, event: GoalEvent): Goal {
   if (event.type !== "usage.recorded") {
     throw new GoalTransitionError(event.type, "unexpected event for this handler");
@@ -726,9 +825,12 @@ function applyUsageEvent(goal: Goal, event: GoalEvent): Goal {
   if (event.runId && !goal.runs.some((r) => r.id === event.runId)) {
     throw new GoalTransitionError(event.type, `unknown run ${event.runId}`);
   }
+  const byRole = goal.usageByRole ?? {};
   return {
     ...goal,
     usage: addUsage(goal.usage, event.usage),
+    usageByRole: { ...byRole, [event.role]: addUsage(byRole[event.role], event.usage) },
+    ...addToBreakdown(goal, event),
     runs: event.runId
       ? goal.runs.map((r) =>
           r.id === event.runId ? { ...r, usage: addUsage(r.usage, event.usage) } : r,

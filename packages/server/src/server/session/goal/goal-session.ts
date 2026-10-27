@@ -14,6 +14,8 @@ export interface GoalSessionHost {
   supportsGoalManagementEvents?(): boolean;
   /** Whether the client parses config edits and the "auto" policy. Assumed when absent. */
   supportsGoalConfigEdit?(): boolean;
+  /** Whether the client shows the usage breakdown. Assumed when absent. */
+  supportsGoalUsageBreakdown?(): boolean;
 }
 
 // COMPAT(goalControlEvents): added in v0.13.0, remove after 2027-04-26.
@@ -47,6 +49,21 @@ const GOAL_CONFIG_EDIT_EVENT_TYPES: ReadonlySet<string> = new Set([
 export function withoutAutoPolicy<T extends Pick<Goal, "config">>(goal: T): T {
   if (goal.config?.onPermissionRequest !== "auto") return goal;
   return { ...goal, config: { ...goal.config, onPermissionRequest: "wait" } };
+}
+
+// COMPAT(goalUsageBreakdown): added in v0.13.3, remove after 2027-04-27. An older client
+// cannot show the breakdown, and it grows with every agent the goal starts.
+export function withoutUsageBreakdown<T extends Goal>(goal: T): T {
+  if (!goal.usageByRole && !goal.usageBreakdown && goal.usageBreakdownTruncated === undefined) {
+    return goal;
+  }
+  const {
+    usageByRole: _byRole,
+    usageBreakdown: _breakdown,
+    usageBreakdownTruncated: _truncated,
+    ...rest
+  } = goal;
+  return rest as T;
 }
 
 function eventWithoutAutoPolicy(event: GoalEvent): GoalEvent {
@@ -291,7 +308,10 @@ export class GoalSession {
   }
 
   private forClient(goal: Goal): Goal {
-    return this.host.supportsGoalConfigEdit?.() === false ? withoutAutoPolicy(goal) : goal;
+    const policy = this.host.supportsGoalConfigEdit?.() === false ? withoutAutoPolicy(goal) : goal;
+    return this.host.supportsGoalUsageBreakdown?.() === false
+      ? withoutUsageBreakdown(policy)
+      : policy;
   }
 
   private emitError(requestId: string, requestType: string, error: unknown): void {

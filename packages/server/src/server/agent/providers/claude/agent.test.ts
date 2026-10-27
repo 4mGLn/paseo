@@ -3569,6 +3569,7 @@ describe("ClaudeAgentSession context window usage", () => {
         cachedInputTokens: 700,
         outputTokens: 400,
         totalCostUsd: 0.25,
+        turnTotals: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0.25 },
         contextWindowMaxTokens: 200_000,
         contextWindowUsedTokens: 175,
       });
@@ -3610,6 +3611,7 @@ describe("ClaudeAgentSession context window usage", () => {
         cachedInputTokens: 5,
         outputTokens: 7,
         totalCostUsd: 0.25,
+        turnTotals: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0.25 },
         contextWindowMaxTokens: 200_000,
         contextWindowUsedTokens: 175,
       });
@@ -3725,6 +3727,12 @@ describe("ClaudeAgentSession context window usage", () => {
         cachedInputTokens: 16_999,
         outputTokens: 171,
         totalCostUsd: 0.25,
+        turnTotals: {
+          inputTokens: 18_441,
+          cachedInputTokens: 16_999,
+          outputTokens: 180,
+          costUsd: 0.25,
+        },
         contextWindowMaxTokens: 200_000,
         contextWindowUsedTokens: 17_261,
       });
@@ -3770,8 +3778,66 @@ describe("ClaudeAgentSession context window usage", () => {
         cachedInputTokens: 600,
         outputTokens: 700,
         totalCostUsd: 0.25,
+        turnTotals: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0.25 },
         contextWindowMaxTokens: 200_000,
         contextWindowUsedTokens: 117,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("reports each turn's share of the process's running totals", async () => {
+    const session = await createSessionForTurns([
+      [
+        createInitMessage(),
+        createSuccessResult({
+          total_cost_usd: 0.25,
+          modelUsage: {
+            "main-model": {
+              contextWindow: 200_000,
+              inputTokens: 10,
+              cacheCreationInputTokens: 1_000,
+              cacheReadInputTokens: 5_000,
+              outputTokens: 300,
+            },
+          },
+        }),
+      ],
+      [
+        createSuccessResult({
+          total_cost_usd: 0.4,
+          modelUsage: {
+            "main-model": {
+              contextWindow: 200_000,
+              inputTokens: 30,
+              cacheCreationInputTokens: 1_500,
+              cacheReadInputTokens: 12_000,
+              outputTokens: 700,
+            },
+            // A subagent's model counts toward the turn too.
+            "subagent-model": { inputTokens: 100, outputTokens: 50, cacheReadInputTokens: 0 },
+          },
+          uuid: "result-2",
+        }),
+      ],
+    ]);
+
+    try {
+      const firstTurn = await session.run("turn 1");
+      const secondTurn = await session.run("turn 2");
+
+      expect(firstTurn.usage?.turnTotals).toEqual({
+        inputTokens: 1_010,
+        cachedInputTokens: 5_000,
+        outputTokens: 300,
+        costUsd: 0.25,
+      });
+      expect(secondTurn.usage?.turnTotals).toEqual({
+        inputTokens: 620,
+        cachedInputTokens: 7_000,
+        outputTokens: 450,
+        costUsd: expect.closeTo(0.15),
       });
     } finally {
       await session.close();
@@ -3808,6 +3874,7 @@ describe("ClaudeAgentSession context window usage", () => {
         cachedInputTokens: 5,
         outputTokens: 7,
         totalCostUsd: 0.25,
+        turnTotals: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0.25 },
         contextWindowMaxTokens: 200_000,
         contextWindowUsedTokens: 175,
       });
@@ -3816,6 +3883,7 @@ describe("ClaudeAgentSession context window usage", () => {
         cachedInputTokens: 200,
         outputTokens: 300,
         totalCostUsd: 0.1,
+        turnTotals: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0.1 },
         contextWindowMaxTokens: 200_000,
       });
     } finally {
@@ -4129,6 +4197,7 @@ describe("ClaudeAgentSession context window usage", () => {
             cachedInputTokens: 0,
             outputTokens: 0,
             totalCostUsd: 0.04,
+            turnTotals: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0.04 },
             contextWindowMaxTokens: 200_000,
             contextWindowUsedTokens: 704,
           },
@@ -4182,6 +4251,7 @@ describe("ClaudeAgentSession context window usage", () => {
             cachedInputTokens: 0,
             outputTokens: 0,
             totalCostUsd: 0.04,
+            turnTotals: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0.04 },
             contextWindowMaxTokens: 200_000,
             contextWindowUsedTokens: 704,
           },

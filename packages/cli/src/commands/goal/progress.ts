@@ -11,19 +11,30 @@ export function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
-function formatTokens(tokens: number): string {
+export function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
   if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
   return String(tokens);
 }
 
-/** "12.3k tok $0.42 (3/5 turns)"; "-" when nothing was recorded. */
+/**
+ * "$0.42"; ">=$0.42" when some turns reported no cost, so the sum is a lower bound;
+ * "no cost" when none did. Hosts that do not count cost reports give "$0.42", or "" for 0.
+ */
+export function formatCost(usage: UsageTotals): string {
+  const amount = `$${usage.costUsd.toFixed(2)}`;
+  if (usage.costReportedTurns === undefined) return usage.costUsd > 0 ? amount : "";
+  if (usage.costReportedTurns === 0) return "no cost";
+  return usage.costReportedTurns < usage.totalTurns ? `>=${amount}` : amount;
+}
+
+/** "12.3k tok >=$0.42 (3/5 turns)"; "-" when nothing was recorded. */
 export function formatUsage(usage: UsageTotals | undefined): string {
   if (!usage || usage.totalTurns === 0) return "-";
   const turns = `(${usage.reportedTurns}/${usage.totalTurns} turns)`;
   if (usage.reportedTurns === 0) return `not reported ${turns}`;
-  const cost = usage.costUsd > 0 ? ` $${usage.costUsd.toFixed(2)}` : "";
-  return `${formatTokens(usage.totalTokens)} tok${cost} ${turns}`;
+  const cost = formatCost(usage);
+  return `${formatTokens(usage.totalTokens)} tok${cost ? ` ${cost}` : ""} ${turns}`;
 }
 
 /** Time since creation for a live goal; creation to its last event for an ended one. */
@@ -62,6 +73,12 @@ export function taskUsage(goal: Goal, task: Task): UsageTotals | undefined {
         costUsd: sum.costUsd + u.costUsd,
         reportedTurns: sum.reportedTurns + u.reportedTurns,
         totalTurns: sum.totalTurns + u.totalTurns,
+        ...(sum.costReportedTurns !== undefined && u.costReportedTurns !== undefined
+          ? { costReportedTurns: sum.costReportedTurns + u.costReportedTurns }
+          : {}),
+        ...(sum.tokenReportedTurns !== undefined && u.tokenReportedTurns !== undefined
+          ? { tokenReportedTurns: sum.tokenReportedTurns + u.tokenReportedTurns }
+          : {}),
       };
     },
     {
@@ -72,6 +89,8 @@ export function taskUsage(goal: Goal, task: Task): UsageTotals | undefined {
       costUsd: 0,
       reportedTurns: 0,
       totalTurns: 0,
+      costReportedTurns: 0,
+      tokenReportedTurns: 0,
     },
   );
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { Goal } from "@getpaseo/protocol/goal/types";
 import { formatDuration, formatUsage, goalElapsedMs, taskTimes, taskUsage } from "./progress.js";
 import { toGoalRow } from "./shared.js";
+import { goalUsageRows } from "./usage.js";
 
 const usage = (
   totalTokens: number,
@@ -121,5 +122,112 @@ describe("goal progress formatting", () => {
     });
     expect(row.status).toBe("failed (acknowledged)");
     expect(row.waitingOn).toBe("-");
+  });
+
+  test("a cost reported for only some turns is shown as a lower bound", () => {
+    const counted = (costReportedTurns: number, totalTurns: number) => ({
+      ...usage(189_733, 0.53, totalTurns, totalTurns),
+      costReportedTurns,
+      tokenReportedTurns: totalTurns,
+    });
+    expect(formatUsage(counted(4, 4))).toBe("189.7k tok $0.53 (4/4 turns)");
+    expect(formatUsage(counted(1, 4))).toBe("189.7k tok >=$0.53 (4/4 turns)");
+    expect(formatUsage({ ...counted(0, 4), costUsd: 0 })).toBe("189.7k tok no cost (4/4 turns)");
+  });
+});
+
+describe("goal usage per agent", () => {
+  const totals = (
+    input: number,
+    cached: number,
+    output: number,
+    cost: number,
+    costTurns: number,
+  ) => ({
+    inputTokens: input,
+    cachedInputTokens: cached,
+    outputTokens: output,
+    totalTokens: input + output,
+    costUsd: cost,
+    reportedTurns: 1,
+    totalTurns: 1,
+    costReportedTurns: costTurns,
+    tokenReportedTurns: 1,
+  });
+  const lead = totals(8, 174_852, 7_609, 0.53, 1);
+  const worker = totals(573, 178_560, 2_983, 0, 0);
+  const all = {
+    ...totals(581, 353_412, 10_592, 0.53, 1),
+    reportedTurns: 2,
+    totalTurns: 2,
+    tokenReportedTurns: 2,
+  };
+
+  test("lists each agent, then each role and the goal's total, marking cost not reported", () => {
+    const rows = goalUsageRows({
+      ...goal,
+      usage: all,
+      usageByRole: { lead, worker },
+      usageBreakdown: [
+        {
+          agentId: "41692d3c-1282-4931-bc02-1ee3d8e0a0b6",
+          role: "lead",
+          provider: "claude",
+          model: "claude-opus-5-5",
+          thinking: "medium",
+          usage: lead,
+          firstAt: "2026-01-01T00:00:00.000Z",
+          lastAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          agentId: "d50dc5af-93ed-47c7-898f-bcf52e56bee5",
+          role: "worker",
+          taskId: "t2",
+          runId: "t2-a1",
+          provider: "codex",
+          usage: worker,
+          firstAt: "2026-01-01T00:00:00.000Z",
+          lastAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      usageBreakdownTruncated: 3,
+    });
+    expect(rows).toEqual([
+      {
+        agent: "41692d3c",
+        role: "lead",
+        work: "-",
+        provider: "claude/claude-opus-5-5",
+        thinking: "medium",
+        turns: "1/1",
+        input: "8",
+        cached: "174.9k",
+        output: "7.6k",
+        total: "7.6k",
+        cost: "$0.53",
+      },
+      expect.objectContaining({
+        agent: "d50dc5af",
+        work: "t2/t2-a1",
+        provider: "codex",
+        thinking: "-",
+        cost: "not reported",
+      }),
+      expect.objectContaining({ agent: "...", work: "3 older agents not listed" }),
+      expect.objectContaining({ agent: "ROLE", role: "lead", cost: "$0.53" }),
+      expect.objectContaining({ agent: "ROLE", role: "worker", cost: "not reported" }),
+      expect.objectContaining({
+        agent: "TOTAL",
+        role: "all",
+        turns: "2/2",
+        total: "11.2k",
+        cost: ">=$0.53 (1/2)",
+      }),
+    ]);
+  });
+
+  test("a host without the breakdown is told apart from a goal with no usage", () => {
+    expect(goalUsageRows({ ...goal, usage: undefined })).toEqual([]);
+    expect(goalUsageRows(goal)).toBeNull();
   });
 });
