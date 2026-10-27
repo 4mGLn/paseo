@@ -448,6 +448,8 @@ export interface PaseoDaemonConfig {
   agentProfiles?: AgentProfile[];
   /** Seeds `teams` in the mutable config; later edits go through DaemonConfigStore. */
   teams?: AgentTeamsConfig;
+  /** Seeds `goals` in the mutable config; later edits go through DaemonConfigStore. */
+  goals?: { maxConcurrentRuns?: number };
   skillSelection?: AgentSkillSelection;
   pluginsEnabled?: boolean;
   plugins?: Record<string, PluginSource>;
@@ -634,8 +636,19 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
   }
 
   seedMutableTeams(initialConfig, config.teams);
+  seedMutableGoals(initialConfig, config.goals);
 
   return initialConfig;
+}
+
+/** Only a configured cap is seeded; without one the Goal Manager uses its default. */
+function seedMutableGoals(
+  initialConfig: MutableDaemonConfig,
+  goals: PaseoDaemonConfig["goals"],
+): void {
+  if (goals?.maxConcurrentRuns !== undefined) {
+    initialConfig.goals = { maxConcurrentRuns: goals.maxConcurrentRuns };
+  }
 }
 
 /** An empty record is stored as no teams, matching what a config patch persists. */
@@ -1545,7 +1558,10 @@ export async function createPaseoDaemon(
     workspaces: createGoalWorkspacePort(goalPortDeps),
     git: goalGit,
     logger,
+    // Read at use time, so a config change applies without a restart.
+    maxConcurrentRuns: () => daemonConfigStore.get().goals?.maxConcurrentRuns,
   });
+  daemonConfigStore.onFieldChange("goals.maxConcurrentRuns", () => goalManager.capacityChanged());
   goalService.attachActivityProbe(goalManager);
   await goalManager.start();
   logger.info({ elapsed: elapsed() }, "Goal service initialized");

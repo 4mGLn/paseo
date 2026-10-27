@@ -240,6 +240,58 @@ describe("GoalManager", () => {
     expect(harness.peakActive).toBeLessThanOrEqual(2);
   });
 
+  test("a raised run cap starts waiting tasks at once, and a lowered one starts nothing new", async () => {
+    script([task("a"), task("b"), task("c"), task("d")], () => "hold");
+    let cap: number | undefined = 1;
+    env.managerOptions.maxConcurrentRuns = () => cap;
+    const { store, manager } = await boot();
+    await createGoal(store, { ...CONFIG, maxParallel: 4 });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(harness.active).toBe(1);
+
+    cap = 3;
+    manager.capacityChanged();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(harness.active).toBe(3);
+
+    // Lowered: running tasks finish, and the next task waits until the daemon is under the cap.
+    cap = 1;
+    manager.capacityChanged();
+    harness.turns.shift()?.resolve({ outcome: "completed", text: "ok" });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(harness.active).toBe(2);
+    expect(goalOf(store).tasks.filter((t) => t.status === "running")).toHaveLength(2);
+
+    // Unset: the default of 4 applies.
+    cap = undefined;
+    manager.capacityChanged();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(harness.active).toBe(3);
+    expect(goalOf(store).tasks.filter((t) => t.status === "running")).toHaveLength(3);
+  });
+
+  test("the Lead is told the run caps and asked for a parallel plan", async () => {
+    const prompts: string[] = [];
+    script([task("a")]);
+    const respond = harness.respond;
+    harness.respond = (turn) => {
+      if (turn.prompt.includes("You are the Lead")) prompts.push(turn.prompt);
+      return respond?.(turn) ?? "hold";
+    };
+    const { store, manager } = await boot(7);
+    await createGoal(store, { ...CONFIG, maxParallel: 3 });
+    await settle(manager);
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(
+      "the daemon runs at most 7 worker runs at once across all goals, and this goal runs at most 3 at once",
+    );
+    expect(prompts[0]).toContain("Give each task only the dependencies it really needs");
+    expect(prompts[0]).toContain("name the critical path");
+    // The output contract is unchanged.
+    expect(prompts[0]).toContain("exactly one fenced ```json block");
+  });
+
   test("cancelling while a worker's workspace is still being created starts no agent and cleans up", async () => {
     script([task("a")], () => "hold");
     let release!: () => void;

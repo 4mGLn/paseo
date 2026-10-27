@@ -50,6 +50,7 @@ export {
 import { z } from "zod";
 import { TerminalActivitySchema } from "./terminal-activity.js";
 import { CLIENT_CAPS } from "./client-capabilities.js";
+import { GOAL_DAEMON_BOUNDS } from "./goal/config-bounds.js";
 import { AGENT_LIFECYCLE_STATUSES } from "./agent-lifecycle.js";
 import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "./agent-title-limits.js";
 import { AgentProviderSchema } from "./provider-manifest.js";
@@ -254,6 +255,18 @@ const MutableRelayConfigSchema = z
   })
   .passthrough();
 
+const MutableGoalsDaemonConfigSchema = z
+  .object({
+    // Worker runs across all goals at once. Absent means GOAL_DAEMON_BOUNDS' default.
+    maxConcurrentRuns: z
+      .number()
+      .int()
+      .min(GOAL_DAEMON_BOUNDS.maxConcurrentRuns.min)
+      .max(GOAL_DAEMON_BOUNDS.maxConcurrentRuns.max)
+      .optional(),
+  })
+  .passthrough();
+
 export const MutableDaemonConfigSchema = z
   .object({
     // COMPAT(relayConfig): added in v0.2.6, remove after 2027-01-31 when old daemons are unsupported.
@@ -297,6 +310,9 @@ export const MutableDaemonConfigSchema = z
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     teams: AgentTeamsConfigWireSchema.optional(),
+    // COMPAT(goalConcurrencyConfig): added in v0.13.9, optional because older daemons omit it.
+    // Daemon-wide goal settings, applied live. See server_info.features.goalConcurrencyConfig.
+    goals: MutableGoalsDaemonConfigSchema.optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
@@ -327,6 +343,7 @@ export const MutableDaemonConfigPatchSchema = z
     agentProfiles: z.array(AgentProfileSchema).optional(),
     // Replaces the whole teams record.
     teams: AgentTeamsConfigWireSchema.optional(),
+    goals: MutableGoalsDaemonConfigSchema.optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     features: SpeechSettingsPatchSchema.optional(),
@@ -4214,6 +4231,10 @@ export const ServerInfoStatusPayloadSchema = z
         // Goals carry usageByRole and usageBreakdown, usage totals count turns that reported a
         // cost or tokens, and tokens are recorded with one meaning for every provider.
         goalUsageBreakdown: z.boolean().optional(),
+        // COMPAT(goalConcurrencyConfig): added in v0.13.9, remove gate after 2027-10-27.
+        // `goals.maxConcurrentRuns` in the daemon config get/patch path, applied live. An
+        // older daemon drops it from a patch silently, so the client hides the setting.
+        goalConcurrencyConfig: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),

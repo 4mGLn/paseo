@@ -25,8 +25,15 @@ export function truncateSummary(text: string): string {
     : `${trimmed.slice(0, MAX_SUMMARY_CHARS)}\n[truncated]`;
 }
 
-export function buildLeadPlanningPrompt(goal: Goal): string {
+export interface LeadPlanningContext {
+  /** The daemon-wide cap on worker runs across all goals, as configured now. */
+  maxConcurrentRuns: number;
+}
+
+export function buildLeadPlanningPrompt(goal: Goal, context: LeadPlanningContext): string {
   const criteria = goal.criteria.map((c) => `- ${c.text}`).join("\n") || "- (none given)";
+  const maxParallel = goal.config?.maxParallel;
+  const goalCap = maxParallel ? `, and this goal runs at most ${maxParallel} at once` : "";
   return [
     `You are the Lead for the goal "${goal.title}". Plan the work; do not implement it.`,
     "",
@@ -41,6 +48,17 @@ export function buildLeadPlanningPrompt(goal: Goal): string {
     "give each implement task a self-contained description, since its agent starts with no other context;",
     "tasks that can run in parallel should not depend on each other;",
     "omit thinking unless the objective asks for a thinking level for a task.",
+    "",
+    "Make the plan as parallel as the work allows. How tasks run:",
+    `- Workers run in parallel: the daemon runs at most ${context.maxConcurrentRuns} worker runs at once across all goals${goalCap}. More tasks ready at the same moment than that is fine, they wait for a free slot, but it does not make the goal faster.`,
+    "- An implement task starts only after the changes of the implement tasks it depends on have been reviewed and merged, which can include rework rounds and waiting for a person's approval. Every dependency adds that wait, so a deep chain of dependencies is slow.",
+    "Plan for that:",
+    "- Split by independent files, modules or areas, so that tasks running at the same time do not change the same files. Tasks that change the same files conflict at merge time and are reworked.",
+    "- Prefer several small independent tasks over one large one.",
+    "- Give each task only the dependencies it really needs: a task depends on another only if it needs that task's code or findings. Do not make a task depend on everything planned before it.",
+    "- Put read and review tasks that need no code from other tasks at the start, with no dependencies.",
+    "- Avoid one task that depends on all the others, unless it is the final integration or report step. Keep the work after it short, for example one check and one fix task, not a chain.",
+    "In your short explanation, name the critical path: the longest chain of dependent tasks.",
     ...rejectionSection(goal),
   ].join("\n");
 }

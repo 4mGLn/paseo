@@ -556,6 +556,7 @@ function resolveStaticLoadConfigSettings(
     usageEnabled: resolveUsageEnabled(persisted),
     browserToolsEnabled: resolveBrowserToolsEnabled(persisted),
     autoArchiveAfterMerge: persisted.daemon?.autoArchiveAfterMerge ?? false,
+    goals: persisted.daemon?.goals,
     appendSystemPrompt: resolveAppendSystemPrompt(persisted),
     ...resolveProfileLists(persisted),
     hostnames: mergeHostnames([
@@ -591,6 +592,7 @@ export type ResolvedDaemonSettings = Pick<
   | "terminalProfiles"
   | "agentProfiles"
   | "teams"
+  | "goals"
   | "skillSelection"
   | "pluginsEnabled"
   | "plugins"
