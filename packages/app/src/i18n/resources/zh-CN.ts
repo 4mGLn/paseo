@@ -353,7 +353,8 @@ export const zhCN: TranslationResources = {
       editSettings: "编辑设置",
       settingsTitle: "目标设置",
       settingsSave: "保存",
-      settingsHint: "新值从下一次 Agent 回合或运行开始生效。已在运行的 Agent 保持原有模式。",
+      settingsHint:
+        "新值从下一次 Agent 回合或运行开始生效。更改也会作用于正在运行的 Agent:Claude 立即生效,Codex 在当前回合结束后生效(要让 Codex 工作者立刻停止询问,请切换为“不再询问”:其当前运行会结束,并以新模式重试)。",
       settingsSaved: "设置已保存",
       archive: "归档",
       unarchive: "取消归档",
@@ -850,12 +851,12 @@ export const zhCN: TranslationResources = {
       permission: {
         wait: "问我",
         auto: "Auto 模式",
-        fail: "结束运行",
+        fail: "不再询问",
       },
       permissionHints: {
         wait: "Agent 停下来，在 Paseo 中等你回答",
-        auto: "Agent 以提供方的 Auto 模式运行；仍需询问的请求会等你回答",
-        fail: "Agent 无人值守运行；请求权限的运行会失败",
+        auto: "Claude 使用 Auto 模式,Codex 使用 Auto-review。它们处理不了的请求会等你回答。",
+        fail: "Agent 运行时不再询问(Claude bypass、Codex Full Access),可在无人确认的情况下执行命令和使用网络。仍请求权限的运行会失败。",
       },
       decrease: "减少{{label}}",
       increase: "增加{{label}}",
@@ -876,8 +877,8 @@ export const zhCN: TranslationResources = {
         mergesReviewed: "合并已审查的变更",
         runsTests: "每次合并后运行你的测试",
         thinking: "{{role}}思考程度为{{level}}",
-        autoPermission: "以 Auto 模式运行 Agent",
-        failsPermission: "请求权限的运行会结束",
+        autoPermission: "以 Auto 模式运行 Agent(Claude Auto、Codex Auto-review)",
+        failsPermission: "运行 Agent 时不弹出权限询问",
       },
       outcomeLabel: "接下来会发生什么",
       outcome: {

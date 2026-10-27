@@ -359,7 +359,7 @@ export const ja: TranslationResources = {
       settingsTitle: "ゴールの設定",
       settingsSave: "保存",
       settingsHint:
-        "新しい値は次のエージェントのターンまたは実行から適用されます。実行中のエージェントはモードを維持します。",
+        "新しい値は次のエージェントのターンまたは実行から適用されます。変更は実行中のエージェントにも届きます。Claude は即座に、Codex は現在のターンの後に反映します(Codex のワーカーが今すぐ確認を求めるのを止めるには「確認なしで実行」に切り替えてください。現在の実行は終了し、新しいモードで再試行されます)。",
       settingsSaved: "設定を保存しました",
       archive: "アーカイブ",
       unarchive: "アーカイブを解除",
@@ -876,12 +876,12 @@ export const ja: TranslationResources = {
       permission: {
         wait: "確認する",
         auto: "Auto モード",
-        fail: "実行を終了",
+        fail: "確認なしで実行",
       },
       permissionHints: {
         wait: "エージェントは止まり、Paseo であなたの回答を待ちます",
-        auto: "エージェントはプロバイダーの Auto モードで動き、それでも求められた要求はあなたを待ちます",
-        fail: "エージェントは無人で動き、権限を求めた実行は失敗します",
+        auto: "Claude は Auto モード、Codex は Auto-review を使います。これらが処理しない要求はあなたを待ちます。",
+        fail: "エージェントは確認なしで動きます(Claude bypass、Codex Full Access)。コマンドの実行やネットワーク利用も確認されないので注意してください。それでも権限を求めた実行は失敗します。",
       },
       decrease: "{{label}}を減らす",
       increase: "{{label}}を増やす",
@@ -902,8 +902,8 @@ export const ja: TranslationResources = {
         mergesReviewed: "レビュー済みの変更をマージ",
         runsTests: "マージのたびにテストを実行",
         thinking: "{{role}} の思考は {{level}}",
-        autoPermission: "エージェントを Auto モードで実行",
-        failsPermission: "権限を求めた実行は終了",
+        autoPermission: "エージェントを Auto モードで実行(Claude Auto、Codex Auto-review)",
+        failsPermission: "エージェントを権限の確認なしで実行",
       },
       outcomeLabel: "このあと",
       outcome: {

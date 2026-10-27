@@ -355,7 +355,7 @@ export const ko: TranslationResources = {
       settingsTitle: "목표 설정",
       settingsSave: "저장",
       settingsHint:
-        "새 값은 다음 에이전트 턴이나 실행부터 적용됩니다. 이미 실행 중인 에이전트는 모드를 유지합니다.",
+        "새 값은 다음 에이전트 턴이나 실행부터 적용됩니다. 변경은 실행 중인 에이전트에도 닿습니다. Claude는 즉시, Codex는 현재 턴이 끝난 뒤 반영합니다(Codex 작업자가 지금 묻는 것을 멈추려면 질문 없이 실행으로 바꾸세요. 현재 실행이 끝나고 새 모드로 다시 시도합니다).",
       settingsSaved: "설정을 저장했습니다",
       archive: "보관",
       unarchive: "보관 해제",
@@ -861,12 +861,12 @@ export const ko: TranslationResources = {
       permission: {
         wait: "내게 묻기",
         auto: "Auto 모드",
-        fail: "실행 종료",
+        fail: "질문 없이 실행",
       },
       permissionHints: {
         wait: "에이전트가 멈추고 Paseo에서 내 답변을 기다립니다",
-        auto: "에이전트가 프로바이더의 Auto 모드로 실행되고, 그래도 묻는 요청은 내 답변을 기다립니다",
-        fail: "에이전트가 무인으로 실행되고, 권한을 요청한 실행은 실패합니다",
+        auto: "Claude는 Auto 모드, Codex는 Auto-review를 사용합니다. 이들이 처리하지 못하는 요청은 내 답변을 기다립니다.",
+        fail: "에이전트가 묻지 않고 실행됩니다(Claude bypass, Codex Full Access). 명령 실행과 네트워크 사용을 확인 없이 하므로 주의하세요. 그래도 권한을 요청한 실행은 실패합니다.",
       },
       decrease: "{{label}} 줄이기",
       increase: "{{label}} 늘리기",
@@ -887,8 +887,8 @@ export const ko: TranslationResources = {
         mergesReviewed: "검토된 변경을 병합",
         runsTests: "병합할 때마다 테스트 실행",
         thinking: "{{role}} 생각 수준 {{level}}",
-        autoPermission: "에이전트를 Auto 모드로 실행",
-        failsPermission: "권한을 요청한 실행은 종료",
+        autoPermission: "에이전트를 Auto 모드로 실행(Claude Auto, Codex Auto-review)",
+        failsPermission: "에이전트를 권한 질문 없이 실행",
       },
       outcomeLabel: "다음에 일어날 일",
       outcome: {

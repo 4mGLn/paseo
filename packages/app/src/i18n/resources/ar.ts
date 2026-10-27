@@ -354,7 +354,7 @@ export const ar: TranslationResources = {
       settingsTitle: "إعدادات الهدف",
       settingsSave: "حفظ",
       settingsHint:
-        "تسري القيم الجديدة بدءًا من الدور أو التشغيل التالي للوكيل. يحتفظ الوكلاء العاملون بوضعهم.",
+        "تسري القيم الجديدة بدءًا من الدور أو التشغيل التالي للوكيل. ويصل التغيير إلى الوكلاء العاملين أيضًا: يأخذه Claude فورًا ويأخذه Codex بعد دوره الحالي (لإيقاف عامل Codex عن السؤال الآن، بدّل إلى «بدون أسئلة»: ينتهي تشغيله الحالي ويُعاد في الوضع الجديد).",
       settingsSaved: "تم حفظ الإعدادات",
       archive: "أرشفة",
       unarchive: "إلغاء الأرشفة",
@@ -880,12 +880,12 @@ export const ar: TranslationResources = {
       permission: {
         wait: "اسألني",
         auto: "وضع Auto",
-        fail: "إنهاء التشغيل",
+        fail: "بدون أسئلة",
       },
       permissionHints: {
         wait: "يتوقف الوكلاء وينتظرون ردّك في Paseo",
-        auto: "يعمل الوكلاء في وضع Auto لدى المزوّد؛ وما يبقى من طلبات ينتظرك",
-        fail: "يعمل الوكلاء دون إشراف؛ ويفشل التشغيل الذي يطلب إذنًا",
+        auto: "يستخدم Claude وضع Auto ويستخدم Codex مراجعة Auto-review. وما لا يعالجانه ينتظرك.",
+        fail: "يعمل الوكلاء دون أن يسألوا (Claude bypass وCodex Full Access)، فيمكنهم تنفيذ الأوامر واستخدام الشبكة دون مراجعة. ويفشل التشغيل الذي يطلب إذنًا رغم ذلك.",
       },
       decrease: "تقليل {{label}}",
       increase: "زيادة {{label}}",
@@ -906,8 +906,8 @@ export const ar: TranslationResources = {
         mergesReviewed: "يدمج التغييرات التي تمت مراجعتها",
         runsTests: "يشغّل اختباراتك بعد كل دمج",
         thinking: "تفكير {{level}} لـ{{role}}",
-        autoPermission: "يشغّل الوكلاء في وضع Auto",
-        failsPermission: "ينهي التشغيل الذي يطلب إذنًا",
+        autoPermission: "يشغّل الوكلاء في وضع Auto (Claude Auto وCodex Auto-review)",
+        failsPermission: "يشغّل الوكلاء دون طلبات إذن",
       },
       outcomeLabel: "ماذا يحدث بعد ذلك",
       outcome: {

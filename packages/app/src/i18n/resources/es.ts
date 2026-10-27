@@ -359,7 +359,7 @@ export const es: TranslationResources = {
       settingsTitle: "Ajustes del objetivo",
       settingsSave: "Guardar",
       settingsHint:
-        "Los valores nuevos se aplican desde el siguiente turno o ejecución de un agente. Los agentes que ya se ejecutan mantienen su modo.",
+        "Los valores nuevos se aplican desde el siguiente turno o ejecución de un agente. Un cambio también llega a los agentes en ejecución: Claude lo toma al instante, Codex tras su turno actual (para que un agente Codex deje de preguntar ahora, cambia a Sin preguntar: su ejecución actual termina y se reintenta en el nuevo modo).",
       settingsSaved: "Ajustes guardados",
       archive: "Archivar",
       unarchive: "Desarchivar",
@@ -878,12 +878,12 @@ export const es: TranslationResources = {
       permission: {
         wait: "Preguntarme",
         auto: "Modo Auto",
-        fail: "Terminar la ejecución",
+        fail: "Sin preguntar",
       },
       permissionHints: {
         wait: "Los agentes se detienen y esperan tu respuesta en Paseo",
-        auto: "Los agentes se ejecutan en el modo Auto del proveedor; lo que aún se pregunte te espera",
-        fail: "Los agentes se ejecutan sin supervisión; una ejecución que pide permiso falla",
+        auto: "Claude usa el modo Auto; Codex usa Auto-review. Lo que no resuelvan te espera.",
+        fail: "Los agentes se ejecutan sin preguntar (Claude bypass, Codex Full Access), así que pueden ejecutar comandos y usar la red sin control. Una ejecución que aun así pide permiso falla.",
       },
       decrease: "Reducir {{label}}",
       increase: "Aumentar {{label}}",
@@ -904,8 +904,8 @@ export const es: TranslationResources = {
         mergesReviewed: "fusiona los cambios revisados",
         runsTests: "ejecuta tus pruebas tras cada fusión",
         thinking: "razonamiento {{level}} para {{role}}",
-        autoPermission: "ejecuta los agentes en modo Auto",
-        failsPermission: "termina una ejecución que pide permiso",
+        autoPermission: "ejecuta los agentes en modo Auto (Claude Auto, Codex Auto-review)",
+        failsPermission: "ejecuta los agentes sin pedir permisos",
       },
       outcomeLabel: "Qué pasa después",
       outcome: {

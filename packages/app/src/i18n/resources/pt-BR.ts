@@ -358,7 +358,7 @@ export const ptBR: TranslationResources = {
       settingsTitle: "Configurações da meta",
       settingsSave: "Salvar",
       settingsHint:
-        "Os novos valores valem a partir do próximo turno ou execução de um agente. Agentes já em execução mantêm o modo.",
+        "Os novos valores valem a partir do próximo turno ou execução de um agente. Uma mudança também chega aos agentes em execução: o Claude a aplica na hora, o Codex após o turno atual (para que um agente Codex pare de perguntar agora, mude para Sem perguntar: a execução atual termina e é refeita no novo modo).",
       settingsSaved: "Configurações salvas",
       archive: "Arquivar",
       unarchive: "Desarquivar",
@@ -883,12 +883,12 @@ export const ptBR: TranslationResources = {
       permission: {
         wait: "Perguntar a mim",
         auto: "Modo Auto",
-        fail: "Encerrar a execução",
+        fail: "Sem perguntar",
       },
       permissionHints: {
         wait: "Os agentes param e esperam sua resposta no Paseo",
-        auto: "Os agentes rodam no modo Auto do provedor; o que ainda for perguntado espera por você",
-        fail: "Os agentes rodam sem supervisão; uma execução que pede permissão falha",
+        auto: "O Claude usa o modo Auto; o Codex usa Auto-review. O que eles não resolverem espera por você.",
+        fail: "Os agentes rodam sem perguntar (Claude bypass, Codex Full Access), então podem executar comandos e usar a rede sem verificação. Uma execução que ainda assim pede permissão falha.",
       },
       decrease: "Diminuir {{label}}",
       increase: "Aumentar {{label}}",
@@ -909,8 +909,8 @@ export const ptBR: TranslationResources = {
         mergesReviewed: "mescla as alterações revisadas",
         runsTests: "roda seus testes após cada mesclagem",
         thinking: "raciocínio {{level}} para {{role}}",
-        autoPermission: "roda os agentes no modo Auto",
-        failsPermission: "encerra uma execução que pede permissão",
+        autoPermission: "roda os agentes no modo Auto (Claude Auto, Codex Auto-review)",
+        failsPermission: "roda os agentes sem pedir permissões",
       },
       outcomeLabel: "O que acontece depois",
       outcome: {

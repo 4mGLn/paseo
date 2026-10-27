@@ -351,7 +351,7 @@ export const en = {
       settingsTitle: "Goal settings",
       settingsSave: "Save",
       settingsHint:
-        "New values apply from the next agent turn or run. Agents already running keep their mode.",
+        "New values apply from the next agent turn or run. A change also reaches running agents: Claude takes it at once, Codex after its current turn (to stop a Codex worker asking right now, switch to No prompts: its current run ends and retries in the new mode).",
       settingsSaved: "Settings saved",
       archive: "Archive",
       unarchive: "Unarchive",
@@ -858,12 +858,12 @@ export const en = {
       permission: {
         wait: "Ask me",
         auto: "Auto mode",
-        fail: "End the run",
+        fail: "No prompts",
       },
       permissionHints: {
         wait: "Agents stop and wait in Paseo until you answer",
-        auto: "Agents run in the provider's Auto mode; anything still asked waits for you",
-        fail: "Agents run unattended; a run that asks for permission fails",
+        auto: "Claude uses Auto mode; Codex uses Auto-review. Anything they don't handle waits for you.",
+        fail: "Agents run without asking (Claude bypass, Codex Full Access), so they can run commands and use the network unchecked. A run that still asks for permission fails.",
       },
       decrease: "Decrease {{label}}",
       increase: "Increase {{label}}",
@@ -884,8 +884,8 @@ export const en = {
         mergesReviewed: "merges reviewed changes",
         runsTests: "runs your tests after each merge",
         thinking: "{{level}} thinking for {{role}}",
-        autoPermission: "runs agents in Auto mode",
-        failsPermission: "ends a run that asks for permission",
+        autoPermission: "runs agents in Auto mode (Claude Auto, Codex Auto-review)",
+        failsPermission: "runs agents without permission prompts",
       },
       outcomeLabel: "What happens next",
       outcome: {

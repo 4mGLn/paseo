@@ -359,7 +359,7 @@ export const fr: TranslationResources = {
       settingsTitle: "Réglages de l'objectif",
       settingsSave: "Enregistrer",
       settingsHint:
-        "Les nouvelles valeurs s'appliquent dès le prochain tour ou la prochaine exécution d'un agent. Les agents déjà lancés gardent leur mode.",
+        "Les nouvelles valeurs s'appliquent dès le prochain tour ou la prochaine exécution d'un agent. Un changement atteint aussi les agents en cours : Claude le prend tout de suite, Codex après son tour en cours (pour qu'un agent Codex cesse de demander maintenant, passez à Sans demander : son exécution en cours se termine et reprend dans le nouveau mode).",
       settingsSaved: "Réglages enregistrés",
       archive: "Archiver",
       unarchive: "Désarchiver",
@@ -887,12 +887,12 @@ export const fr: TranslationResources = {
       permission: {
         wait: "Me demander",
         auto: "Mode Auto",
-        fail: "Terminer l'exécution",
+        fail: "Sans demander",
       },
       permissionHints: {
         wait: "Les agents s'arrêtent et attendent votre réponse dans Paseo",
-        auto: "Les agents tournent dans le mode Auto du fournisseur ; ce qui est encore demandé vous attend",
-        fail: "Les agents tournent sans surveillance ; une exécution qui demande une autorisation échoue",
+        auto: "Claude utilise le mode Auto ; Codex utilise Auto-review. Ce qu'ils ne traitent pas vous attend.",
+        fail: "Les agents tournent sans demander (Claude bypass, Codex Full Access) : ils peuvent exécuter des commandes et utiliser le réseau sans contrôle. Une exécution qui demande tout de même une autorisation échoue.",
       },
       decrease: "Diminuer : {{label}}",
       increase: "Augmenter : {{label}}",
@@ -913,8 +913,8 @@ export const fr: TranslationResources = {
         mergesReviewed: "fusionne les changements relus",
         runsTests: "exécute vos tests après chaque fusion",
         thinking: "réflexion {{level}} pour {{role}}",
-        autoPermission: "lance les agents en mode Auto",
-        failsPermission: "termine une exécution qui demande une autorisation",
+        autoPermission: "lance les agents en mode Auto (Claude Auto, Codex Auto-review)",
+        failsPermission: "lance les agents sans demande d'autorisation",
       },
       outcomeLabel: "Et ensuite",
       outcome: {
