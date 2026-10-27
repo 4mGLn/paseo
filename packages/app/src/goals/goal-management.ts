@@ -114,6 +114,8 @@ export interface GoalActionFeatures {
   acknowledge: boolean;
   /** `goalManagement`: rename, priority, archive, unarchive, delete. */
   management: boolean;
+  /** `goalConfigEdit`: settings changes and reopening a goal that failed while planning. */
+  configEdit: boolean;
 }
 
 export interface GoalActions {
@@ -122,6 +124,10 @@ export interface GoalActions {
   /** Cancel: the stop. Final, and needed before a live goal can be archived or deleted. */
   cancel: boolean;
   retry: boolean;
+  /** The retry reopens a goal that failed while planning; label it so. */
+  retryPlanning: boolean;
+  /** Change the settings of a managed goal that is not archived. */
+  editSettings: boolean;
   rename: boolean;
   priority: boolean;
   archive: boolean;
@@ -136,7 +142,9 @@ export interface GoalActions {
  * retry can reopen it.
  */
 export function goalAvailableActions(goal: Goal, features: GoalActionFeatures): GoalActions {
-  const controls = goalControlsAvailable(goal, features.controls);
+  const controls = goalControlsAvailable(goal, features.controls, {
+    configEdit: features.configEdit,
+  });
   const ended = isGoalTerminal(goal.status);
   const archived = isGoalArchived(goal);
   return {
@@ -144,6 +152,8 @@ export function goalAvailableActions(goal: Goal, features: GoalActionFeatures): 
     resume: controls.canResume,
     cancel: !ended,
     retry: controls.canRetry,
+    retryPlanning: controls.canRetryPlanning,
+    editSettings: features.configEdit && goal.config !== null && !archived,
     rename: features.management,
     priority: features.management,
     archive: features.management && ended && !archived,

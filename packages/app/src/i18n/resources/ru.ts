@@ -354,6 +354,12 @@ export const ru: TranslationResources = {
       renameLabel: "Название",
       renameSave: "Сохранить",
       renameRequired: "Введите название",
+      editSettings: "Изменить настройки",
+      settingsTitle: "Настройки цели",
+      settingsSave: "Сохранить",
+      settingsHint:
+        "Новые значения действуют со следующего хода или запуска агента. Уже работающие агенты сохраняют свой режим.",
+      settingsSaved: "Настройки сохранены",
       archive: "В архив",
       unarchive: "Вернуть из архива",
       delete: "Удалить",
@@ -578,6 +584,9 @@ export const ru: TranslationResources = {
       pause: "Приостановить",
       resume: "Продолжить",
       retryGoal: "Повторить неудачные задачи",
+      retryPlanning: "Повторить планирование",
+      permissionFailureHint:
+        "Агент запросил разрешение, и его запуск завершился. Выберите в настройках «Спросить меня» или «Режим Auto» и повторите.",
       retryTask: "Повторить",
       criteria: "Критерии приёмки",
       tasks: "Задачи",
@@ -676,6 +685,8 @@ export const ru: TranslationResources = {
       goalResumed: "Цель возобновлена",
       goalRetried: "Повтор: {{subject}}",
       goalAcknowledged: "Скрыто",
+      goalConfigUpdated: "Настройки изменены",
+      goalReopened: "Планирование заново",
     },
     toasts: {
       plan_review: "План готов к проверке: {{title}}",
@@ -835,7 +846,6 @@ export const ru: TranslationResources = {
         },
         onPermissionRequest: {
           label: "Когда агент запрашивает разрешение",
-          hint: "Завершить запуск или ждать вашего ответа в Paseo",
         },
         notifyLead: {
           label: "Держать Lead в курсе",
@@ -843,8 +853,16 @@ export const ru: TranslationResources = {
         },
       },
       noLimit: "Без лимита",
-      permissionFail: "Завершить запуск",
-      permissionWait: "Ждать меня",
+      permission: {
+        wait: "Спросить меня",
+        auto: "Режим Auto",
+        fail: "Завершить запуск",
+      },
+      permissionHints: {
+        wait: "Агенты останавливаются и ждут вашего ответа в Paseo",
+        auto: "Агенты работают в режиме Auto провайдера; оставшиеся запросы ждут вас",
+        fail: "Агенты работают без присмотра; запуск, запросивший разрешение, завершается неудачей",
+      },
       decrease: "Уменьшить: {{label}}",
       increase: "Увеличить: {{label}}",
       numberField: {
@@ -864,7 +882,8 @@ export const ru: TranslationResources = {
         mergesReviewed: "сливает проверенные изменения",
         runsTests: "запускает ваши тесты после каждого слияния",
         thinking: "размышление {{level}} для {{role}}",
-        waitsPermission: "ждёт вас при запросах разрешений",
+        autoPermission: "запускает агентов в режиме Auto",
+        failsPermission: "завершает запуск, запросивший разрешение",
       },
       outcomeLabel: "Что будет дальше",
       outcome: {

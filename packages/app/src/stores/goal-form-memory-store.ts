@@ -2,7 +2,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { z } from "zod";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { GoalFormMemory } from "@/goals/goal-form-memory";
+import { GOAL_PERMISSION_POLICIES } from "@getpaseo/protocol/goal/config-bounds";
+import {
+  GOAL_FORM_MEMORY_VERSION,
+  migrateGoalFormMemory,
+  type GoalFormMemory,
+} from "@/goals/goal-form-memory";
 import { createValidatedPersistStorage } from "@/storage/validated-persist-storage";
 
 const GoalSettingsSchema = z.strictObject({
@@ -16,7 +21,7 @@ const GoalSettingsSchema = z.strictObject({
   retryBackoffSeconds: z.number(),
   autoApprovePlan: z.boolean(),
   requireHumanApproval: z.boolean(),
-  onPermissionRequest: z.enum(["fail", "wait"]),
+  onPermissionRequest: z.enum(GOAL_PERMISSION_POLICIES),
   notifyLead: z.boolean(),
 });
 
@@ -62,7 +67,14 @@ export const useGoalFormMemoryStore = create<GoalFormMemoryStoreState>()(
       name: "goal-form-memory",
       storage: createValidatedPersistStorage(AsyncStorage, GoalFormMemoryPersistedSchema),
       partialize: (state) => ({ byServer: state.byServer }),
-      version: 1,
+      version: GOAL_FORM_MEMORY_VERSION,
+      // Only the meaning of a remembered `fail` changed; see migrateGoalFormMemory.
+      migrate: (persisted, version) => {
+        const parsed = GoalFormMemoryPersistedSchema.safeParse(persisted);
+        return {
+          byServer: parsed.success ? migrateGoalFormMemory(parsed.data.byServer, version) : {},
+        };
+      },
     },
   ),
 );

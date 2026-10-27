@@ -350,6 +350,12 @@ export const ar: TranslationResources = {
       renameLabel: "العنوان",
       renameSave: "حفظ",
       renameRequired: "أدخل عنوانًا",
+      editSettings: "تعديل الإعدادات",
+      settingsTitle: "إعدادات الهدف",
+      settingsSave: "حفظ",
+      settingsHint:
+        "تسري القيم الجديدة بدءًا من الدور أو التشغيل التالي للوكيل. يحتفظ الوكلاء العاملون بوضعهم.",
+      settingsSaved: "تم حفظ الإعدادات",
       archive: "أرشفة",
       unarchive: "إلغاء الأرشفة",
       delete: "حذف",
@@ -585,6 +591,9 @@ export const ar: TranslationResources = {
       pause: "إيقاف مؤقت",
       resume: "استئناف",
       retryGoal: "إعادة محاولة المهام الفاشلة",
+      retryPlanning: "إعادة محاولة التخطيط",
+      permissionFailureHint:
+        "طلب وكيل إذنًا فانتهى تشغيله. اختر «اسألني» أو «وضع Auto» في الإعدادات، ثم أعد المحاولة.",
       retryTask: "إعادة المحاولة",
       criteria: "معايير القبول",
       tasks: "المهام",
@@ -683,6 +692,8 @@ export const ar: TranslationResources = {
       goalResumed: "استؤنف الهدف",
       goalRetried: "إعادة المحاولة: {{subject}}",
       goalAcknowledged: "تم التجاهل",
+      goalConfigUpdated: "تم تغيير الإعدادات",
+      goalReopened: "إعادة التخطيط",
     },
     toasts: {
       plan_review: "الخطة جاهزة للمراجعة: {{title}}",
@@ -823,7 +834,6 @@ export const ar: TranslationResources = {
         },
         onPermissionRequest: {
           label: "عندما يطلب وكيل إذنًا",
-          hint: "إنهاء التشغيل، أو انتظار ردّك في Paseo",
         },
         notifyLead: {
           label: "إبقاء Lead على اطلاع",
@@ -831,8 +841,16 @@ export const ar: TranslationResources = {
         },
       },
       noLimit: "بلا حد",
-      permissionFail: "إنهاء التشغيل",
-      permissionWait: "انتظرني",
+      permission: {
+        wait: "اسألني",
+        auto: "وضع Auto",
+        fail: "إنهاء التشغيل",
+      },
+      permissionHints: {
+        wait: "يتوقف الوكلاء وينتظرون ردّك في Paseo",
+        auto: "يعمل الوكلاء في وضع Auto لدى المزوّد؛ وما يبقى من طلبات ينتظرك",
+        fail: "يعمل الوكلاء دون إشراف؛ ويفشل التشغيل الذي يطلب إذنًا",
+      },
       decrease: "تقليل {{label}}",
       increase: "زيادة {{label}}",
       numberField: {
@@ -852,7 +870,8 @@ export const ar: TranslationResources = {
         mergesReviewed: "يدمج التغييرات التي تمت مراجعتها",
         runsTests: "يشغّل اختباراتك بعد كل دمج",
         thinking: "تفكير {{level}} لـ{{role}}",
-        waitsPermission: "ينتظرك عند طلبات الإذن",
+        autoPermission: "يشغّل الوكلاء في وضع Auto",
+        failsPermission: "ينهي التشغيل الذي يطلب إذنًا",
       },
       outcomeLabel: "ماذا يحدث بعد ذلك",
       outcome: {

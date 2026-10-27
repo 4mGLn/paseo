@@ -351,6 +351,12 @@ export const ko: TranslationResources = {
       renameLabel: "제목",
       renameSave: "저장",
       renameRequired: "제목을 입력하세요",
+      editSettings: "설정 편집",
+      settingsTitle: "목표 설정",
+      settingsSave: "저장",
+      settingsHint:
+        "새 값은 다음 에이전트 턴이나 실행부터 적용됩니다. 이미 실행 중인 에이전트는 모드를 유지합니다.",
+      settingsSaved: "설정을 저장했습니다",
       archive: "보관",
       unarchive: "보관 해제",
       delete: "삭제",
@@ -564,6 +570,9 @@ export const ko: TranslationResources = {
       pause: "일시 중지",
       resume: "재개",
       retryGoal: "실패한 작업 다시 시도",
+      retryPlanning: "계획 다시 시도",
+      permissionFailureHint:
+        "에이전트가 권한을 요청해 실행이 끝났습니다. 설정에서 '내게 묻기'나 'Auto 모드'를 고른 뒤 다시 시도하세요.",
       retryTask: "다시 시도",
       criteria: "수락 기준",
       tasks: "작업",
@@ -662,6 +671,8 @@ export const ko: TranslationResources = {
       goalResumed: "목표가 다시 시작되었습니다",
       goalRetried: "다시 시도: {{subject}}",
       goalAcknowledged: "닫음",
+      goalConfigUpdated: "설정 변경됨",
+      goalReopened: "다시 계획 중",
     },
     toasts: {
       plan_review: "검토할 계획이 있습니다: {{title}}",
@@ -804,7 +815,6 @@ export const ko: TranslationResources = {
         },
         onPermissionRequest: {
           label: "에이전트가 권한을 요청할 때",
-          hint: "실행을 종료하거나, Paseo에서 내 답변을 기다립니다",
         },
         notifyLead: {
           label: "Lead에게 상황 알리기",
@@ -812,8 +822,16 @@ export const ko: TranslationResources = {
         },
       },
       noLimit: "제한 없음",
-      permissionFail: "실행 종료",
-      permissionWait: "내 답변 대기",
+      permission: {
+        wait: "내게 묻기",
+        auto: "Auto 모드",
+        fail: "실행 종료",
+      },
+      permissionHints: {
+        wait: "에이전트가 멈추고 Paseo에서 내 답변을 기다립니다",
+        auto: "에이전트가 프로바이더의 Auto 모드로 실행되고, 그래도 묻는 요청은 내 답변을 기다립니다",
+        fail: "에이전트가 무인으로 실행되고, 권한을 요청한 실행은 실패합니다",
+      },
       decrease: "{{label}} 줄이기",
       increase: "{{label}} 늘리기",
       numberField: {
@@ -833,7 +851,8 @@ export const ko: TranslationResources = {
         mergesReviewed: "검토된 변경을 병합",
         runsTests: "병합할 때마다 테스트 실행",
         thinking: "{{role}} 생각 수준 {{level}}",
-        waitsPermission: "권한 요청 시 내 답변을 기다림",
+        autoPermission: "에이전트를 Auto 모드로 실행",
+        failsPermission: "권한을 요청한 실행은 종료",
       },
       outcomeLabel: "다음에 일어날 일",
       outcome: {

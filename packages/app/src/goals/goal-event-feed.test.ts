@@ -43,6 +43,16 @@ describe("describeGoalEvent", () => {
     });
   });
 
+  it("tells a settings change and a planning failure reopened", () => {
+    expect(
+      describeGoalEvent(event({ type: "goal.config_updated", config: goal.config }), goal),
+    ).toMatchObject({ key: "goalConfigUpdated", tone: "default" });
+    expect(describeGoalEvent(event({ type: "goal.reopened" }), goal)).toMatchObject({
+      key: "goalReopened",
+      tone: "default",
+    });
+  });
+
   it("falls back to the id for something it cannot find", () => {
     expect(describeGoalEvent(event({ type: "task.retried", taskId: "gone" }), goal)).toMatchObject({
       subject: "gone",

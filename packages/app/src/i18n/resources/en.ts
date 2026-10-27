@@ -347,6 +347,12 @@ export const en = {
       renameLabel: "Title",
       renameSave: "Save",
       renameRequired: "Enter a title",
+      editSettings: "Edit settings",
+      settingsTitle: "Goal settings",
+      settingsSave: "Save",
+      settingsHint:
+        "New values apply from the next agent turn or run. Agents already running keep their mode.",
+      settingsSaved: "Settings saved",
       archive: "Archive",
       unarchive: "Unarchive",
       delete: "Delete",
@@ -559,6 +565,9 @@ export const en = {
       pause: "Pause",
       resume: "Resume",
       retryGoal: "Retry failed tasks",
+      retryPlanning: "Retry planning",
+      permissionFailureHint:
+        "An agent asked for a permission and its run ended. Choose Ask me or Auto mode in the settings, then retry.",
       retryTask: "Retry",
       criteria: "Acceptance criteria",
       tasks: "Tasks",
@@ -657,6 +666,8 @@ export const en = {
       goalResumed: "Goal resumed",
       goalRetried: "Retrying {{subject}}",
       goalAcknowledged: "Dismissed",
+      goalConfigUpdated: "Settings changed",
+      goalReopened: "Planning again",
     },
     toasts: {
       plan_review: "Plan ready for review: {{title}}",
@@ -801,7 +812,6 @@ export const en = {
         },
         onPermissionRequest: {
           label: "When an agent asks for permission",
-          hint: "End the run, or wait for your answer in Paseo",
         },
         notifyLead: {
           label: "Keep the Lead informed",
@@ -809,8 +819,16 @@ export const en = {
         },
       },
       noLimit: "No limit",
-      permissionFail: "End the run",
-      permissionWait: "Wait for me",
+      permission: {
+        wait: "Ask me",
+        auto: "Auto mode",
+        fail: "End the run",
+      },
+      permissionHints: {
+        wait: "Agents stop and wait in Paseo until you answer",
+        auto: "Agents run in the provider's Auto mode; anything still asked waits for you",
+        fail: "Agents run unattended; a run that asks for permission fails",
+      },
       decrease: "Decrease {{label}}",
       increase: "Increase {{label}}",
       numberField: {
@@ -830,7 +848,8 @@ export const en = {
         mergesReviewed: "merges reviewed changes",
         runsTests: "runs your tests after each merge",
         thinking: "{{level}} thinking for {{role}}",
-        waitsPermission: "waits for you on permission requests",
+        autoPermission: "runs agents in Auto mode",
+        failsPermission: "ends a run that asks for permission",
       },
       outcomeLabel: "What happens next",
       outcome: {

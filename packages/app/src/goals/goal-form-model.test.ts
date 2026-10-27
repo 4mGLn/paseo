@@ -78,6 +78,8 @@ describe("buildGoalCreateInput", () => {
         maxAttempts: 2,
         autoApprovePlan: false,
         notifyLead: true,
+        // Always sent: an older daemon runs a goal without a policy as `fail`.
+        onPermissionRequest: "wait",
       },
     });
   });
@@ -232,6 +234,27 @@ describe("openGoalForm", () => {
     ).toBe(8);
     expect(openGoalForm({ personalSettings: mine }).getState().settingsChoice).toBe("mine");
     expect(openGoalForm({}).getState().values.settings).toEqual(DAEMON_GOAL_SETTINGS);
+  });
+
+  it("defaults to Ask me and sends auto only to a host that takes it", () => {
+    const prefill = {
+      managed: true,
+      title: "Ship",
+      criteriaText: "Works",
+      cwd: "/repo",
+      leadProvider: "claude",
+      defaultProvider: "claude",
+    };
+    expect(openGoalForm({ prefill }).getState().createInput?.config?.onPermissionRequest).toBe(
+      "wait",
+    );
+    const supported = openGoalForm({ prefill, autoPermissionSupported: true });
+    supported.setSetting("onPermissionRequest", "auto");
+    expect(supported.getState().createInput?.config?.onPermissionRequest).toBe("auto");
+    const remembered = { ...DAEMON_GOAL_SETTINGS, onPermissionRequest: "auto" as const };
+    const older = openGoalForm({ prefill, personalSettings: remembered });
+    expect(older.getState().values.settings.onPermissionRequest).toBe("wait");
+    expect(older.getState().createInput?.config?.onPermissionRequest).toBe("wait");
   });
 
   it("switches to custom on an edit and back with a preset", () => {
@@ -518,8 +541,20 @@ describe("project and host", () => {
       memoryByServer,
     });
     model.applyHosts([
-      { serverId: "host-a", label: "A", budgetSupported: false, thinkingSupported: false },
-      { serverId: "host-b", label: "B", budgetSupported: true, thinkingSupported: true },
+      {
+        serverId: "host-a",
+        label: "A",
+        budgetSupported: false,
+        thinkingSupported: false,
+        autoPermissionSupported: false,
+      },
+      {
+        serverId: "host-b",
+        label: "B",
+        budgetSupported: true,
+        thinkingSupported: true,
+        autoPermissionSupported: true,
+      },
     ]);
     model.applyProjectOptions(projects);
     model.setHost("host-b");

@@ -355,6 +355,12 @@ export const es: TranslationResources = {
       renameLabel: "Título",
       renameSave: "Guardar",
       renameRequired: "Escribe un título",
+      editSettings: "Editar ajustes",
+      settingsTitle: "Ajustes del objetivo",
+      settingsSave: "Guardar",
+      settingsHint:
+        "Los valores nuevos se aplican desde el siguiente turno o ejecución de un agente. Los agentes que ya se ejecutan mantienen su modo.",
+      settingsSaved: "Ajustes guardados",
       archive: "Archivar",
       unarchive: "Desarchivar",
       delete: "Eliminar",
@@ -568,6 +574,9 @@ export const es: TranslationResources = {
       pause: "Pausar",
       resume: "Reanudar",
       retryGoal: "Reintentar tareas fallidas",
+      retryPlanning: "Reintentar la planificación",
+      permissionFailureHint:
+        "Un agente pidió un permiso y su ejecución terminó. Elige Preguntarme o Modo Auto en los ajustes y vuelve a intentarlo.",
       retryTask: "Reintentar",
       criteria: "Criterios de aceptación",
       tasks: "Tareas",
@@ -666,6 +675,8 @@ export const es: TranslationResources = {
       goalResumed: "Objetivo reanudado",
       goalRetried: "Reintentando {{subject}}",
       goalAcknowledged: "Descartado",
+      goalConfigUpdated: "Ajustes cambiados",
+      goalReopened: "Planificando de nuevo",
     },
     toasts: {
       plan_review: "Plan listo para revisar: {{title}}",
@@ -821,7 +832,6 @@ export const es: TranslationResources = {
         },
         onPermissionRequest: {
           label: "Cuando un agente pide permiso",
-          hint: "Terminar la ejecución o esperar tu respuesta en Paseo",
         },
         notifyLead: {
           label: "Mantener informado al Lead",
@@ -829,8 +839,16 @@ export const es: TranslationResources = {
         },
       },
       noLimit: "Sin límite",
-      permissionFail: "Terminar la ejecución",
-      permissionWait: "Esperarme",
+      permission: {
+        wait: "Preguntarme",
+        auto: "Modo Auto",
+        fail: "Terminar la ejecución",
+      },
+      permissionHints: {
+        wait: "Los agentes se detienen y esperan tu respuesta en Paseo",
+        auto: "Los agentes se ejecutan en el modo Auto del proveedor; lo que aún se pregunte te espera",
+        fail: "Los agentes se ejecutan sin supervisión; una ejecución que pide permiso falla",
+      },
       decrease: "Reducir {{label}}",
       increase: "Aumentar {{label}}",
       numberField: {
@@ -850,7 +868,8 @@ export const es: TranslationResources = {
         mergesReviewed: "fusiona los cambios revisados",
         runsTests: "ejecuta tus pruebas tras cada fusión",
         thinking: "razonamiento {{level}} para {{role}}",
-        waitsPermission: "te espera en las solicitudes de permiso",
+        autoPermission: "ejecuta los agentes en modo Auto",
+        failsPermission: "termina una ejecución que pide permiso",
       },
       outcomeLabel: "Qué pasa después",
       outcome: {

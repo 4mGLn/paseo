@@ -354,6 +354,12 @@ export const ptBR: TranslationResources = {
       renameLabel: "Título",
       renameSave: "Salvar",
       renameRequired: "Digite um título",
+      editSettings: "Editar configurações",
+      settingsTitle: "Configurações da meta",
+      settingsSave: "Salvar",
+      settingsHint:
+        "Os novos valores valem a partir do próximo turno ou execução de um agente. Agentes já em execução mantêm o modo.",
+      settingsSaved: "Configurações salvas",
       archive: "Arquivar",
       unarchive: "Desarquivar",
       delete: "Excluir",
@@ -567,6 +573,9 @@ export const ptBR: TranslationResources = {
       pause: "Pausar",
       resume: "Retomar",
       retryGoal: "Tentar de novo as tarefas com falha",
+      retryPlanning: "Tentar o planejamento de novo",
+      permissionFailureHint:
+        "Um agente pediu uma permissão e a execução terminou. Escolha Perguntar a mim ou Modo Auto nas configurações e tente de novo.",
       retryTask: "Tentar de novo",
       criteria: "Critérios de aceitação",
       tasks: "Tarefas",
@@ -665,6 +674,8 @@ export const ptBR: TranslationResources = {
       goalResumed: "Meta retomada",
       goalRetried: "Tentando de novo {{subject}}",
       goalAcknowledged: "Dispensada",
+      goalConfigUpdated: "Configurações alteradas",
+      goalReopened: "Planejando de novo",
     },
     toasts: {
       plan_review: "Plano pronto para revisão: {{title}}",
@@ -826,7 +837,6 @@ export const ptBR: TranslationResources = {
         },
         onPermissionRequest: {
           label: "Quando um agente pede permissão",
-          hint: "Encerrar a execução ou esperar sua resposta no Paseo",
         },
         notifyLead: {
           label: "Manter o Lead informado",
@@ -834,8 +844,16 @@ export const ptBR: TranslationResources = {
         },
       },
       noLimit: "Sem limite",
-      permissionFail: "Encerrar a execução",
-      permissionWait: "Esperar por mim",
+      permission: {
+        wait: "Perguntar a mim",
+        auto: "Modo Auto",
+        fail: "Encerrar a execução",
+      },
+      permissionHints: {
+        wait: "Os agentes param e esperam sua resposta no Paseo",
+        auto: "Os agentes rodam no modo Auto do provedor; o que ainda for perguntado espera por você",
+        fail: "Os agentes rodam sem supervisão; uma execução que pede permissão falha",
+      },
       decrease: "Diminuir {{label}}",
       increase: "Aumentar {{label}}",
       numberField: {
@@ -855,7 +873,8 @@ export const ptBR: TranslationResources = {
         mergesReviewed: "mescla as alterações revisadas",
         runsTests: "roda seus testes após cada mesclagem",
         thinking: "raciocínio {{level}} para {{role}}",
-        waitsPermission: "espera por você nos pedidos de permissão",
+        autoPermission: "roda os agentes no modo Auto",
+        failsPermission: "encerra uma execução que pede permissão",
       },
       outcomeLabel: "O que acontece depois",
       outcome: {

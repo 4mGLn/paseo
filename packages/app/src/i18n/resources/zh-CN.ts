@@ -350,6 +350,11 @@ export const zhCN: TranslationResources = {
       renameLabel: "标题",
       renameSave: "保存",
       renameRequired: "请输入标题",
+      editSettings: "编辑设置",
+      settingsTitle: "目标设置",
+      settingsSave: "保存",
+      settingsHint: "新值从下一次 Agent 回合或运行开始生效。已在运行的 Agent 保持原有模式。",
+      settingsSaved: "设置已保存",
       archive: "归档",
       unarchive: "取消归档",
       delete: "删除",
@@ -561,6 +566,9 @@ export const zhCN: TranslationResources = {
       pause: "暂停",
       resume: "继续",
       retryGoal: "重试失败的任务",
+      retryPlanning: "重试规划",
+      permissionFailureHint:
+        "Agent 请求了权限，运行已结束。请在设置中选择“问我”或“Auto 模式”，然后重试。",
       retryTask: "重试",
       criteria: "验收标准",
       tasks: "任务",
@@ -659,6 +667,8 @@ export const zhCN: TranslationResources = {
       goalResumed: "目标已恢复",
       goalRetried: "正在重试：{{subject}}",
       goalAcknowledged: "已忽略",
+      goalConfigUpdated: "设置已更改",
+      goalReopened: "重新规划中",
     },
     toasts: {
       plan_review: "计划待审查：{{title}}",
@@ -794,7 +804,6 @@ export const zhCN: TranslationResources = {
         },
         onPermissionRequest: {
           label: "Agent 请求权限时",
-          hint: "结束运行，或在 Paseo 中等你回答",
         },
         notifyLead: {
           label: "让 Lead 了解情况",
@@ -802,8 +811,16 @@ export const zhCN: TranslationResources = {
         },
       },
       noLimit: "无限制",
-      permissionFail: "结束运行",
-      permissionWait: "等我回答",
+      permission: {
+        wait: "问我",
+        auto: "Auto 模式",
+        fail: "结束运行",
+      },
+      permissionHints: {
+        wait: "Agent 停下来，在 Paseo 中等你回答",
+        auto: "Agent 以提供方的 Auto 模式运行；仍需询问的请求会等你回答",
+        fail: "Agent 无人值守运行；请求权限的运行会失败",
+      },
       decrease: "减少{{label}}",
       increase: "增加{{label}}",
       numberField: {
@@ -823,7 +840,8 @@ export const zhCN: TranslationResources = {
         mergesReviewed: "合并已审查的变更",
         runsTests: "每次合并后运行你的测试",
         thinking: "{{role}}思考程度为{{level}}",
-        waitsPermission: "权限请求时等你回答",
+        autoPermission: "以 Auto 模式运行 Agent",
+        failsPermission: "请求权限的运行会结束",
       },
       outcomeLabel: "接下来会发生什么",
       outcome: {

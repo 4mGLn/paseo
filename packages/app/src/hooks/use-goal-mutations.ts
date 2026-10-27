@@ -3,7 +3,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { GoalRetainedResource } from "@getpaseo/protocol/goal/rpc-schemas";
-import type { Goal, GoalPriority, GoalSummary } from "@getpaseo/protocol/goal/types";
+import type {
+  Goal,
+  GoalConfigChanges,
+  GoalPriority,
+  GoalSummary,
+} from "@getpaseo/protocol/goal/types";
 import type { GoalCreateInput } from "@/goals/goal-form-model";
 import { removeGoalFromList, replaceGoalInList } from "@/goals/goal-updates";
 import {
@@ -42,6 +47,9 @@ export interface UseGoalMutationsResult {
   pendingRetryTaskId: string | null;
   rename: (input: { goalId: string; title: string }) => Promise<void>;
   isRenaming: boolean;
+  /** Sends only the given settings; the returned goal replaces the cached one. */
+  updateConfig: (input: { goalId: string; changes: GoalConfigChanges }) => Promise<void>;
+  isUpdatingConfig: boolean;
   /** Shown at once in the cached lists, and put back if the host refuses it. */
   setPriority: (input: { goalId: string; priority: GoalPriority }) => Promise<void>;
   archive: (goalId: string) => Promise<void>;
@@ -210,6 +218,27 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
     onSettled: invalidate,
   });
 
+  const updateConfigMutation = useMutation({
+    mutationFn: async (input: {
+      goalId: string;
+      changes: GoalConfigChanges;
+    }): Promise<Goal | null> => {
+      const client = requireClient(serverId, unavailableMessage);
+      const payload = await client.goalUpdateConfig(input);
+      throwPayloadError(payload);
+      return payload.goal;
+    },
+    onSuccess: applyGoal,
+    onSettled: invalidate,
+  });
+  const updateConfigAsync = updateConfigMutation.mutateAsync;
+  const updateConfig = useCallback(
+    async (input: { goalId: string; changes: GoalConfigChanges }) => {
+      await updateConfigAsync(input);
+    },
+    [updateConfigAsync],
+  );
+
   const priorityMutation = useMutation({
     mutationFn: async (input: { goalId: string; priority: GoalPriority }): Promise<Goal | null> => {
       const client = requireClient(serverId, unavailableMessage);
@@ -321,6 +350,8 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
     pendingRetryTaskId: retryMutation.isPending ? (retryMutation.variables?.taskId ?? "") : null,
     rename,
     isRenaming: renameMutation.isPending,
+    updateConfig,
+    isUpdatingConfig: updateConfigMutation.isPending,
     setPriority,
     archive,
     unarchive,

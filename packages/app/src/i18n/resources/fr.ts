@@ -355,6 +355,12 @@ export const fr: TranslationResources = {
       renameLabel: "Titre",
       renameSave: "Enregistrer",
       renameRequired: "Saisissez un titre",
+      editSettings: "Modifier les réglages",
+      settingsTitle: "Réglages de l'objectif",
+      settingsSave: "Enregistrer",
+      settingsHint:
+        "Les nouvelles valeurs s'appliquent dès le prochain tour ou la prochaine exécution d'un agent. Les agents déjà lancés gardent leur mode.",
+      settingsSaved: "Réglages enregistrés",
       archive: "Archiver",
       unarchive: "Désarchiver",
       delete: "Supprimer",
@@ -569,6 +575,9 @@ export const fr: TranslationResources = {
       pause: "Mettre en pause",
       resume: "Reprendre",
       retryGoal: "Relancer les tâches en échec",
+      retryPlanning: "Relancer la planification",
+      permissionFailureHint:
+        "Un agent a demandé une autorisation et son exécution s'est terminée. Choisissez Me demander ou Mode Auto dans les réglages, puis relancez.",
       retryTask: "Relancer",
       criteria: "Critères d'acceptation",
       tasks: "Tâches",
@@ -667,6 +676,8 @@ export const fr: TranslationResources = {
       goalResumed: "Objectif repris",
       goalRetried: "Nouvelle tentative : {{subject}}",
       goalAcknowledged: "Ignoré",
+      goalConfigUpdated: "Réglages modifiés",
+      goalReopened: "Nouvelle planification",
     },
     toasts: {
       plan_review: "Plan prêt à relire : {{title}}",
@@ -830,7 +841,6 @@ export const fr: TranslationResources = {
         },
         onPermissionRequest: {
           label: "Quand un agent demande une autorisation",
-          hint: "Terminer l'exécution ou attendre votre réponse dans Paseo",
         },
         notifyLead: {
           label: "Tenir le Lead informé",
@@ -838,8 +848,16 @@ export const fr: TranslationResources = {
         },
       },
       noLimit: "Sans limite",
-      permissionFail: "Terminer l'exécution",
-      permissionWait: "M'attendre",
+      permission: {
+        wait: "Me demander",
+        auto: "Mode Auto",
+        fail: "Terminer l'exécution",
+      },
+      permissionHints: {
+        wait: "Les agents s'arrêtent et attendent votre réponse dans Paseo",
+        auto: "Les agents tournent dans le mode Auto du fournisseur ; ce qui est encore demandé vous attend",
+        fail: "Les agents tournent sans surveillance ; une exécution qui demande une autorisation échoue",
+      },
       decrease: "Diminuer : {{label}}",
       increase: "Augmenter : {{label}}",
       numberField: {
@@ -859,7 +877,8 @@ export const fr: TranslationResources = {
         mergesReviewed: "fusionne les changements relus",
         runsTests: "exécute vos tests après chaque fusion",
         thinking: "réflexion {{level}} pour {{role}}",
-        waitsPermission: "vous attend pour les demandes d'autorisation",
+        autoPermission: "lance les agents en mode Auto",
+        failsPermission: "termine une exécution qui demande une autorisation",
       },
       outcomeLabel: "Et ensuite",
       outcome: {

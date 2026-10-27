@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { goalControlsAvailable, goalGuidance, goalPhase, goalSteps } from "./goal-phase";
+import {
+  goalControlsAvailable,
+  goalFailedOnPermission,
+  goalGuidance,
+  goalPhase,
+  goalSteps,
+} from "./goal-phase";
 import { makeChangeSet, makeGoal, makeRun, makeTask } from "./test-utils/goal-fixture";
 
 function states(goal: Parameters<typeof goalSteps>[0]): string[] | undefined {
@@ -153,8 +159,10 @@ describe("goalControlsAvailable", () => {
     expect(goalControlsAvailable(makeGoal({ status: "completed" }), true).canPause).toBe(false);
   });
 
+  const failedTask = [makeTask("t1", { status: "failed" })];
+
   it("retries a failed goal unless a change was rejected", () => {
-    const failed = makeGoal({ status: "failed" });
+    const failed = makeGoal({ status: "failed", tasks: failedTask });
     expect(goalControlsAvailable(failed, true).canRetry).toBe(true);
     const rejected = {
       ...failed,
@@ -164,8 +172,65 @@ describe("goalControlsAvailable", () => {
   });
 
   it("does not retry an archived failed goal until it is unarchived", () => {
-    const archived = makeGoal({ status: "failed", archivedAt: "2026-10-22T00:00:00Z" });
+    const archived = makeGoal({
+      status: "failed",
+      tasks: failedTask,
+      archivedAt: "2026-10-22T00:00:00Z",
+    });
     expect(goalControlsAvailable(archived, true).canRetry).toBe(false);
     expect(goalControlsAvailable({ ...archived, archivedAt: null }, true).canRetry).toBe(true);
+  });
+});
+
+describe("retrying a goal that failed while planning", () => {
+  const failedPlanning = makeGoal({ status: "failed", tasks: [] });
+
+  it("is offered as a planning retry only by a host that can reopen it", () => {
+    expect(goalControlsAvailable(failedPlanning, true)).toMatchObject({
+      canRetry: false,
+      canRetryPlanning: false,
+    });
+    expect(goalControlsAvailable(failedPlanning, true, { configEdit: true })).toMatchObject({
+      canRetry: true,
+      canRetryPlanning: true,
+    });
+  });
+
+  it("keeps the task retry for a goal that has a plan", () => {
+    const failed = makeGoal({ status: "failed", tasks: [makeTask("t1", { status: "failed" })] });
+    expect(goalControlsAvailable(failed, true, { configEdit: true })).toMatchObject({
+      canRetry: true,
+      canRetryPlanning: false,
+    });
+  });
+
+  it("is not offered while archived or without goal controls", () => {
+    const archived = { ...failedPlanning, archivedAt: "2026-10-22T00:00:00Z" };
+    expect(goalControlsAvailable(archived, true, { configEdit: true }).canRetry).toBe(false);
+    expect(goalControlsAvailable(failedPlanning, false, { configEdit: true }).canRetry).toBe(false);
+  });
+});
+
+describe("goalFailedOnPermission", () => {
+  it("recognises the outcome the daemon names when the Lead stops on a permission", () => {
+    expect(
+      goalFailedOnPermission({
+        status: "failed",
+        failureReason: "Lead agent did not finish planning (needs_permission).",
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores other failures and goals that did not fail", () => {
+    expect(
+      goalFailedOnPermission({
+        status: "failed",
+        failureReason: "Lead agent did not finish planning (canceled).",
+      }),
+    ).toBe(false);
+    expect(goalFailedOnPermission({ status: "failed", failureReason: null })).toBe(false);
+    expect(goalFailedOnPermission({ status: "executing", failureReason: "needs_permission" })).toBe(
+      false,
+    );
   });
 });

@@ -355,6 +355,12 @@ export const ja: TranslationResources = {
       renameLabel: "タイトル",
       renameSave: "保存",
       renameRequired: "タイトルを入力してください",
+      editSettings: "設定を編集",
+      settingsTitle: "ゴールの設定",
+      settingsSave: "保存",
+      settingsHint:
+        "新しい値は次のエージェントのターンまたは実行から適用されます。実行中のエージェントはモードを維持します。",
+      settingsSaved: "設定を保存しました",
       archive: "アーカイブ",
       unarchive: "アーカイブを解除",
       delete: "削除",
@@ -569,6 +575,9 @@ export const ja: TranslationResources = {
       pause: "一時停止",
       resume: "再開",
       retryGoal: "失敗したタスクを再試行",
+      retryPlanning: "計画を再試行",
+      permissionFailureHint:
+        "エージェントが権限を求めたため実行が終了しました。設定で「確認する」か「Auto モード」を選んでから再試行してください。",
       retryTask: "再試行",
       criteria: "受け入れ基準",
       tasks: "タスク",
@@ -667,6 +676,8 @@ export const ja: TranslationResources = {
       goalResumed: "ゴールを再開しました",
       goalRetried: "再試行: {{subject}}",
       goalAcknowledged: "確認済みにしました",
+      goalConfigUpdated: "設定を変更しました",
+      goalReopened: "計画をやり直しています",
     },
     toasts: {
       plan_review: "計画の確認待ち: {{title}}",
@@ -819,7 +830,6 @@ export const ja: TranslationResources = {
         },
         onPermissionRequest: {
           label: "エージェントが権限を求めたとき",
-          hint: "実行を終了するか、Paseo でのあなたの回答を待ちます",
         },
         notifyLead: {
           label: "Lead に状況を伝える",
@@ -827,8 +837,16 @@ export const ja: TranslationResources = {
         },
       },
       noLimit: "制限なし",
-      permissionFail: "実行を終了",
-      permissionWait: "回答を待つ",
+      permission: {
+        wait: "確認する",
+        auto: "Auto モード",
+        fail: "実行を終了",
+      },
+      permissionHints: {
+        wait: "エージェントは止まり、Paseo であなたの回答を待ちます",
+        auto: "エージェントはプロバイダーの Auto モードで動き、それでも求められた要求はあなたを待ちます",
+        fail: "エージェントは無人で動き、権限を求めた実行は失敗します",
+      },
       decrease: "{{label}}を減らす",
       increase: "{{label}}を増やす",
       numberField: {
@@ -848,7 +866,8 @@ export const ja: TranslationResources = {
         mergesReviewed: "レビュー済みの変更をマージ",
         runsTests: "マージのたびにテストを実行",
         thinking: "{{role}} の思考は {{level}}",
-        waitsPermission: "権限の要求ではあなたを待つ",
+        autoPermission: "エージェントを Auto モードで実行",
+        failsPermission: "権限を求めた実行は終了",
       },
       outcomeLabel: "このあと",
       outcome: {

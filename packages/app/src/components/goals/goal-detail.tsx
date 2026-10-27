@@ -15,7 +15,12 @@ import { useToast } from "@/contexts/toast-context";
 import { canAcknowledgeGoal } from "@/goals/goal-attention";
 import { canApproveGoalPlan, isGoalTerminal } from "@/goals/goal-derivation";
 import { goalBadge } from "@/goals/goal-labels";
-import { goalControlsAvailable, goalGuidance, goalSteps } from "@/goals/goal-phase";
+import {
+  goalControlsAvailable,
+  goalFailedOnPermission,
+  goalGuidance,
+  goalSteps,
+} from "@/goals/goal-phase";
 import { goalTeam } from "@/goals/goal-settings";
 import { goalWaitingOnDetail } from "@/goals/goal-waiting-on";
 import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
@@ -32,6 +37,7 @@ import { GoalFeedbackSheet } from "./goal-feedback-sheet";
 import { GoalActionsMenu } from "./goal-actions-menu";
 import { GoalPriorityBadge, GoalProjectLine } from "./goal-list";
 import { GoalProgressPanel } from "./goal-progress-panel";
+import { GoalSettingsSheet } from "./goal-settings-sheet";
 import { GoalStepper } from "./goal-stepper";
 import { GoalTaskList, OpenAgentButton } from "./goal-task-list";
 
@@ -108,7 +114,7 @@ function GoalDetailContent({
           <GoalStepper steps={steps} />
         </View>
       ) : null}
-      <GoalGuidanceBanner goal={goal} />
+      <GoalGuidanceBanner serverId={serverId} goal={goal} />
       {goal.config ? <GoalProgressPanel goal={goal} /> : null}
       <GoalChangeSetList serverId={serverId} goal={goal} />
       <GoalTaskList
@@ -140,7 +146,8 @@ function GoalSummary({
   const [isRejectOpen, setIsRejectOpen] = useState(false);
   const hasControls = useHostFeature(serverId, "goalControls");
   const canAcknowledge = useHostFeature(serverId, "goalAcknowledge");
-  const controls = goalControlsAvailable(goal, hasControls);
+  const configEdit = useHostFeature(serverId, "goalConfigEdit");
+  const controls = goalControlsAvailable(goal, hasControls, { configEdit });
   const showDismiss = canAcknowledge && canAcknowledgeGoal(goal);
   const showApprove = canApproveGoalPlan(goal.status);
   const showCancel = !isGoalTerminal(goal.status);
@@ -276,7 +283,9 @@ function GoalSummary({
             loading={mutations.pendingRetryTaskId === ""}
             testID="goal-retry"
           >
-            {t("goals.detail.retryGoal")}
+            {controls.canRetryPlanning
+              ? t("goals.detail.retryPlanning")
+              : t("goals.detail.retryGoal")}
           </Button>
         ) : null}
         {showDismiss ? (
@@ -360,8 +369,15 @@ function GoalSummary({
   );
 }
 
-function GoalGuidanceBanner({ goal }: { goal: Goal }): ReactElement {
+function GoalGuidanceBanner({ serverId, goal }: { serverId: string; goal: Goal }): ReactElement {
   const { t } = useTranslation();
+  const configEdit = useHostFeature(serverId, "goalConfigEdit");
+  const [isEditingSettings, setIsEditingSettings] = useState(false);
+  const openSettings = useCallback(() => setIsEditingSettings(true), []);
+  const closeSettings = useCallback(() => setIsEditingSettings(false), []);
+  // The fix for a run that ended on a permission request is a different policy, then a retry.
+  const showPermissionHint =
+    configEdit && goal.config !== null && !goal.archivedAt && goalFailedOnPermission(goal);
   const guidance = goalGuidance(goal);
   const description = [t(`goals.guidance.${guidance.phase}.description`, guidance.params)];
   if (guidance.phase === "failed" && goal.failureReason) {
@@ -378,7 +394,31 @@ function GoalGuidanceBanner({ goal }: { goal: Goal }): ReactElement {
         variant={guidance.tone}
         title={t(`goals.guidance.${guidance.phase}.title`)}
         description={description.join("\n")}
-      />
+      >
+        {showPermissionHint ? (
+          <View style={styles.bannerHint} testID="goal-permission-failure-hint">
+            <Text style={styles.meta}>{t("goals.detail.permissionFailureHint")}</Text>
+            <View style={styles.bannerActions}>
+              <Button
+                size="sm"
+                variant="outline"
+                onPress={openSettings}
+                testID="goal-permission-failure-edit-settings"
+              >
+                {t("goals.actions.editSettings")}
+              </Button>
+            </View>
+          </View>
+        ) : null}
+      </Alert>
+      {isEditingSettings && goal.config ? (
+        <GoalSettingsSheet
+          serverId={serverId}
+          goal={goal}
+          config={goal.config}
+          onClose={closeSettings}
+        />
+      ) : null}
     </View>
   );
 }
@@ -490,6 +530,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   banner: {
     marginBottom: theme.spacing[6],
+  },
+  bannerHint: {
+    gap: theme.spacing[2],
+  },
+  bannerActions: {
+    flexDirection: "row",
   },
   error: {
     color: theme.colors.palette.red[300],
