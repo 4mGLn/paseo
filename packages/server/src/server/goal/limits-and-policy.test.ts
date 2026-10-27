@@ -191,6 +191,97 @@ describe("limits and policies", () => {
     expect(g.status).toBe("failed");
   });
 
+  test("a run that stops on a question is not retried, and the goal fails naming the question", async () => {
+    let turns = 0;
+    let answered = false;
+    env.script([task("a")], () => {
+      turns += 1;
+      // The person switched the goal to wait and answered the question this time.
+      if (answered) return { outcome: "completed", text: "ok" };
+      return {
+        outcome: "needs_permission",
+        request: {
+          kind: "question",
+          tool: "request_user_input_async",
+          text: "No setup decision is recorded for this project. Configure or skip?",
+        },
+      };
+    });
+    const { store, manager } = await start(
+      withConfig({ maxAttempts: 3, limits: { retryBackoffSeconds: 0 } }),
+    );
+    await env.settle(manager);
+
+    const g = env.goalOf(store);
+    // One attempt: a retry under the same policy would ask the same question again.
+    expect(turns).toBe(1);
+    expect(g.runs.map((r) => r.status)).toEqual(["failed"]);
+    expect(g.runs[0]?.error).toBe(
+      "Agent asked a question and the goal's permission policy (fail) cannot answer it: " +
+        '"No setup decision is recorded for this project. Configure or skip?". ' +
+        "Change the policy to wait or auto, or resolve what triggers the question, then retry.",
+    );
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toBe(
+      `No task can make progress. Failed or blocked: a. Task a stopped on a request (needs_permission): ${g.runs[0]?.error}`,
+    );
+
+    // A restart does not retry it either.
+    manager.stop();
+    const second = await env.boot();
+    await env.settle(second.manager);
+    expect(env.goalOf(second.store).runs).toHaveLength(1);
+
+    await second.service.updateConfig("g1", { onPermissionRequest: "wait" });
+    answered = true;
+    await second.service.retry("g1", "a");
+    await env.settle(second.manager);
+    const retried = env.goalOf(second.store);
+    expect(retried.runs.map((r) => r.status)).toEqual(["failed", "succeeded"]);
+    expect(retried.tasks[0]?.status).toBe("succeeded");
+    // The retried run's agent started under the new policy.
+    expect(h().agents.at(-1)?.permission).toBe("wait");
+  });
+
+  test("a run that stops on a request after the policy changed is retried in the new mode", async () => {
+    let turns = 0;
+    env.script([task("a")], () => {
+      turns += 1;
+      return turns === 1 ? "hold" : { outcome: "completed", text: "ok" };
+    });
+    const { store, manager, service } = await start(
+      withConfig({ onPermissionRequest: "wait", limits: { retryBackoffSeconds: 0 } }),
+    );
+    await tick();
+    // The worker waits on a question; the person switches the goal to fail, which ends that turn.
+    await service.updateConfig("g1", { onPermissionRequest: "fail" });
+    h()
+      .turns.find((t) => t.provider === "codex")
+      ?.resolve({
+        outcome: "needs_permission",
+        request: { kind: "question", tool: "request_user_input", text: "Which one?" },
+      });
+    await env.settle(manager);
+    const g = env.goalOf(store);
+    expect(g.runs.map((r) => r.status)).toEqual(["failed", "succeeded"]);
+    expect(h().agents.at(-1)?.permission).toBe("fail");
+  });
+
+  test("a run that stops on a permission names the tool and what it is for", async () => {
+    env.script([task("a")], () => ({
+      outcome: "needs_permission",
+      request: { kind: "permission", tool: "Bash", text: "git push origin main" },
+    }));
+    const { store, manager } = await start(withConfig({ maxAttempts: 2 }));
+    await env.settle(manager);
+    const g = env.goalOf(store);
+    expect(g.runs).toHaveLength(1);
+    expect(g.runs[0]?.error).toBe(
+      'Agent is waiting for permission to use Bash: "git push origin main" and the goal\'s ' +
+        "permission policy (fail) cannot grant it. Change the policy to wait or auto, then retry.",
+    );
+  });
+
   test("the permission policy is handed to the agent layer for every turn", async () => {
     const seen: (string | undefined)[] = [];
     const runTurn = h().agentPort.runTurn;

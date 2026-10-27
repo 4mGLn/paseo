@@ -4,7 +4,11 @@ import { ensureAgentLoaded } from "../agent/agent-loading.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
 import type { TurnUsage } from "@getpaseo/protocol/goal/types";
 import type { AgentManager, AgentManagerEvent } from "../agent/agent-manager.js";
-import type { AgentUsage, AgentUsageTotals } from "../agent/agent-sdk-types.js";
+import type {
+  AgentPermissionRequest,
+  AgentUsage,
+  AgentUsageTotals,
+} from "../agent/agent-sdk-types.js";
 import { usageTotalsSince } from "../agent/usage-totals.js";
 import { startAgentRun } from "../agent/agent-prompt.js";
 import { markPaseoWorktreeFirstAgentBranchAutoNameAttempted } from "../../utils/worktree-metadata.js";
@@ -15,6 +19,7 @@ import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type {
   ManagerAgentPort,
   ManagerWorkspacePort,
+  PendingTurnRequest,
   TurnPermission,
   TurnResult,
 } from "./goal-manager.js";
@@ -153,16 +158,71 @@ export function watchTurn(
 
 interface AgentWait {
   status: string;
-  permission: unknown;
+  permission: Partial<AgentPermissionRequest> | null;
   lastMessage: string | null;
+}
+
+/** Polls after an answered question for the follow-up turn its answer starts. */
+const FOLLOW_UP_POLLS = 3;
+/** Longest question or permission text a failure quotes. */
+const PENDING_TEXT_LIMIT = 300;
+
+/** What the agent is waiting for, from its pending request, for the failure text. */
+export function pendingTurnRequest(request: Partial<AgentPermissionRequest>): PendingTurnRequest {
+  const text = pendingRequestText(request);
+  return {
+    kind: request.kind === "question" ? "question" : "permission",
+    tool: request.name ?? request.title ?? "a tool",
+    ...(text ? { text } : {}),
+  };
+}
+
+function pendingRequestText(request: Partial<AgentPermissionRequest>): string | undefined {
+  const questions = request.input?.questions;
+  const asked = Array.isArray(questions)
+    ? questions
+        .map((q: unknown) =>
+          q && typeof q === "object" && "question" in q && typeof q.question === "string"
+            ? q.question
+            : "",
+        )
+        .filter(Boolean)
+    : [];
+  const detail = request.detail;
+  const candidates = [
+    asked.join(" / "),
+    detail?.type === "plain_text" ? detail.text : undefined,
+    detail?.type === "shell" ? detail.command : undefined,
+    detail && "filePath" in detail ? detail.filePath : undefined,
+    request.description,
+    request.title,
+  ];
+  const text = candidates.find((c) => typeof c === "string" && c.trim())?.trim();
+  if (!text) return undefined;
+  const flat = text.replace(/\s+/g, " ");
+  return flat.length > PENDING_TEXT_LIMIT ? `${flat.slice(0, PENDING_TEXT_LIMIT - 1)}…` : flat;
+}
+
+/**
+ * Whether `wait` keeps waiting on this request. A request on a running agent waits for its
+ * answer. On an idle agent only a question does: Codex asks some questions without holding
+ * the turn, and the answer starts a new one. Any other request left on an idle agent is one
+ * a cancel left behind, which nobody will answer.
+ */
+function awaitsAnswer(wait: AgentWait): boolean {
+  if (!wait.permission) return false;
+  return (
+    wait.status === "running" || (wait.status === "idle" && wait.permission.kind === "question")
+  );
 }
 
 /**
  * Turns the next agent event into a turn result. Under the `wait` policy a
  * permission request stays pending in Paseo for a person to answer, and this
- * keeps polling while the agent is still running; the caller's turn timeout is
- * what ends a request nobody answers. A policy given as a function is read again
- * on every poll, so a goal switched to `fail` ends a turn that is waiting.
+ * keeps polling while it waits; the caller's turn timeout is what ends a request
+ * nobody answers. A question answered after the turn ended starts a follow-up turn,
+ * which this waits for too. A policy given as a function is read again on every
+ * poll, so a goal switched to `fail` ends a turn that is waiting.
  */
 export async function settleTurn(
   next: () => Promise<AgentWait>,
@@ -173,13 +233,24 @@ export async function settleTurn(
 ): Promise<TurnResult> {
   const current = typeof policy === "function" ? policy : () => policy;
   let wait = await next();
-  while (current() === "wait" && wait.permission && wait.status === "running") {
+  let followUpPolls = 0;
+  while (current() === "wait") {
     // The caller gave up on this turn: stop polling for a request nobody will answer.
     if (signal?.aborted) break;
+    if (awaitsAnswer(wait)) {
+      if (wait.status === "idle") followUpPolls = FOLLOW_UP_POLLS;
+    } else if (followUpPolls > 0 && !wait.permission && wait.status === "idle") {
+      // Answered: give the follow-up turn a moment to start.
+      followUpPolls -= 1;
+    } else {
+      break;
+    }
     await pause(PERMISSION_POLL_MS);
     wait = await next();
   }
-  if (wait.permission) return { outcome: "needs_permission" };
+  if (wait.permission) {
+    return { outcome: "needs_permission", request: pendingTurnRequest(wait.permission) };
+  }
   if (wait.status === "error") {
     return { outcome: "failed", error: wait.lastMessage ?? `Agent ${agentId} failed` };
   }
