@@ -467,6 +467,7 @@ export const fr: TranslationResources = {
       completed: "Terminé",
       failed: "Échoué",
       cancelled: "Annulé",
+      paused: "En pause",
     },
     taskStatus: {
       pending: "En attente",

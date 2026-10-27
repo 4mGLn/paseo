@@ -2,6 +2,7 @@ import { createInstance, type TFunction } from "i18next";
 import { beforeAll, describe, expect, it } from "vitest";
 import { en } from "@/i18n/resources/en";
 import {
+  goalBadge,
   priorityBadgeLabel,
   retainedSummary,
   rowUsageLabel,
@@ -94,5 +95,28 @@ describe("settingsSummaryText", () => {
         { key: "thinking", role: "lead", label: "High" },
       ]),
     ).toBe("Up to 2 agents at once, high thinking for the Lead");
+  });
+});
+
+describe("goalBadge", () => {
+  const badge = (overrides: Parameters<typeof makeGoal>[0]) => goalBadge(t, makeGoal(overrides));
+
+  it("labels each status and gives it a tone", () => {
+    expect(badge({ status: "executing" })).toEqual({ label: "Running", variant: "running" });
+    expect(badge({ status: "planning" })).toEqual({ label: "Planning", variant: "running" });
+    expect(badge({ status: "completed" })).toEqual({ label: "Completed", variant: "success" });
+    expect(badge({ status: "failed" })).toEqual({ label: "Failed", variant: "error" });
+    expect(badge({ status: "cancelled" })).toEqual({ label: "Canceled", variant: "muted" });
+  });
+
+  it("shows a paused live goal as Paused", () => {
+    expect(badge({ status: "executing", pausedAt: "2026-10-27T01:00:00.000Z" })).toEqual({
+      label: "Paused",
+      variant: "warning",
+    });
+  });
+
+  it("keeps an ended goal's status even if it was paused before it ended", () => {
+    expect(badge({ status: "failed", pausedAt: "2026-10-27T01:00:00.000Z" }).label).toBe("Failed");
   });
 });

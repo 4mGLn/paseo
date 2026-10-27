@@ -4,7 +4,7 @@ import type { Goal, GoalPriority, GoalStatus } from "@getpaseo/protocol/goal/typ
 import type { StatusBadgeVariant } from "@/components/ui/status-badge";
 import { formatDuration } from "@/utils/time";
 import { goalAttention } from "./goal-attention";
-import { GOAL_STATUS_BADGE } from "./goal-derivation";
+import { GOAL_STATUS_BADGE, isGoalTerminal } from "./goal-derivation";
 import { formatUsd, type GoalEstimate } from "./goal-progress";
 import type { DurationParts, GoalSettingsSummaryPart } from "./goal-settings";
 import { compactUsageBudgetLabel, formatTokenCount, goalUsageBudgets } from "./goal-usage";
@@ -44,11 +44,18 @@ export interface GoalBadge {
 }
 
 /** The status pill for a goal: what it waits on when it waits on you, else its status. */
-export function goalBadge(t: TFunction, goal: Pick<Goal, "status" | "changeSets">): GoalBadge {
+export function goalBadge(
+  t: TFunction,
+  goal: Pick<Goal, "status" | "changeSets" | "pausedAt">,
+): GoalBadge {
   if (goalAttention(goal) === "change_review") {
     return { label: t("goals.changeSetStatus.awaiting_human"), variant: "warning" };
   }
   const status: GoalStatus = goal.status;
+  // A paused goal is still "executing" in its status; the person sees it as stopped.
+  if (goal.pausedAt && !isGoalTerminal(status)) {
+    return { label: t("goals.status.paused"), variant: "warning" };
+  }
   return { label: t(`goals.status.${status}`), variant: GOAL_STATUS_BADGE[status] };
 }
 

@@ -466,6 +466,7 @@ export const ptBR: TranslationResources = {
       completed: "Concluída",
       failed: "Falhou",
       cancelled: "Cancelada",
+      paused: "Pausada",
     },
     taskStatus: {
       pending: "Pendente",

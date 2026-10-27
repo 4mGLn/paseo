@@ -351,7 +351,7 @@ function GoalSummary({
         {showCancel ? (
           <Button
             size="sm"
-            variant="outline"
+            variant="destructive"
             onPress={handleCancel}
             loading={isCancelling}
             testID="goal-cancel"
