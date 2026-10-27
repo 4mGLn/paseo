@@ -31,6 +31,14 @@ export const GOAL_CONFIG_BOUNDS = {
   limits: Record<string, GoalNumberBound>;
 };
 
+/**
+ * Daemon-wide goal settings, stored under `daemon.goals` in the daemon config.
+ * `maxConcurrentRuns` caps worker runs across all goals at once.
+ */
+export const GOAL_DAEMON_BOUNDS = {
+  maxConcurrentRuns: { min: 1, max: 32, default: 4 },
+} as const satisfies Record<string, GoalNumberBound>;
+
 /** Prefix of the integration branch, `<prefix>/<goalId>`. */
 export const DEFAULT_GOAL_BRANCH_PREFIX = "paseo-goal";
 

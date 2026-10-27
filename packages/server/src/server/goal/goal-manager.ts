@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import type pino from "pino";
 import {
+  GOAL_DAEMON_BOUNDS,
   goalPermissionPolicy,
   type GoalPermissionPolicy,
 } from "@getpaseo/protocol/goal/config-bounds";
@@ -150,8 +151,11 @@ export interface GoalManagerOptions {
   workspaces: ManagerWorkspacePort;
   git: GitPort;
   logger: pino.Logger;
-  /** Ceiling on simultaneous runs across all goals. */
-  maxConcurrentRuns?: number;
+  /**
+   * Ceiling on simultaneous worker runs across all goals. A function is read at every
+   * launch, so the daemon config can change it live; undefined means the default.
+   */
+  maxConcurrentRuns?: number | (() => number | undefined);
   /** Time allowed for a goal's test command. */
   testTimeoutMs?: number;
   /** Time source for timeouts and retry backoff. */
@@ -204,7 +208,7 @@ export class GoalManager {
   private readonly workspaces: ManagerWorkspacePort;
   private readonly git: GitPort;
   private readonly logger: pino.Logger;
-  private readonly maxConcurrentRuns: number;
+  private readonly readMaxConcurrentRuns: () => number | undefined;
   private readonly inFlight = new Map<string, LiveRun>();
   private readonly leads = new Map<string, LiveLead>();
   /** Each goal's permission policy as of its last event, so a change to it can be told apart. */
@@ -230,7 +234,8 @@ export class GoalManager {
     this.workspaces = options.workspaces;
     this.git = options.git;
     this.logger = options.logger.child({ module: "goal-manager" });
-    this.maxConcurrentRuns = options.maxConcurrentRuns ?? 4;
+    const cap = options.maxConcurrentRuns;
+    this.readMaxConcurrentRuns = typeof cap === "function" ? cap : () => cap;
     this.clock = options.clock ?? systemClock;
     this.cancelGraceMs = options.cancelGraceMs ?? 30_000;
     this.pipeline = new ChangeSetPipeline({
@@ -703,7 +708,7 @@ export class GoalManager {
   }
 
   private async planWithLead(goal: Goal, agentId: string, lead: LiveLead): Promise<void> {
-    let prompt = buildLeadPlanningPrompt(goal);
+    let prompt = buildLeadPlanningPrompt(goal, { maxConcurrentRuns: this.runCap() });
     let problem = "";
     for (let attempt = 0; attempt < MAX_PLAN_ATTEMPTS; attempt += 1) {
       const result = await this.turn(goal.id, agentId, prompt, {
@@ -763,6 +768,21 @@ export class GoalManager {
 
   // ---- execution --------------------------------------------------------
 
+  /** The daemon-wide cap on worker runs, as configured now. */
+  private runCap(): number {
+    return this.readMaxConcurrentRuns() ?? GOAL_DAEMON_BOUNDS.maxConcurrentRuns.default;
+  }
+
+  /**
+   * Call after the daemon-wide cap changed. A raised cap starts ready tasks at once; a
+   * lowered one lets running tasks finish and starts nothing new until under it.
+   */
+  capacityChanged(): void {
+    if (this.stopped) return;
+    this.logger.info({ maxConcurrentRuns: this.runCap() }, "Worker run cap changed");
+    this.pumpAllExecuting();
+  }
+
   /**
    * Pump every executing goal, higher priority first. Each pump claims its slots
    * before its first await, so when the daemon-wide cap is full a freed slot goes
@@ -810,7 +830,7 @@ export class GoalManager {
       // Capacity is re-read on every pass: a launch claims its slot before it
       // first awaits, so concurrent pumps for other goals cannot oversubscribe.
       if (
-        this.inFlight.size >= this.maxConcurrentRuns ||
+        this.inFlight.size >= this.runCap() ||
         this.liveRunsFor(goalId) >= goal.config.maxParallel
       ) {
         break;
