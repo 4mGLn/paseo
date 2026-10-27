@@ -282,6 +282,9 @@ export const AcceptanceCriterionSchema = z.object({
 });
 export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterionSchema>;
 
+/** `ChangeSet.rejectionReason` and the transition's `reason` when the merge step failed. */
+export const CHANGE_SET_INTEGRATION_FAILED = "integration_failed";
+
 export const ChangeSetStatusSchema = z.enum([
   "captured",
   "in_review",
@@ -319,6 +322,10 @@ export const ChangeSetSchema = z.object({
   testSummary: z.string().nullable(),
   integratedCommit: z.string().nullable(),
   error: z.string().nullable(),
+  // Why a rejected change set was rejected, when it is known. CHANGE_SET_INTEGRATION_FAILED
+  // marks a change set whose merge step failed after review and approval; with
+  // server_info.features.goalIntegrationRetry a retry merges it again. Absent otherwise.
+  rejectionReason: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   // Stage times, set by the reducer from changeset.transitioned events. Absent until the
@@ -589,6 +596,20 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     testSummary: z.string().optional(),
     integratedCommit: z.string().optional(),
     error: z.string().optional(),
+    // Why a change set moved to rejected; CHANGE_SET_INTEGRATION_FAILED when the merge step
+    // failed. A string, not an enum, so a later reason does not break an older reader.
+    // Absent from daemons before v0.13.10.
+    reason: z.string().optional(),
+  }),
+  // A person retried the merge of change sets whose integration failed, reopening the
+  // failed goal. Each goes from rejected back to approved and is merged again; its review
+  // and approval stand. `taskIds` are the failed and cancelled tasks retried with it, as in
+  // a reopening goal.retried. Accepted only on a failed goal.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("changeset.integration_retried"),
+    changeSetIds: z.array(IdSchema).min(1),
+    taskIds: z.array(IdSchema),
   }),
   z.object({ ...eventEnvelope, type: z.literal("goal.completed") }),
   z.object({ ...eventEnvelope, type: z.literal("goal.failed"), reason: z.string() }),

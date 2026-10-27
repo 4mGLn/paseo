@@ -2097,6 +2097,8 @@ export class VoiceAssistantWebSocketServer {
               goalManagement: true,
               goalConfigEdit: true,
               goalUsageBreakdown: true,
+              // COMPAT(goalIntegrationRetry): added in v0.13.10, remove gate after 2027-10-27.
+              goalIntegrationRetry: true,
               // COMPAT(goalConcurrencyConfig): added in v0.13.9, remove gate after 2027-10-27.
               goalConcurrencyConfig: true,
             }

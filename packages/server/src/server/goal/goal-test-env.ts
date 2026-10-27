@@ -84,6 +84,8 @@ export class FakeGit implements GitPort {
   resets: { cwd: string; commit: string }[] = [];
   commands: { cwd: string; command: string }[] = [];
   mergeQueue: MergeOutcome[] = [];
+  /** Errors the next merges throw, as a refused precheck or a failed git merge does. */
+  mergeErrors: Error[] = [];
   commandQueue: CommandOutcome[] = [];
   captureQueue: (CapturedChange | null)[] = [];
   /** Next synthetic commit number; a restarted test sets this past the commits already recorded. */
@@ -133,6 +135,8 @@ export class FakeGit implements GitPort {
   }
   async merge(input: { cwd: string; commit: string }): Promise<MergeOutcome> {
     this.merges.push(input);
+    const error = this.mergeErrors.shift();
+    if (error) throw error;
     const outcome = this.mergeQueue.shift() ?? {
       ok: true,
       headCommit: `merged-${this.merges.length}`,

@@ -495,6 +495,147 @@ describe("change set rules", () => {
   });
 });
 
+describe("integration retry", () => {
+  const config = {
+    cwd: "/repo",
+    leadProvider: "claude",
+    defaultProvider: "codex",
+    maxParallel: 2,
+    maxAttempts: 1,
+    autoApprovePlan: false,
+    notifyLead: false,
+  };
+  const csFor = (changeSetId: string, taskId: string) => ({
+    type: "changeset.captured",
+    changeSetId,
+    taskId,
+    runId: `${taskId}-r1`,
+    round: 0,
+    supersedes: null,
+    workspaceId: "ws",
+    cwd: "/w",
+    branch: "b",
+    baseCommit: "base",
+    headCommit: "head",
+    files: [],
+  });
+  const move = (changeSetId: string, ...to: string[]) =>
+    to.map((status) => ({ type: "changeset.transitioned", changeSetId, to: status }));
+  // Task a's change set failed to merge; task b was running and is cancelled by the failure.
+  const integrationFailed = [
+    { ...created, config },
+    { type: "plan.proposed", tasks: [task("a"), task("b")] },
+    { type: "plan.approved" },
+    {
+      type: "integration.prepared",
+      branch: "int",
+      workspaceId: "wi",
+      cwd: "/i",
+      baseCommit: "base",
+    },
+    { type: "task.started", taskId: "a" },
+    { type: "task.started", taskId: "b" },
+    { type: "task.succeeded", taskId: "a" },
+    csFor("cs1", "a"),
+    ...move("cs1", "in_review", "awaiting_human", "approved", "integrating"),
+    {
+      type: "changeset.transitioned",
+      changeSetId: "cs1",
+      to: "rejected",
+      error: "Integration failed: Integration worktree has uncommitted changes:\nM x",
+      reason: "integration_failed",
+    },
+    { type: "goal.failed", reason: "Integrating cs1 failed" },
+  ];
+  const retry = (changeSetIds: string[], taskIds: string[]) => ({
+    type: "changeset.integration_retried",
+    changeSetIds,
+    taskIds,
+  });
+
+  test("a change set whose merge failed is marked, and a retry approves it again and reopens the goal", () => {
+    const failed = run(integrationFailed);
+    expect(failed.changeSets[0]).toMatchObject({
+      status: "rejected",
+      rejectionReason: "integration_failed",
+    });
+    expect(failed.tasks.find((t) => t.id === "b")?.status).toBe("cancelled");
+
+    const goal = run([...integrationFailed, retry(["cs1"], ["b"])]);
+    expect(goal.status).toBe("executing");
+    expect(goal.failureReason).toBeNull();
+    expect(goal.reopens).toBe(1);
+    expect(goal.tasks.find((t) => t.id === "b")?.status).toBe("pending");
+    expect(goal.changeSets[0]?.status).toBe("approved");
+    expect(goal.changeSets[0]?.error).toBeNull();
+    expect(goal.changeSets[0]?.rejectionReason).toBeUndefined();
+    // It merges again from approved, as any approved change set does.
+    const merging = run([
+      ...integrationFailed,
+      retry(["cs1"], ["b"]),
+      ...move("cs1", "integrating"),
+    ]);
+    expect(merging.changeSets[0]?.status).toBe("integrating");
+  });
+
+  test("a reopen must cover every failed or cancelled task and every change set it leaves rejected", () => {
+    expect(() => run([...integrationFailed, retry(["cs1"], [])])).toThrow(
+      /every failed or cancelled task retried; missing b/,
+    );
+    // A goal.retried alone cannot reopen it while the change set stays rejected.
+    expect(() =>
+      run([...integrationFailed, { type: "goal.retried", taskIds: ["b"], reopen: true }]),
+    ).toThrow(/cs1 was rejected/);
+  });
+
+  test("a change set rejected by review is not merged again", () => {
+    const reviewRejected = [
+      { ...created, config },
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.succeeded", taskId: "a" },
+      csFor("cs1", "a"),
+      ...move("cs1", "in_review"),
+      {
+        type: "changeset.transitioned",
+        changeSetId: "cs1",
+        to: "rejected",
+        error: "Review failed: x",
+      },
+      { type: "goal.failed", reason: "rejected" },
+    ];
+    expect(run(reviewRejected).changeSets[0]?.rejectionReason).toBeUndefined();
+    expect(() => run([...reviewRejected, retry(["cs1"], [])])).toThrow(/rejected by review/);
+  });
+
+  test("only a failed goal takes it, so a second retry is refused", () => {
+    expect(() => run([...integrationFailed, retry(["cs1"], ["b"]), retry(["cs1"], ["b"])])).toThrow(
+      /requires goal status failed/,
+    );
+    expect(() => run([...integrationFailed, retry(["nope"], ["b"])])).toThrow(
+      /unknown change set nope/,
+    );
+  });
+
+  test("the run limit must leave room", () => {
+    const tight = integrationFailed.map((e) =>
+      e.type === "goal.created" ? { ...e, config: { ...config, limits: { maxRuns: 0 } } } : e,
+    );
+    expect(() => run([...tight, retry(["cs1"], ["b"])])).toThrow(/run limit/);
+  });
+
+  test("a log without the reason marks a rejection out of integrating by its error text", () => {
+    const legacy = integrationFailed.map((e) => {
+      if (e.type !== "changeset.transitioned" || !("reason" in e)) return e;
+      const { reason: _reason, ...rest } = e;
+      return rest;
+    });
+    expect(run(legacy).changeSets[0]?.rejectionReason).toBe("integration_failed");
+    expect(run([...legacy, retry(["cs1"], ["b"])]).changeSets[0]?.status).toBe("approved");
+  });
+});
+
 describe("stage times", () => {
   const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
   function timed(events: Record<string, unknown>[]): Goal[] {

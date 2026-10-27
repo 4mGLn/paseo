@@ -225,7 +225,7 @@ export function createGoalCommand(): Command {
     goal
       .command("retry")
       .description(
-        "Retry failed or cancelled tasks with fresh attempts; reopens a failed goal (retries all of them, or starts a fresh Lead when it failed while planning)",
+        "Retry failed or cancelled tasks with fresh attempts; reopens a failed goal (retries all of them, merges again change sets whose merge failed, or starts a fresh Lead when it failed while planning). A change set rejected by review is not retried",
       )
       .argument("<id>", "Goal ID")
       .option("--task <taskId>", "Retry only this task (a live goal only)"),

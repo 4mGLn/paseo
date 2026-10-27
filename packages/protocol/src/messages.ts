@@ -4231,6 +4231,10 @@ export const ServerInfoStatusPayloadSchema = z
         // Goals carry usageByRole and usageBreakdown, usage totals count turns that reported a
         // cost or tokens, and tokens are recorded with one meaning for every provider.
         goalUsageBreakdown: z.boolean().optional(),
+        // COMPAT(goalIntegrationRetry): added in v0.13.10, remove gate after 2027-10-27.
+        // goal.retry also merges again a failed goal's change sets whose integration failed
+        // (ChangeSet.rejectionReason "integration_failed"), reopening the goal.
+        goalIntegrationRetry: z.boolean().optional(),
         // COMPAT(goalConcurrencyConfig): added in v0.13.9, remove gate after 2027-10-27.
         // `goals.maxConcurrentRuns` in the daemon config get/patch path, applied live. An
         // older daemon drops it from a patch silently, so the client hides the setting.
@@ -8328,6 +8332,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.goalManagementEvents]: z.boolean().optional(),
       [CLIENT_CAPS.goalConfigEdit]: z.boolean().optional(),
       [CLIENT_CAPS.goalUsageBreakdown]: z.boolean().optional(),
+      [CLIENT_CAPS.goalIntegrationRetry]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()

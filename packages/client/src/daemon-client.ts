@@ -7438,6 +7438,11 @@ export class DaemonClient {
     return this.lastServerInfoMessage?.features?.goalUsageBreakdown === true;
   }
 
+  /** goal.retry also merges again a failed goal's change sets whose integration failed. */
+  supportsGoalIntegrationRetry(): boolean {
+    return this.lastServerInfoMessage?.features?.goalIntegrationRetry === true;
+  }
+
   private requireGoalConfigEdit(): void {
     if (!this.supportsGoalConfigEdit()) {
       throw new Error("Update the host to change goal settings or use the auto permission policy.");
@@ -7493,7 +7498,8 @@ export class DaemonClient {
 
   /**
    * Retry one failed or cancelled task, or all of them; a failed goal is reopened. With
-   * goalConfigEdit, a goal that failed while planning is reopened with a fresh Lead.
+   * goalConfigEdit, a goal that failed while planning is reopened with a fresh Lead. With
+   * goalIntegrationRetry, a failed goal's change sets whose merge failed are merged again.
    */
   async goalRetry(options: {
     goalId: string;
