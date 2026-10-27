@@ -62,8 +62,16 @@ export function GoalFormSheet({
   const budgetSupported = useHostFeature(serverId, "goalBudgets");
   // An older daemon would drop thinking settings, so the pickers appear only with `goalThinking`.
   const thinkingSupported = useHostFeature(serverId, "goalThinking");
+  // An older daemon's schema rejects `auto`, so it is offered only with `goalConfigEdit`.
+  const autoPermissionSupported = useHostFeature(serverId, "goalConfigEdit");
   const [snapshot] = useState(() =>
-    buildSnapshot({ serverId, prefill, budgetSupported, thinkingSupported }),
+    buildSnapshot({
+      serverId,
+      prefill,
+      budgetSupported,
+      thinkingSupported,
+      autoPermissionSupported,
+    }),
   );
   const model = useGoalFormModel(snapshot);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
@@ -241,6 +249,7 @@ function buildSnapshot(input: {
   prefill: GoalFormPrefill | undefined;
   budgetSupported: boolean;
   thinkingSupported: boolean;
+  autoPermissionSupported: boolean;
 }): GoalFormSnapshot {
   // Read once: the form starts from your last goal and never rebuilds when memory changes.
   const memoryByServer = useGoalFormMemoryStore.getState().byServer;
@@ -251,6 +260,7 @@ function buildSnapshot(input: {
     personalSettings: memoryByServer[input.serverId]?.settings ?? null,
     budgetSupported: input.budgetSupported,
     thinkingSupported: input.thinkingSupported,
+    autoPermissionSupported: input.autoPermissionSupported,
   };
 }
 
