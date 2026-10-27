@@ -514,27 +514,6 @@ export function buildVerificationBar(goal: ProgressGoal, now: number): Verificat
   return { durationMs, isRunning, ...placeOnSpan(from, durationMs, goalStart, span) };
 }
 
-export interface GoalUsageStatus {
-  tokens: BudgetStatus;
-  cost: BudgetStatus;
-  /** Agent turns that came with usage, out of all turns. Totals cover only the reported ones. */
-  reportedTurns: number;
-  totalTurns: number;
-}
-
-/** Tokens and cost so far against the goal's caps. Unreported usage is not counted as zero. */
-export function goalUsageStatus(goal: Pick<Goal, "usage" | "config">): GoalUsageStatus {
-  const usage = goal.usage;
-  const reported = usage !== undefined && usage.reportedTurns > 0;
-  const limits = goal.config?.limits;
-  return {
-    tokens: budgetStatus(reported ? usage.totalTokens : null, limits?.maxTotalTokens ?? null),
-    cost: budgetStatus(reported ? usage.costUsd : null, limits?.maxCostUsd ?? null),
-    reportedTurns: usage?.reportedTurns ?? 0,
-    totalTurns: usage?.totalTurns ?? 0,
-  };
-}
-
 /** Tokens a task's runs reported, or null when none did. */
 export function taskTokens(goal: Pick<Goal, "runs">, taskId: string): number | null {
   const reported = runsOf(goal, taskId).filter(
