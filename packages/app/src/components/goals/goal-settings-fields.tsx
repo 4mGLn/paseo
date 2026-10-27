@@ -87,6 +87,7 @@ export function GoalNumberSettingField({
         onChange={handleChange}
         scale={field.scale}
         format={field.format}
+        inputMode={field.inputMode}
         describeValue={describeValue}
         error={error}
         size={size}
@@ -136,6 +137,7 @@ export function GoalBudgetField({
         onChange={handleChange}
         scale={field.scale}
         format={field.format}
+        inputMode={field.inputMode}
         describeValue={describeValue}
         placeholder={noLimit}
         error={error}

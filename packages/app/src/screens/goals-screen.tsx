@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState, type ReactElement } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { BackHandler, ScrollView, Text, View } from "react-native";
 import { useIsFocused } from "expo-router/react-navigation";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react-native";
@@ -22,6 +22,7 @@ import { HostFilter } from "@/components/hosts/host-filter";
 import { Button } from "@/components/ui/button";
 import { SearchField } from "@/components/ui/search-field";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { isWeb } from "@/constants/platform";
 import type { GoalListFilter } from "@/goals/goal-attention";
 import type { GoalFormPrefill } from "@/goals/goal-form-model";
 import {
@@ -149,6 +150,20 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
 
   // The detail stays reachable only while the host can still serve goals.
   const detailGoalId = canCreate ? selectedGoalId : null;
+  const showsDetail = detailGoalId !== null;
+
+  // The detail is screen state, not a route: Android Back returns to the list instead of
+  // leaving Goals. A sheet opened over the detail subscribes later, so it closes first.
+  useEffect(() => {
+    if (isWeb || !showsDetail) {
+      return;
+    }
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      closeDetail();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [closeDetail, showsDetail]);
   let body: ReactElement;
   if (detailGoalId) {
     body = (
@@ -214,6 +229,8 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        // A row or filter takes the first tap while the search keyboard is up.
+        keyboardShouldPersistTaps="handled"
         testID="goals-list"
       >
         <View style={styles.column}>{body}</View>
