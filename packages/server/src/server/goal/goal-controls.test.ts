@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { Goal, GoalConfig, GoalEvent, TaskSpec } from "@getpaseo/protocol/goal/types";
 import { GoalEventLog } from "./event-log.js";
-import { MAX_PLAN_REJECTIONS, applyGoalEvent } from "./goal-reducer.js";
+import {
+  MAX_PLAN_REJECTIONS,
+  MAX_USAGE_BREAKDOWN_ENTRIES,
+  applyGoalEvent,
+} from "./goal-reducer.js";
 import { CONFIG, createGoalTestEnv, task, type GoalTestEnv } from "./goal-test-env.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -203,11 +207,103 @@ describe("goal control events in the reducer", () => {
       costUsd: 0.5,
       reportedTurns: 2,
       totalTurns: 3,
+      costReportedTurns: 1,
+      tokenReportedTurns: 2,
     });
     expect(goal.runs[0]?.usage).toMatchObject({ totalTokens: 120, reportedTurns: 1 });
     expect(() =>
       applyGoalEvent(goal, ev(goal, { type: "usage.recorded", role: "worker", agentId: "w" })),
     ).toThrow(/names its run/);
+  });
+
+  test("usage is broken down per role and per agent, naming each agent's provider", () => {
+    const goal = run([
+      managed({
+        leadProvider: "claude/claude-opus-5-5",
+        reviewProvider: "claude/claude-sonnet-5-5",
+        leadThinking: "medium",
+      }),
+      { type: "usage.recorded", role: "lead", agentId: "lead", usage: { costUsd: 0.5 } },
+      { type: "usage.recorded", role: "lead", agentId: "lead", usage: { inputTokens: 10 } },
+      proposed,
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex/gpt-6-luna" },
+      {
+        type: "run.attached",
+        runId: "a-a1",
+        agentId: "w1",
+        workspaceId: "ws",
+        thinking: "max",
+      },
+      {
+        type: "usage.recorded",
+        role: "worker",
+        agentId: "w1",
+        runId: "a-a1",
+        usage: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20 },
+      },
+      { type: "usage.recorded", role: "verifier", agentId: "v1", thinking: "high" },
+    ]);
+    expect(goal.usageByRole?.lead).toMatchObject({
+      inputTokens: 10,
+      costUsd: 0.5,
+      totalTurns: 2,
+      costReportedTurns: 1,
+      tokenReportedTurns: 1,
+    });
+    expect(goal.usageByRole?.worker).toMatchObject({ totalTokens: 120, costReportedTurns: 0 });
+    expect(goal.usageByRole?.verifier).toMatchObject({ totalTurns: 1, reportedTurns: 0 });
+    expect(goal.usageByRole?.reviewer).toBeUndefined();
+    // One entry per agent, most recently active last.
+    expect(goal.usageBreakdown).toEqual([
+      expect.objectContaining({
+        agentId: "lead",
+        role: "lead",
+        provider: "claude",
+        model: "claude-opus-5-5",
+        thinking: "medium",
+        usage: expect.objectContaining({ totalTurns: 2, inputTokens: 10, costUsd: 0.5 }),
+      }),
+      expect.objectContaining({
+        agentId: "w1",
+        role: "worker",
+        taskId: "a",
+        runId: "a-a1",
+        provider: "codex",
+        model: "gpt-6-luna",
+        thinking: "max",
+        usage: expect.objectContaining({ cachedInputTokens: 40, totalTurns: 1 }),
+      }),
+      expect.objectContaining({
+        agentId: "v1",
+        role: "verifier",
+        provider: "claude",
+        model: "claude-sonnet-5-5",
+        thinking: "high",
+      }),
+    ]);
+    expect(goal.usageBreakdownTruncated).toBeUndefined();
+  });
+
+  test("the breakdown keeps the most recently active agents and counts the ones dropped", () => {
+    const turns = Array.from({ length: MAX_USAGE_BREAKDOWN_ENTRIES + 2 }, (_, i) => ({
+      type: "usage.recorded",
+      role: "reviewer",
+      agentId: `r${i}`,
+      usage: { outputTokens: 1 },
+    }));
+    const goal = run([
+      managed(),
+      ...turns,
+      { type: "usage.recorded", role: "reviewer", agentId: "r0", usage: { outputTokens: 1 } },
+    ]);
+    expect(goal.usageBreakdown).toHaveLength(MAX_USAGE_BREAKDOWN_ENTRIES);
+    // r0 and r1 were dropped; r0 came back with only its later turn.
+    expect(goal.usageBreakdownTruncated).toBe(3);
+    expect(goal.usageBreakdown?.at(-1)).toMatchObject({ agentId: "r0", usage: { totalTurns: 1 } });
+    expect(goal.usageBreakdown?.some((e) => e.agentId === "r1")).toBe(false);
+    expect(goal.usage).toMatchObject({ outputTokens: MAX_USAGE_BREAKDOWN_ENTRIES + 3 });
   });
 
   test("a goal over its token budget is not reopened", () => {

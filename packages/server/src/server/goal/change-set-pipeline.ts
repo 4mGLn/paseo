@@ -16,7 +16,12 @@ import {
 import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { GitPort } from "./git-ops.js";
 import { thinkingInput } from "./goal-thinking.js";
-import type { ManagerAgentPort, ManagerWorkspacePort, TurnResult } from "./goal-manager.js";
+import type {
+  ManagerAgentPort,
+  ManagerWorkspacePort,
+  TurnResult,
+  TurnUsageLabel,
+} from "./goal-manager.js";
 import {
   ReplyParseError,
   buildReviewCorrectionPrompt,
@@ -47,7 +52,7 @@ export interface PipelineHost {
     goalId: string,
     agentId: string,
     prompt: string,
-    role: "reviewer" | "verifier",
+    usage: TurnUsageLabel & { role: "reviewer" | "verifier" },
   ): Promise<TurnResult>;
 }
 
@@ -407,7 +412,7 @@ export class ChangeSetPipeline {
   private async askForVerdict(goal: Goal, task: Task, cs: ChangeSet) {
     const config = goal.config;
     if (!config) return null;
-    const { agentId } = await this.agents.createAgent({
+    const { agentId, thinking } = await this.agents.createAgent({
       provider: config.reviewProvider ?? config.leadProvider,
       ...thinkingInput(goalRoleThinking(config, "reviewer")),
       permission: goalPermissionPolicy(config),
@@ -425,7 +430,11 @@ export class ChangeSetPipeline {
       let prompt = buildReviewPrompt(goal, task, cs);
       let problem = "";
       for (let attempt = 0; attempt < REPLY_ATTEMPTS; attempt += 1) {
-        const result = await this.host.runTurn(goal.id, agentId, prompt, "reviewer");
+        const result = await this.host.runTurn(goal.id, agentId, prompt, {
+          role: "reviewer",
+          changeSetId: cs.id,
+          ...(thinking ? { thinking } : {}),
+        });
         if (this.host.isStopped() || this.store.get(goal.id)?.status !== "executing") return null;
         if (result.outcome !== "completed") {
           throw new Error(`Reviewer did not finish (${result.outcome})`);
@@ -756,7 +765,7 @@ export class ChangeSetPipeline {
         ? { workspaceId: goal.integration.workspaceId, cwd: goal.integration.cwd }
         : null);
     if (!workspace) return null;
-    const { agentId } = await this.agents.createAgent({
+    const { agentId, thinking } = await this.agents.createAgent({
       provider: verifierProvider(config),
       ...thinkingInput(goalRoleThinking(config, "verifier")),
       permission: goalPermissionPolicy(config),
@@ -770,7 +779,10 @@ export class ChangeSetPipeline {
       let prompt = buildVerifyPrompt(goal, goal.integration?.branch ?? null);
       let problem = "";
       for (let attempt = 0; attempt < REPLY_ATTEMPTS; attempt += 1) {
-        const result = await this.host.runTurn(goal.id, agentId, prompt, "verifier");
+        const result = await this.host.runTurn(goal.id, agentId, prompt, {
+          role: "verifier",
+          ...(thinking ? { thinking } : {}),
+        });
         if (this.host.isStopped() || this.store.get(goal.id)?.status !== "executing") return null;
         if (result.outcome !== "completed") {
           throw new Error(`Verifier did not finish (${result.outcome})`);

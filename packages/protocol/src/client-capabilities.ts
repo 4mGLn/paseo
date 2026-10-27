@@ -71,6 +71,10 @@ export const CLIENT_CAPS = {
   // goal.reopened from goal.inspect events, and sends an "auto" permission policy as "wait",
   // for older clients whose strict schemas reject them. Remove after 2027-04-27.
   goalConfigEdit: "goal_config_edit",
+  // COMPAT(goalUsageBreakdown): added in v0.13.3. The daemon leaves usageByRole,
+  // usageBreakdown and usageBreakdownTruncated out of goals sent to older clients, which
+  // cannot show them. Remove after 2027-04-27.
+  goalUsageBreakdown: "goal_usage_breakdown",
   browserHost: "browser_host",
   // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove after 2027-05-22 once client floor >= v0.17.2.
   // An agent sender's steer means wait-for-turn-end from clients without it, because older
