@@ -37,13 +37,26 @@ describe("rowUsageLabel", () => {
   });
 
   it("shows usage, against the cap when one is set", () => {
-    expect(rowUsageLabel(t, makeGoal({ usage: USAGE }))).toBe("Tokens 1k · Cost $0.50");
-    expect(rowUsageLabel(t, makeGoal({ usage: { ...USAGE, costUsd: 0 } }))).toBe("Tokens 1k");
+    const complete = { ...USAGE, reportedTurns: 3 };
+    expect(rowUsageLabel(t, makeGoal({ usage: complete }))).toBe("Tokens 1k · Cost $0.50");
+    // An older host sums no cost without saying whether any turn reported one.
+    expect(rowUsageLabel(t, makeGoal({ usage: { ...complete, costUsd: 0 } }))).toBe("Tokens 1k");
     const capped = makeGoal({
-      usage: USAGE,
+      usage: complete,
       config: { ...makeGoal().config!, limits: { maxTotalTokens: 4000 } },
     });
     expect(rowUsageLabel(t, capped)).toBe("Tokens 1k of 4k · Cost $0.50");
+  });
+
+  it("marks totals that only some turns reported as a lower bound, as the CLI does", () => {
+    expect(rowUsageLabel(t, makeGoal({ usage: USAGE }))).toBe("Tokens ≥1k · Cost $0.50");
+    const counted = { ...USAGE, reportedTurns: 3, tokenReportedTurns: 3 };
+    expect(rowUsageLabel(t, makeGoal({ usage: { ...counted, costReportedTurns: 1 } }))).toBe(
+      "Tokens 1k · Cost ≥$0.50",
+    );
+    expect(
+      rowUsageLabel(t, makeGoal({ usage: { ...counted, costUsd: 0, costReportedTurns: 0 } })),
+    ).toBe("Tokens 1k · Cost not reported");
   });
 });
 
