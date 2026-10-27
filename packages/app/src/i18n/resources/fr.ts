@@ -842,6 +842,11 @@ export const fr: TranslationResources = {
       permissionWait: "M'attendre",
       decrease: "Diminuer : {{label}}",
       increase: "Augmenter : {{label}}",
+      numberField: {
+        dragHint: "Faites glisser à gauche ou à droite pour modifier",
+        invalid: "Ce n’est pas un nombre",
+        range: "Entre {{min}} et {{max}}",
+      },
       summaryLabel: "Résumé",
       listSeparator: ", ",
       summary: {

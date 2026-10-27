@@ -813,6 +813,11 @@ export const en = {
       permissionWait: "Wait for me",
       decrease: "Decrease {{label}}",
       increase: "Increase {{label}}",
+      numberField: {
+        dragHint: "Drag left or right to change",
+        invalid: "Not a number",
+        range: "From {{min}} to {{max}}",
+      },
       summaryLabel: "Summary",
       listSeparator: ", ",
       summary: {

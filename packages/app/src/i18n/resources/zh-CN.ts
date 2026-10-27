@@ -806,6 +806,11 @@ export const zhCN: TranslationResources = {
       permissionWait: "等我回答",
       decrease: "减少{{label}}",
       increase: "增加{{label}}",
+      numberField: {
+        dragHint: "左右拖动以调整",
+        invalid: "不是数字",
+        range: "请输入 {{min}} 到 {{max}} 之间的值",
+      },
       summaryLabel: "摘要",
       listSeparator: "、",
       summary: {

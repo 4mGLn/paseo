@@ -835,6 +835,11 @@ export const ar: TranslationResources = {
       permissionWait: "انتظرني",
       decrease: "تقليل {{label}}",
       increase: "زيادة {{label}}",
+      numberField: {
+        dragHint: "اسحب لليسار أو لليمين للتغيير",
+        invalid: "ليس رقمًا",
+        range: "من {{min}} إلى {{max}}",
+      },
       summaryLabel: "الملخص",
       listSeparator: "، ",
       summary: {

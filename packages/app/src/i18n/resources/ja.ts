@@ -831,6 +831,11 @@ export const ja: TranslationResources = {
       permissionWait: "回答を待つ",
       decrease: "{{label}}を減らす",
       increase: "{{label}}を増やす",
+      numberField: {
+        dragHint: "左右にドラッグして変更",
+        invalid: "数値ではありません",
+        range: "{{min}}〜{{max}}の範囲で入力してください",
+      },
       summaryLabel: "概要",
       listSeparator: "、",
       summary: {

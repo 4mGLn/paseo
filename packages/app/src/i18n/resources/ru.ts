@@ -847,6 +847,11 @@ export const ru: TranslationResources = {
       permissionWait: "Ждать меня",
       decrease: "Уменьшить: {{label}}",
       increase: "Увеличить: {{label}}",
+      numberField: {
+        dragHint: "Потяните влево или вправо, чтобы изменить",
+        invalid: "Это не число",
+        range: "От {{min}} до {{max}}",
+      },
       summaryLabel: "Сводка",
       listSeparator: ", ",
       summary: {

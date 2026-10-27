@@ -816,6 +816,11 @@ export const ko: TranslationResources = {
       permissionWait: "내 답변 대기",
       decrease: "{{label}} 줄이기",
       increase: "{{label}} 늘리기",
+      numberField: {
+        dragHint: "좌우로 끌어서 바꾸기",
+        invalid: "숫자가 아닙니다",
+        range: "{{min}}~{{max}} 사이로 입력하세요",
+      },
       summaryLabel: "요약",
       listSeparator: ", ",
       summary: {

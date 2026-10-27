@@ -13,7 +13,7 @@ import {
 } from "./goal-form-model";
 import { goalFormMemoryFromConfig } from "./goal-form-memory";
 import { buildGoalProjectOptions } from "./goal-projects";
-import { DAEMON_GOAL_SETTINGS, GOAL_PRESETS } from "./goal-settings";
+import { DAEMON_GOAL_SETTINGS, GOAL_PRESETS, NO_GOAL_BUDGET } from "./goal-settings";
 
 function values(overrides: Partial<GoalFormValues>): GoalFormValues {
   return { ...EMPTY_GOAL_FORM_VALUES, ...overrides };
@@ -250,6 +250,14 @@ describe("openGoalForm", () => {
     model.stepBudget("maxCostUsd", 1);
     model.stepBudget("maxCostUsd", 1);
     expect(model.getState().values.budget).toEqual({ maxTotalTokens: null, maxCostUsd: 2 });
+  });
+
+  it("sets a typed budget and clears it back to no cap", () => {
+    const model = openGoalForm({ prefill: { managed: true, cwd: "/repo" }, budgetSupported: true });
+    model.setBudget("maxCostUsd", 12.5);
+    expect(model.getState().values.budget).toEqual({ maxTotalTokens: null, maxCostUsd: 12.5 });
+    model.setBudget("maxCostUsd", null);
+    expect(model.getState().values.budget).toEqual(NO_GOAL_BUDGET);
   });
 
   it("shows an issue once its field is touched, and every issue after a submit attempt", () => {

@@ -499,6 +499,8 @@ export interface GoalFormModel {
   setSetting: <Key extends keyof GoalSettings>(key: Key, value: GoalSettings[Key]) => void;
   stepSetting: (key: GoalNumberSetting, direction: 1 | -1) => void;
   stepBudget: (key: GoalBudgetKey, direction: 1 | -1) => void;
+  /** Sets a cap as typed or scrubbed; null is no cap. The caller keeps it in range. */
+  setBudget: (key: GoalBudgetKey, value: number | null) => void;
   /** Replaces every setting with a preset's, or with your remembered ones. */
   chooseSettings: (choice: GoalPresetId | "mine") => void;
   toggleAllowedProvider: (provider: string) => void;
@@ -823,6 +825,12 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         [key]: stepGoalBudget(key, state.values.budget[key], direction),
       };
       publish({ ...state, values: { ...state.values, budget } });
+    },
+    setBudget(key, value) {
+      publish({
+        ...state,
+        values: { ...state.values, budget: { ...state.values.budget, [key]: value } },
+      });
     },
     chooseSettings(choice) {
       const settings = choice === "mine" ? state.personalSettings : GOAL_PRESETS[choice];

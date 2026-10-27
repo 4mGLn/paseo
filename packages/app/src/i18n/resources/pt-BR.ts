@@ -838,6 +838,11 @@ export const ptBR: TranslationResources = {
       permissionWait: "Esperar por mim",
       decrease: "Diminuir {{label}}",
       increase: "Aumentar {{label}}",
+      numberField: {
+        dragHint: "Arraste para a esquerda ou para a direita para alterar",
+        invalid: "Não é um número",
+        range: "Entre {{min}} e {{max}}",
+      },
       summaryLabel: "Resumo",
       listSeparator: ", ",
       summary: {

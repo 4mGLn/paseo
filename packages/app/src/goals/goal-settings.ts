@@ -81,14 +81,25 @@ const BUDGET_STEPS: Record<GoalBudgetKey, readonly number[]> = {
   maxCostUsd: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
 };
 
+/** From the protocol's bounds, like `GOAL_SETTING_RANGES`. */
+export const GOAL_BUDGET_RANGES: Record<GoalBudgetKey, GoalSettingRange> = {
+  maxTotalTokens: rangeOf(BOUNDS.limits.maxTotalTokens),
+  maxCostUsd: rangeOf(BOUNDS.limits.maxCostUsd),
+};
+
+/** The round caps a budget stepper walks. */
+export function goalBudgetSteps(key: GoalBudgetKey): number[] {
+  const range = GOAL_BUDGET_RANGES[key];
+  return BUDGET_STEPS[key].filter((step) => step >= range.min && step <= range.max);
+}
+
 /** The next cap up or down. Below the smallest cap is no cap. */
 export function stepGoalBudget(
   key: GoalBudgetKey,
   value: number | null,
   direction: 1 | -1,
 ): number | null {
-  const bound = BOUNDS.limits[key];
-  const steps = BUDGET_STEPS[key].filter((step) => step >= bound.min && step <= bound.max);
+  const steps = goalBudgetSteps(key);
   if (value === null) {
     return direction === 1 ? (steps[0] ?? null) : null;
   }
