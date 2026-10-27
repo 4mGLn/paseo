@@ -14,8 +14,18 @@ import {
 import type { GoalProjectOption } from "./goal-projects";
 import { makeGoal } from "./test-utils/goal-fixture";
 
-const ALL_FEATURES: GoalActionFeatures = { controls: true, acknowledge: true, management: true };
-const NO_FEATURES: GoalActionFeatures = { controls: false, acknowledge: false, management: false };
+const ALL_FEATURES: GoalActionFeatures = {
+  controls: true,
+  acknowledge: true,
+  management: true,
+  configEdit: true,
+};
+const NO_FEATURES: GoalActionFeatures = {
+  controls: false,
+  acknowledge: false,
+  management: false,
+  configEdit: false,
+};
 
 const projects: GoalProjectOption[] = [
   {
@@ -209,6 +219,8 @@ describe("goalAvailableActions", () => {
       resume: false,
       cancel: true,
       retry: false,
+      retryPlanning: false,
+      editSettings: false,
       rename: false,
       priority: false,
       archive: false,
@@ -219,6 +231,39 @@ describe("goalAvailableActions", () => {
     expect(hasAnyGoalAction(goalAvailableActions(goal({ status: "completed" }), NO_FEATURES))).toBe(
       false,
     );
+  });
+
+  it("offers settings on any managed goal that is not archived, ended ones included", () => {
+    expect(goalAvailableActions(goal({ status: "executing" }), ALL_FEATURES).editSettings).toBe(
+      true,
+    );
+    expect(goalAvailableActions(goal({ status: "completed" }), ALL_FEATURES).editSettings).toBe(
+      true,
+    );
+    expect(
+      goalAvailableActions(
+        goal({ status: "failed", archivedAt: "2026-10-22T00:00:00Z" }),
+        ALL_FEATURES,
+      ).editSettings,
+    ).toBe(false);
+    expect(
+      goalAvailableActions(goal({ status: "executing", config: null }), ALL_FEATURES).editSettings,
+    ).toBe(false);
+    expect(
+      goalAvailableActions(goal({ status: "executing" }), { ...ALL_FEATURES, configEdit: false })
+        .editSettings,
+    ).toBe(false);
+  });
+
+  it("labels the retry of a goal that failed while planning, on hosts that reopen it", () => {
+    const failedPlanning = goal({ status: "failed", tasks: [] });
+    expect(goalAvailableActions(failedPlanning, ALL_FEATURES)).toMatchObject({
+      retry: true,
+      retryPlanning: true,
+    });
+    expect(
+      goalAvailableActions(failedPlanning, { ...ALL_FEATURES, configEdit: false }),
+    ).toMatchObject({ retry: false, retryPlanning: false });
   });
 
   it("leaves pause and retry off a manual goal", () => {
