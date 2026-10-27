@@ -1,5 +1,6 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { buildConfigChanges } from "./config.js";
 import { parseGoalListFilter } from "./ls.js";
 import { confirmGoalDelete, describeRetained } from "./manage.js";
 
@@ -82,5 +83,48 @@ describe("goal delete confirmation", () => {
     ).toBe(
       "branch paseo-goal/g1 (Branches are never deleted); worktree /wt/a (It has uncommitted changes)",
     );
+  });
+});
+
+describe("goal config flags", () => {
+  test("only the flags given become changes; none clears an optional setting", () => {
+    expect(
+      buildConfigChanges({
+        onPermission: "auto",
+        notifyLead: false,
+        maxParallel: "3",
+        maxRework: "none",
+        testCommand: "none",
+        maxRuns: "120",
+        maxCost: "2.5",
+        maxTokens: "none",
+        deadline: "2026-12-01T00:00:00Z",
+      } as never),
+    ).toEqual({
+      onPermissionRequest: "auto",
+      notifyLead: false,
+      maxParallel: 3,
+      maxReworkRounds: null,
+      testCommand: null,
+      limits: {
+        maxRuns: 120,
+        maxCostUsd: 2.5,
+        maxTotalTokens: null,
+        deadlineAt: "2026-12-01T00:00:00Z",
+      },
+    });
+  });
+
+  test("a bad value or no change is refused before anything is sent", () => {
+    expect(() => buildConfigChanges({ onPermission: "ask" } as never)).toThrow(
+      /--on-permission must be one of fail, wait, auto/,
+    );
+    expect(() => buildConfigChanges({ maxRuns: "many" } as never)).toThrow(
+      /--max-runs must be a number or none/,
+    );
+    expect(() => buildConfigChanges({ maxParallel: "none" } as never)).toThrow(
+      /--max-parallel cannot be cleared/,
+    );
+    expect(() => buildConfigChanges({} as never)).toThrow(/at least one setting/);
   });
 });

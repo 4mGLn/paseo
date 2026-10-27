@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { withOutput } from "../../output/index.js";
 import { addJsonAndDaemonHostOptions } from "../../utils/command-options.js";
+import { runConfigCommand } from "./config.js";
 import { runCreateCommand } from "./create.js";
 import { runInspectCommand } from "./inspect.js";
 import { runLsCommand } from "./ls.js";
@@ -91,7 +92,7 @@ export function createGoalCommand(): Command {
       )
       .option(
         "--on-permission <policy>",
-        "When an agent asks for a permission: fail the run, or wait for you to answer in Paseo",
+        "When an agent asks for a permission: fail (unattended mode; a run that asks fails), wait (default; the request waits for you in Paseo), or auto (the provider's auto mode, then wait)",
       )
       .option(
         "--allow-provider <provider>",
@@ -135,6 +136,34 @@ export function createGoalCommand(): Command {
       .argument("<id>", "Goal ID")
       .argument("<priority>", "low, normal or high"),
   ).action(withOutput(runPriorityCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("config")
+      .description(
+        "Change a goal's settings in any state but archived; a live goal uses them from its next turn or run. `none` clears an optional setting",
+      )
+      .argument("<id>", "Goal ID")
+      .option("--on-permission <policy>", "fail, wait or auto")
+      .option("--notify-lead", "Message the Lead about failures and completion")
+      .option("--no-notify-lead", "Do not message the Lead")
+      .option("--auto-approve", "Run a proposed plan without waiting for approval")
+      .option("--no-auto-approve", "Wait for plan approval")
+      .option("--require-approval", "Hold every reviewed change until you approve it")
+      .option("--no-require-approval", "Merge reviewed changes without waiting for you")
+      .option("--test-command <cmd>", "Shell command run after each merge, or none")
+      .option("--max-parallel <n>", "Tasks to run at once (1-8)")
+      .option("--max-attempts <n>", "Attempts per task (1-5)")
+      .option("--max-rework <n>", "Rework rounds per change (0-5), or none for the default")
+      .option("--max-tasks <n>", "Tasks allowed in a plan, or none for the default")
+      .option("--max-runs <n>", "Agent runs over the goal's lifetime, or none for the default")
+      .option("--run-timeout <minutes>", "Time for any one agent turn, or none for the default")
+      .option("--goal-timeout <minutes>", "Time for the whole goal, or none for the default")
+      .option("--retry-backoff <seconds>", "Pause before a retry, or none for the default")
+      .option("--max-tokens <n>", "Token budget, or none to remove it")
+      .option("--max-cost <usd>", "Cost budget in USD, or none to remove it")
+      .option("--deadline <iso-time>", "Time the goal must be finished by, or none to remove it"),
+  ).action(withOutput(runConfigCommand));
 
   addJsonAndDaemonHostOptions(
     goal
@@ -191,7 +220,7 @@ export function createGoalCommand(): Command {
     goal
       .command("retry")
       .description(
-        "Retry failed or cancelled tasks with fresh attempts; reopens a failed goal (retries all of them)",
+        "Retry failed or cancelled tasks with fresh attempts; reopens a failed goal (retries all of them, or starts a fresh Lead when it failed while planning)",
       )
       .argument("<id>", "Goal ID")
       .option("--task <taskId>", "Retry only this task (a live goal only)"),

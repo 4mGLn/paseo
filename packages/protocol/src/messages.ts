@@ -108,6 +108,8 @@ import {
   GoalUnarchiveResponseSchema,
   GoalDeleteRequestSchema,
   GoalDeleteResponseSchema,
+  GoalUpdateConfigRequestSchema,
+  GoalUpdateConfigResponseSchema,
   GoalUpdateMessageSchema,
   GoalCreateResponseSchema,
   GoalListResponseSchema,
@@ -3828,6 +3830,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   GoalArchiveRequestSchema,
   GoalUnarchiveRequestSchema,
   GoalDeleteRequestSchema,
+  GoalUpdateConfigRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -4223,6 +4226,10 @@ export const ServerInfoStatusPayloadSchema = z
         // goal.rename, goal.set_priority, goal.archive, goal.unarchive, goal.delete, the
         // goal.list filters, `priority` on goal.create, and goal.update's `deleted`.
         goalManagement: z.boolean().optional(),
+        // COMPAT(goalConfigEdit): added in v0.13.3, remove gate after 2027-10-27.
+        // goal.update_config, the "auto" permission policy, and goal.retry reopening a goal
+        // that failed while planning. Goals created here without a policy record "wait".
+        goalConfigEdit: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
@@ -7821,6 +7828,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   GoalArchiveResponseSchema,
   GoalUnarchiveResponseSchema,
   GoalDeleteResponseSchema,
+  GoalUpdateConfigResponseSchema,
   GoalUpdateMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
@@ -8345,6 +8353,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.goalControlEvents]: z.boolean().optional(),
       [CLIENT_CAPS.goalAcknowledgeEvents]: z.boolean().optional(),
       [CLIENT_CAPS.goalManagementEvents]: z.boolean().optional(),
+      [CLIENT_CAPS.goalConfigEdit]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()
