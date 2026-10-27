@@ -231,7 +231,7 @@ function UsageLineRow({ line, testID }: { line: UsageLine; testID: string }): Re
   return (
     <View style={layout.row} testID={testID}>
       <View style={styles.lineContent}>
-        <Text style={layout.title} numberOfLines={1}>
+        <Text style={layout.title} numberOfLines={2}>
           {line.title}
         </Text>
         {line.detail ? (
