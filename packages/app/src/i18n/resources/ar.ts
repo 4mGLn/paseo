@@ -330,6 +330,14 @@ export const ar: TranslationResources = {
       all: "أي أولوية",
       label: "الأولوية: {{priority}}",
     },
+    toolbar: {
+      status: "الحالة",
+      statusWithCount: "الحالة · {{label}} {{n}}",
+      statusLabel: "الحالة: {{status}}",
+      statusLabelWithCount: "الحالة: {{status}} · {{label}} {{n}}",
+      project: "المشروع",
+      sort: "الترتيب",
+    },
     sort: {
       label: "الترتيب: {{sort}}",
       priority: "الأولوية",
@@ -390,7 +398,7 @@ export const ar: TranslationResources = {
       usageNotReported: "الاستخدام غير مُبلَّغ",
     },
     filters: {
-      needs_you: "تحتاج إليك",
+      needs_you: "إجراء",
       running: "قيد التشغيل",
       done: "منتهية",
       all: "الكل",

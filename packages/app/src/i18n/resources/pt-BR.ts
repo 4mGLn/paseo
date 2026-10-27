@@ -334,6 +334,14 @@ export const ptBR: TranslationResources = {
       all: "Qualquer prioridade",
       label: "Prioridade: {{priority}}",
     },
+    toolbar: {
+      status: "Status",
+      statusWithCount: "Status · {{label}} {{n}}",
+      statusLabel: "Status: {{status}}",
+      statusLabelWithCount: "Status: {{status}} · {{label}} {{n}}",
+      project: "Projeto",
+      sort: "Ordenar",
+    },
     sort: {
       label: "Ordenar: {{sort}}",
       priority: "Prioridade",
@@ -394,7 +402,7 @@ export const ptBR: TranslationResources = {
       usageNotReported: "Uso não informado",
     },
     filters: {
-      needs_you: "Precisam de você",
+      needs_you: "Ação",
       running: "Em execução",
       done: "Concluídas",
       all: "Todas",
