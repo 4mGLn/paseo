@@ -13,6 +13,8 @@ import type { CreatePaseoWorktreeWorkflowResult } from "../worktree-session.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { ManagerAgentPort, ManagerWorkspacePort, TurnResult } from "./goal-manager.js";
 import type { GoalModelCatalog } from "./goal-thinking.js";
+import { GOAL_AUTO_MODE_ID, type GoalModeCatalog } from "./goal-config-validation.js";
+import type { GoalPermissionPolicy } from "@getpaseo/protocol/goal/config-bounds";
 
 interface DirectoryWorkspaceInput {
   cwd: string;
@@ -137,6 +139,36 @@ export interface GoalPortDeps {
   waitForWorkspaceSetup: (workspaceId: string) => Promise<void>;
   /** Model catalog that per-task thinking ids are checked against. */
   modelCatalog?: GoalModelCatalog;
+  /** Mode catalog the `auto` policy looks for an auto mode in. Without it, `auto` acts as `wait`. */
+  modeCatalog?: GoalModeCatalog;
+}
+
+/**
+ * How a goal agent is created under each permission policy. `fail` uses the provider's
+ * unattended mode. `wait` starts the provider's default mode, and its requests wait in
+ * Paseo. `auto` asks for the provider's auto mode when the provider lists one, and
+ * otherwise starts as under `wait`.
+ */
+export async function goalAgentMode(
+  deps: Pick<GoalPortDeps, "modeCatalog" | "logger">,
+  input: { provider: string; cwd: string; permission: GoalPermissionPolicy | undefined },
+): Promise<{ unattended: boolean; mode?: string }> {
+  const policy = input.permission ?? "fail";
+  if (policy === "fail") return { unattended: true };
+  if (policy === "wait" || !deps.modeCatalog) return { unattended: false };
+  try {
+    const modes = await deps.modeCatalog(input.provider, input.cwd);
+    if (modes.some((mode) => mode.id === GOAL_AUTO_MODE_ID)) {
+      return { unattended: false, mode: GOAL_AUTO_MODE_ID };
+    }
+  } catch (error) {
+    deps.logger.warn({ err: error, provider: input.provider }, "Could not read provider modes");
+  }
+  deps.logger.info(
+    { provider: input.provider },
+    "Provider lists no auto mode; the goal agent starts in its default mode",
+  );
+  return { unattended: false };
 }
 
 /** A setup that never finishes must not hold a goal up forever. */
@@ -175,6 +207,11 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
   return {
     async createAgent(input) {
       const { provider, model } = splitProviderModel(input.provider);
+      const { unattended, mode } = await goalAgentMode(deps, {
+        provider,
+        cwd: input.cwd,
+        permission: input.permission,
+      });
       const created = await deps.createAgent({
         kind: "mcp",
         provider: input.provider,
@@ -184,7 +221,8 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
         title: input.title,
         labels: input.labels,
         ...(input.thinking ? { thinking: input.thinking } : {}),
-        unattended: true,
+        unattended,
+        ...(mode ? { mode } : {}),
         promptFailure: "return-error",
         notifyOnFinish: false,
       });

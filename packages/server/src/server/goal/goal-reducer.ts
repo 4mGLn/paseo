@@ -3,6 +3,7 @@ import type {
   ChangeSet,
   ChangeSetStatus,
   Goal,
+  GoalConfig,
   GoalEvent,
   GoalStatus,
   Notification,
@@ -118,7 +119,8 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
   // A goal's outcome is sent as it ends, so its notifications outlive it, and a
   // failed goal can be reopened by a retry. Nothing else reaches an ended goal
   // except an acknowledgement, handled above.
-  const reopening = event.type === "goal.retried" && goal.status === "failed";
+  const reopening =
+    (event.type === "goal.retried" || event.type === "goal.reopened") && goal.status === "failed";
   if (isTerminalGoalStatus(goal.status) && !event.type.startsWith("notification.") && !reopening) {
     throw new GoalTransitionError(event.type, `goal is ${goal.status}`);
   }
@@ -141,9 +143,46 @@ function acknowledge(goal: Goal, event: GoalEvent): Goal {
   return { ...goal, acknowledgedAt: event.at };
 }
 
+/** Config fields fixed for a goal's life; goal.config_updated must leave them as they are. */
+const FIXED_CONFIG_FIELDS = [
+  "cwd",
+  "baseCommit",
+  "leadProvider",
+  "defaultProvider",
+  "reviewProvider",
+  "verifyProvider",
+  "leadThinking",
+  "workerThinking",
+  "reviewThinking",
+  "verifyThinking",
+  "branchPrefix",
+  "originAgentId",
+  "allowedProviders",
+] as const satisfies readonly (keyof GoalConfig)[];
+
+/** A person changed the goal's settings. Accepted after the goal ended, so a failed goal can be retried with them. */
+function updateConfig(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "goal.config_updated" }>,
+): Goal {
+  if (!goal.config) {
+    throw new GoalTransitionError(event.type, "a manual goal has no settings to change");
+  }
+  if (goal.archivedAt) {
+    throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
+  }
+  const previous = goal.config;
+  for (const field of FIXED_CONFIG_FIELDS) {
+    if (JSON.stringify(previous[field]) !== JSON.stringify(event.config[field])) {
+      throw new GoalTransitionError(event.type, `${field} cannot be changed after creation`);
+    }
+  }
+  return { ...goal, config: event.config };
+}
+
 /**
- * A person renames, reprioritises, archives or unarchives a goal. These touch only
- * the goal's labels, so they are accepted after it ended. Returns null for any other event.
+ * A person renames, reprioritises, archives or unarchives a goal, or changes its settings.
+ * These are accepted after it ended. Returns null for any other event.
  */
 function applyManagementEvent(goal: Goal, event: GoalEvent): Goal | null {
   switch (event.type) {
@@ -163,6 +202,8 @@ function applyManagementEvent(goal: Goal, event: GoalEvent): Goal | null {
     case "goal.unarchived":
       if (!goal.archivedAt) throw new GoalTransitionError(event.type, "goal is not archived");
       return { ...goal, archivedAt: null };
+    case "goal.config_updated":
+      return updateConfig(goal, event);
     default:
       return null;
   }
@@ -852,6 +893,9 @@ function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
     case "goal.retried":
       return applyRetry(goal, event);
 
+    case "goal.reopened":
+      return applyReopenPlanning(goal, event);
+
     default:
       throw new GoalTransitionError(event.type, "unexpected event for this handler");
   }
@@ -892,15 +936,7 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
       );
     }
   }
-  const { maxRuns } = resolveLimits(goal.config);
-  if (goal.runs.length >= maxRuns) {
-    throw new GoalTransitionError(event.type, `the run limit of ${maxRuns} is used up`);
-  }
-  if (Date.parse(event.at) >= goalDeadlineMs(goal)) {
-    throw new GoalTransitionError(event.type, "the goal's time limit has passed");
-  }
-  const overBudget = budgetExceeded(goal);
-  if (overBudget) throw new GoalTransitionError(event.type, overBudget);
+  assertRoomToRun(goal, event);
   if (reopen) {
     const missing = [...retryable].filter((id) => !event.taskIds.includes(id));
     if (missing.length > 0) {
@@ -932,5 +968,50 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
         ? { ...t, status: "pending", error: null, forgivenFailures: failedRuns(t.id) }
         : t,
     ),
+  };
+}
+
+/** The run limit, time limit and budgets must leave room before work starts again. */
+function assertRoomToRun(goal: Goal, event: GoalEvent): void {
+  const { maxRuns } = resolveLimits(goal.config);
+  if (goal.runs.length >= maxRuns) {
+    throw new GoalTransitionError(event.type, `the run limit of ${maxRuns} is used up`);
+  }
+  if (Date.parse(event.at) >= goalDeadlineMs(goal)) {
+    throw new GoalTransitionError(event.type, "the goal's time limit has passed");
+  }
+  const overBudget = budgetExceeded(goal);
+  if (overBudget) throw new GoalTransitionError(event.type, overBudget);
+}
+
+/**
+ * A person reopens a goal that failed while planning: it has no tasks, so there is
+ * nothing to retry. It goes back to planning and a fresh Lead plans; the limits must
+ * leave room, as for any reopen.
+ */
+function applyReopenPlanning(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "goal.reopened" }>,
+): Goal {
+  if (!goal.config) {
+    throw new GoalTransitionError(event.type, "a manual goal runs nothing to reopen");
+  }
+  requireStatus(goal, event, "failed");
+  if (goal.archivedAt) {
+    throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
+  }
+  if (goal.tasks.length > 0) {
+    throw new GoalTransitionError(
+      event.type,
+      "the goal failed after planning; retry its tasks instead",
+    );
+  }
+  assertRoomToRun(goal, event);
+  return {
+    ...goal,
+    status: "planning",
+    failureReason: null,
+    reopens: (goal.reopens ?? 0) + 1,
+    ...(goal.acknowledgedAt ? { acknowledgedAt: null } : {}),
   };
 }

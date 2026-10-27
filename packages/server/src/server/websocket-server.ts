@@ -17,6 +17,7 @@ import { DaemonLinkEndpoint, VirtualHostSocket } from "./connected-hosts/index.j
 import { ConnectedHosts } from "./connected-hosts/index.js";
 import type { GoalService } from "./goal/goal-service.js";
 import { GoalUpdatePublisher } from "./goal/goal-update-publisher.js";
+import { withoutAutoPolicy } from "./session/goal/goal-session.js";
 import { stat } from "node:fs/promises";
 import {
   createWorkspaceBaseBranchService,
@@ -1067,8 +1068,13 @@ export class VoiceAssistantWebSocketServer {
       subscribeRemoved: (listener) => goalService.subscribeRemoved(listener),
       publish: (goal, options) => {
         const payload = options?.deleted ? { goal, deleted: true } : { goal };
+        // COMPAT(goalConfigEdit): added in v0.13.3, remove after 2027-04-27.
+        const legacyPayload = { ...payload, goal: withoutAutoPolicy(goal) };
         for (const session of this.listSessions()) {
-          session.publish({ type: "goal.update", payload });
+          session.publish({
+            type: "goal.update",
+            payload: session.supports(CLIENT_CAPS.goalConfigEdit) ? payload : legacyPayload,
+          });
         }
       },
     });
@@ -2083,6 +2089,7 @@ export class VoiceAssistantWebSocketServer {
               goalAcknowledge: true,
               goalThinking: true,
               goalManagement: true,
+              goalConfigEdit: true,
             }
           : {}),
         // COMPAT(workspaceSetupRun): added in v0.7.3, remove gate after 2027-09-02.

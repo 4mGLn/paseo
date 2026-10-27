@@ -729,3 +729,56 @@ test("goal management: rename, priority, archive hides from the list, delete rem
   expect((await after.goalList({ archived: "include" })).goals.map((g) => g.id)).toEqual(["g2"]);
   expect((await after.goalList()).goals[0]?.priority).toBe("high");
 }, 90_000);
+
+test("config edits: settings change after creation, and a goal that failed while planning is reopened with a fresh Lead", async () => {
+  const repo = createGitRepo(root);
+  let planning: "bad" | "good" = "bad";
+  const respond = scriptedAgents([implementTask("a")], (_prompt, cwd) => {
+    writeFileSync(path.join(cwd, "a.txt"), "from a\n");
+    return "built a";
+  });
+  const client = await boot((prompt, config) => {
+    const lead = prompt.includes("You are the Lead") || prompt.includes("could not be used");
+    if (lead && planning === "bad") return "I could not decide on a plan.";
+    return respond?.(prompt, config);
+  });
+  expect(client.getLastServerInfoMessage()?.features?.goalConfigEdit).toBe(true);
+
+  // Without a policy the goal records the new default.
+  const created = await client.goalCreate({
+    goalId: "g1",
+    title: "Ship",
+    objective: "add a.txt",
+    criteria: ["a.txt exists"],
+    config: managedConfig(repo),
+  });
+  expect(created.goal?.config?.onPermissionRequest).toBe("wait");
+  const failed = await waitFor(() => client.goalInspect("g1"), isFinished);
+  expect(failed.goal?.status).toBe("failed");
+  expect(failed.goal?.failureReason).toMatch(/Lead did not produce a valid plan/);
+  expect(failed.goal?.tasks).toEqual([]);
+  const firstLead = failed.goal?.leadAgentId;
+
+  // Settings change on the failed goal; fixed fields are not part of the request.
+  const edited = await client.goalUpdateConfig({
+    goalId: "g1",
+    changes: { onPermissionRequest: "auto", maxParallel: 1, limits: { maxRuns: 30 } },
+  });
+  expect(edited.goal?.config).toMatchObject({
+    onPermissionRequest: "auto",
+    maxParallel: 1,
+    limits: { maxRuns: 30 },
+    leadProvider: "claude",
+  });
+
+  planning = "good";
+  await client.goalRetry({ goalId: "g1" });
+  const done = await waitFor(() => client.goalInspect("g1"), isFinished);
+  expect(done.goal?.status).toBe("completed");
+  expect(done.goal?.reopens).toBe(1);
+  expect(done.goal?.leadAgentId).not.toBe(firstLead);
+  const types = done.events.map((e) => e.type);
+  expect(types).toContain("goal.config_updated");
+  expect(types).toContain("goal.reopened");
+  expect(types.filter((t) => t === "lead.attached")).toHaveLength(2);
+}, 60_000);
