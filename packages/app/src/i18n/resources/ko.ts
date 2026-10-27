@@ -444,6 +444,7 @@ export const ko: TranslationResources = {
       completed: "완료됨",
       failed: "실패",
       cancelled: "취소됨",
+      paused: "일시정지됨",
     },
     taskStatus: {
       pending: "대기",

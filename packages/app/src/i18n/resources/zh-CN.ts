@@ -443,6 +443,7 @@ export const zhCN: TranslationResources = {
       completed: "已完成",
       failed: "失败",
       cancelled: "已取消",
+      paused: "已暂停",
     },
     taskStatus: {
       pending: "待处理",

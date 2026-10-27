@@ -459,6 +459,7 @@ export const ru: TranslationResources = {
       completed: "Завершена",
       failed: "Сбой",
       cancelled: "Отменена",
+      paused: "Приостановлена",
     },
     taskStatus: {
       pending: "Ожидает",

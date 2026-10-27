@@ -8,9 +8,9 @@ const TERMINAL_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set([
 ]);
 
 export const GOAL_STATUS_BADGE: Record<GoalStatus, StatusBadgeVariant> = {
-  planning: "muted",
+  planning: "running",
   awaiting_plan_approval: "warning",
-  executing: "muted",
+  executing: "running",
   completed: "success",
   failed: "error",
   cancelled: "muted",

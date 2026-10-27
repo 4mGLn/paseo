@@ -436,10 +436,11 @@ export const en = {
     status: {
       planning: "Planning",
       awaiting_plan_approval: "Awaiting approval",
-      executing: "Executing",
+      executing: "Running",
       completed: "Completed",
       failed: "Failed",
-      cancelled: "Cancelled",
+      cancelled: "Canceled",
+      paused: "Paused",
     },
     taskStatus: {
       pending: "Pending",
