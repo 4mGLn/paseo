@@ -632,6 +632,8 @@ export const ja: TranslationResources = {
         "エラーが示す問題を統合ワークツリー ({{path}}) で直してから、マージを再試行してください。レビューと承認はそのまま有効です。",
       permissionFailureHint:
         "エージェントが権限を求めたため実行が終了しました。設定で「確認する」か「Auto モード」を選んでから再試行してください。",
+      questionFailureHint:
+        "エージェントが誰も答えられない質問をしたため実行が終了しました。設定で「確認する」か「Auto モード」を選ぶか、質問の原因を取り除いてから再試行してください。",
       retryTask: "再試行",
       criteria: "受け入れ基準",
       tasks: "タスク",

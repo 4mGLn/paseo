@@ -624,6 +624,8 @@ export const zhCN: TranslationResources = {
         "在集成工作树（{{path}}）中修复错误指出的问题，然后重试合并。审查和批准保持有效。",
       permissionFailureHint:
         "Agent 请求了权限，运行已结束。请在设置中选择“问我”或“Auto 模式”，然后重试。",
+      questionFailureHint:
+        "Agent 提出了无人能回答的问题，运行已结束。请在设置中选择“问我”或“Auto 模式”，或消除引发提问的原因，然后重试。",
       retryTask: "重试",
       criteria: "验收标准",
       tasks: "任务",

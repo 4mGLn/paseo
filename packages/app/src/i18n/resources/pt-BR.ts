@@ -630,6 +630,8 @@ export const ptBR: TranslationResources = {
         "Corrija o que o erro aponta na worktree de integração ({{path}}) e tente a mesclagem de novo. A revisão e a aprovação continuam valendo.",
       permissionFailureHint:
         "Um agente pediu uma permissão e a execução terminou. Escolha Perguntar a mim ou Modo Auto nas configurações e tente de novo.",
+      questionFailureHint:
+        "Um agente fez uma pergunta que ninguém podia responder e a execução terminou. Escolha Perguntar a mim ou Modo Auto nas configurações, ou remova o que provoca a pergunta, e tente de novo.",
       retryTask: "Tentar de novo",
       criteria: "Critérios de aceitação",
       tasks: "Tarefas",
