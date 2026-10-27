@@ -5,19 +5,14 @@ import { StyleSheet } from "react-native-unistyles";
 import type { Goal } from "@getpaseo/protocol/goal/types";
 import { SettingsCard, SettingsSection } from "@/components/settings";
 import { isGoalTerminal } from "@/goals/goal-derivation";
-import { budgetLabel, estimateLabel } from "@/goals/goal-labels";
+import { estimateLabel } from "@/goals/goal-labels";
 import {
   buildVerificationBar,
-  burnRatePerHour,
   countGoalTasks,
   estimateRemaining,
-  formatCompactCount,
-  formatUsd,
   goalDeadline,
   goalElapsedMs,
   goalPercent,
-  goalUsageStatus,
-  type BudgetStatus,
 } from "@/goals/goal-progress";
 import { settingsStyles } from "@/styles/settings";
 import { useRelativeTimeTick } from "@/usage/use-relative-time-tick";
@@ -32,14 +27,17 @@ function formatMinutes(ms: number): string {
   return formatDuration(ms < MINUTE_MS ? ms : Math.floor(ms / MINUTE_MS) * MINUTE_MS);
 }
 
-function fractionTone(fraction: number, isOver: boolean): GoalBarTone {
+export function fractionTone(fraction: number, isOver: boolean): GoalBarTone {
   if (isOver) {
     return "danger";
   }
   return fraction >= WARN_FRACTION ? "warning" : "neutral";
 }
 
-/** Percent, counts, time and spend for a managed goal, refreshed by polling and a minute tick. */
+/**
+ * Percent, counts and time for a managed goal, refreshed by polling and a minute tick. Tokens and
+ * cost are in `GoalUsageSection`.
+ */
 export function GoalProgressPanel({ goal }: { goal: Goal }): ReactElement {
   const { t } = useTranslation();
   const isLive = !isGoalTerminal(goal.status);
@@ -50,10 +48,6 @@ export function GoalProgressPanel({ goal }: { goal: Goal }): ReactElement {
   const estimate = estimateLabel(t, estimateRemaining(goal, now));
   const deadline = goalDeadline(goal, now);
   const verification = buildVerificationBar(goal, now);
-  const usage = goalUsageStatus(goal);
-  const tokenRate =
-    usage.tokens.kind === "not_reported" ? null : burnRatePerHour(usage.tokens.used, elapsedMs);
-  const isPartialUsage = usage.reportedTurns > 0 && usage.reportedTurns < usage.totalTurns;
 
   let deadlineValue: string | null = null;
   if (deadline.kind === "running") {
@@ -129,42 +123,22 @@ export function GoalProgressPanel({ goal }: { goal: Goal }): ReactElement {
             />
           </MetricRow>
         ) : null}
-        <BudgetRow
-          label={t("goals.progress.tokens")}
-          status={usage.tokens}
-          format={formatCompactCount}
-          hint={
-            tokenRate === null
-              ? null
-              : t("goals.progress.burnRate", { rate: formatCompactCount(tokenRate) })
-          }
-        />
-        <BudgetRow
-          label={t("goals.progress.cost")}
-          status={usage.cost}
-          format={formatUsd}
-          hint={
-            isPartialUsage
-              ? t("goals.progress.partialUsage", {
-                  reported: usage.reportedTurns,
-                  total: usage.totalTurns,
-                })
-              : null
-          }
-        />
       </SettingsCard>
     </SettingsSection>
   );
 }
 
-function MetricRow({
+export function MetricRow({
   label,
   value,
+  hint,
   children,
   testID,
 }: {
   label: string;
   value: string;
+  /** Muted lines under the bar, one per entry. */
+  hint?: readonly string[];
   children?: ReactNode;
   testID?: string;
 }): ReactElement {
@@ -176,30 +150,13 @@ function MetricRow({
           <Text style={settingsStyles.rowTitle}>{value}</Text>
         </View>
         {children}
+        {hint?.map((line) => (
+          <Text key={line} style={styles.hint}>
+            {line}
+          </Text>
+        ))}
       </View>
     </View>
-  );
-}
-
-function BudgetRow({
-  label,
-  status,
-  format,
-  hint,
-}: {
-  label: string;
-  status: BudgetStatus;
-  format: (value: number) => string;
-  hint: string | null;
-}): ReactElement {
-  const { t } = useTranslation();
-  return (
-    <MetricRow label={label} value={budgetLabel(t, status, format)}>
-      {status.kind === "limited" ? (
-        <GoalBar fraction={status.fraction} tone={fractionTone(status.fraction, status.isOver)} />
-      ) : null}
-      {hint ? <Text style={styles.hint}>{hint}</Text> : null}
-    </MetricRow>
   );
 }
 

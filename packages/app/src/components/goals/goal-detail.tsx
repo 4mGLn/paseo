@@ -40,6 +40,7 @@ import { GoalProgressPanel } from "./goal-progress-panel";
 import { GoalSettingsSheet } from "./goal-settings-sheet";
 import { GoalStepper } from "./goal-stepper";
 import { GoalTaskList, OpenAgentButton } from "./goal-task-list";
+import { GoalUsageSection } from "./goal-usage-section";
 
 export function GoalDetail({
   serverId,
@@ -116,6 +117,7 @@ function GoalDetailContent({
       ) : null}
       <GoalGuidanceBanner serverId={serverId} goal={goal} />
       {goal.config ? <GoalProgressPanel goal={goal} /> : null}
+      {goal.config ? <GoalUsageSection serverId={serverId} goal={goal} /> : null}
       <GoalChangeSetList serverId={serverId} goal={goal} />
       <GoalTaskList
         serverId={serverId}
