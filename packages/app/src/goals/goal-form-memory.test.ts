@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { openGoalForm } from "./goal-form-model";
-import { goalFormMemoryFromConfig, prefillFromGoalFormMemory } from "./goal-form-memory";
+import {
+  goalFormMemoryFromConfig,
+  migrateGoalFormMemory,
+  prefillFromGoalFormMemory,
+} from "./goal-form-memory";
 import { GOAL_PRESETS } from "./goal-settings";
 import { GOAL_TEMPLATES, buildTemplatePrefill } from "./goal-templates";
 
@@ -61,5 +65,27 @@ describe("buildTemplatePrefill", () => {
     });
     expect(state.settingsChoice).toBe("careful");
     expect(state.createInput?.criteria).toEqual(["Behavior unchanged", "Tests pass"]);
+  });
+});
+
+describe("migrateGoalFormMemory", () => {
+  const remembered = (onPermissionRequest: "fail" | "wait" | "auto") => ({
+    ...memory,
+    settings: { ...memory.settings, onPermissionRequest },
+  });
+
+  it("reads a fail written while it was the default as the new default", () => {
+    const migrated = migrateGoalFormMemory({ host: remembered("fail") }, 1);
+    expect(migrated.host?.settings.onPermissionRequest).toBe("wait");
+    expect(migrated.host?.settings.maxParallel).toBe(memory.settings.maxParallel);
+  });
+
+  it("keeps a fail chosen since the default changed, and every other policy", () => {
+    expect(migrateGoalFormMemory({ host: remembered("fail") }, 2).host?.settings).toEqual(
+      remembered("fail").settings,
+    );
+    expect(
+      migrateGoalFormMemory({ host: remembered("wait") }, 1).host?.settings.onPermissionRequest,
+    ).toBe("wait");
   });
 });

@@ -19,6 +19,7 @@ import {
   matchGoalSettingsChoice,
   normalizeGoalSettings,
   stepGoalBudget,
+  supportedGoalSettings,
   stepGoalSetting,
   summarizeGoalSettings,
   type GoalBudget,
@@ -111,6 +112,8 @@ export interface GoalFormHost {
   budgetSupported: boolean;
   /** The host takes a thinking level per role (`goalThinking`). */
   thinkingSupported: boolean;
+  /** The host takes the `auto` permission policy (`goalConfigEdit`). */
+  autoPermissionSupported: boolean;
 }
 
 /** The chosen project as shown on the picker, captured when it is chosen. */
@@ -136,6 +139,8 @@ export interface GoalFormSnapshot {
   budgetSupported?: boolean;
   /** The host takes a thinking level per role. Without it no thinking is sent or offered. */
   thinkingSupported?: boolean;
+  /** The host takes the `auto` permission policy. Without it `auto` is neither offered nor sent. */
+  autoPermissionSupported?: boolean;
 }
 
 export type GoalFormField =
@@ -476,6 +481,7 @@ export interface GoalFormState {
   personalSettings: GoalSettings | null;
   budgetSupported: boolean;
   thinkingSupported: boolean;
+  autoPermissionSupported: boolean;
   /** The thinking levels each role's model offers; empty hides that role's picker. */
   thinkingOptions: Record<GoalThinkingRole, GoalThinkingOption[]>;
   /** Fields you have edited; their issues show right away. The rest show after Create. */
@@ -610,7 +616,13 @@ type BaseState = Omit<
   | "thinkingOptions"
 >;
 
-function withDerived(state: BaseState): GoalFormState {
+function withDerived(input: BaseState): GoalFormState {
+  // A remembered `auto` cannot reach a host that would reject it.
+  const settings = supportedGoalSettings(input.values.settings, input.autoPermissionSupported);
+  const state =
+    settings === input.values.settings
+      ? input
+      : { ...input, values: { ...input.values, settings } };
   const issues = validateGoalForm(state.values, { cwdCheck: state.cwdCheck });
   const optionsFor = (role: GoalThinkingRole): GoalThinkingOption[] =>
     state.thinkingSupported
@@ -741,6 +753,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
     personalSettings: snapshot.personalSettings ?? null,
     budgetSupported: snapshot.budgetSupported ?? false,
     thinkingSupported: snapshot.thinkingSupported ?? false,
+    autoPermissionSupported: snapshot.autoPermissionSupported ?? false,
     touched: [],
     submitAttempted: false,
     submitError: null,
@@ -859,6 +872,9 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         hosts: [...hosts],
         budgetSupported: host ? host.budgetSupported : state.budgetSupported,
         thinkingSupported: host ? host.thinkingSupported : state.thinkingSupported,
+        autoPermissionSupported: host
+          ? host.autoPermissionSupported
+          : state.autoPermissionSupported,
       });
     },
     setHost(serverId) {
@@ -902,6 +918,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         personalSettings: memory?.settings ?? null,
         budgetSupported: host?.budgetSupported ?? false,
         thinkingSupported: host?.thinkingSupported ?? false,
+        autoPermissionSupported: host?.autoPermissionSupported ?? false,
         submitError: null,
       });
     },

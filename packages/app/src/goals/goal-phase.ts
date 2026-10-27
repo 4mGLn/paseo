@@ -158,6 +158,15 @@ export function goalGuidance(goal: Goal): GoalGuidance {
   };
 }
 
+/**
+ * The goal failed because an agent asked for a permission. The daemon names the turn outcome
+ * `needs_permission` in the reason when the Lead stops on it ("Lead agent did not finish
+ * planning (needs_permission).", goal-manager.ts); that identifier is the stable part of the text.
+ */
+export function goalFailedOnPermission(goal: Pick<Goal, "status" | "failureReason">): boolean {
+  return goal.status === "failed" && (goal.failureReason ?? "").includes("needs_permission");
+}
+
 /** The daemon refuses more plan rejections than this (docs/goals.md "Control a running goal"). */
 export const MAX_PLAN_REJECTIONS = 5;
 
@@ -167,6 +176,8 @@ export interface GoalControls {
   canResume: boolean;
   /** Retry every failed task, reopening the failed goal. */
   canRetry: boolean;
+  /** The retry reopens a goal that failed while planning: a fresh Lead plans again. */
+  canRetryPlanning: boolean;
   /** Retry one failed or cancelled task of a live goal. */
   canRetryTasks: boolean;
 }
@@ -176,14 +187,20 @@ const NO_CONTROLS: GoalControls = {
   canPause: false,
   canResume: false,
   canRetry: false,
+  canRetryPlanning: false,
   canRetryTasks: false,
 };
 
 /**
  * Which controls to offer: only on hosts with goal controls, only for managed goals, and only in
- * the states the daemon accepts them in.
+ * the states the daemon accepts them in. A goal that failed while planning has no tasks; only a
+ * host with `goalConfigEdit` reopens it, an older one refuses the retry.
  */
-export function goalControlsAvailable(goal: Goal, hostHasControls: boolean): GoalControls {
+export function goalControlsAvailable(
+  goal: Goal,
+  hostHasControls: boolean,
+  host: { configEdit?: boolean } = {},
+): GoalControls {
   if (!hostHasControls || !goal.config) {
     return NO_CONTROLS;
   }
@@ -191,12 +208,15 @@ export function goalControlsAvailable(goal: Goal, hostHasControls: boolean): Goa
     goal.status !== "completed" && goal.status !== "failed" && goal.status !== "cancelled";
   const rejections = goal.planRejections?.length ?? 0;
   const hasRejectedChange = goal.changeSets.some((changeSet) => changeSet.status === "rejected");
+  // The daemon reopens an archived failed goal only after it is unarchived.
+  const retryable = goal.status === "failed" && !hasRejectedChange && !goal.archivedAt;
+  const failedPlanning = goal.tasks.length === 0;
   return {
     canRejectPlan: goal.status === "awaiting_plan_approval" && rejections < MAX_PLAN_REJECTIONS,
     canPause: isLive && !goal.pausedAt,
     canResume: isLive && Boolean(goal.pausedAt),
-    // The daemon reopens an archived failed goal only after it is unarchived.
-    canRetry: goal.status === "failed" && !hasRejectedChange && !goal.archivedAt,
+    canRetry: retryable && (!failedPlanning || host.configEdit === true),
+    canRetryPlanning: retryable && failedPlanning && host.configEdit === true,
     canRetryTasks: goal.status === "executing",
   };
 }

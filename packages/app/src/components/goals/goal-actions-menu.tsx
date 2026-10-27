@@ -12,6 +12,7 @@ import {
   Pencil,
   Play,
   RotateCcw,
+  SlidersHorizontal,
   Trash2,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -44,6 +45,7 @@ import { useHostFeature } from "@/runtime/host-features";
 import type { Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
+import { GoalSettingsSheet } from "./goal-settings-sheet";
 
 const ICON_SIZE = 14;
 const RETAINED_TOAST_MS = 8000;
@@ -63,6 +65,7 @@ const ThemedArchive = withUnistyles(Archive);
 const ThemedArchiveRestore = withUnistyles(ArchiveRestore);
 const ThemedCircleStop = withUnistyles(CircleStop);
 const ThemedTrash = withUnistyles(Trash2);
+const ThemedSliders = withUnistyles(SlidersHorizontal);
 
 const renameIcon = <ThemedPencil size={ICON_SIZE} uniProps={mutedColorMapping} />;
 const priorityIcon = <ThemedFlag size={ICON_SIZE} uniProps={mutedColorMapping} />;
@@ -74,6 +77,7 @@ const archiveIcon = <ThemedArchive size={ICON_SIZE} uniProps={mutedColorMapping}
 const unarchiveIcon = <ThemedArchiveRestore size={ICON_SIZE} uniProps={mutedColorMapping} />;
 const cancelIcon = <ThemedCircleStop size={ICON_SIZE} uniProps={mutedColorMapping} />;
 const deleteIcon = <ThemedTrash size={ICON_SIZE} uniProps={mutedColorMapping} />;
+const settingsIcon = <ThemedSliders size={ICON_SIZE} uniProps={mutedColorMapping} />;
 
 function renderTriggerIcon({ hovered }: { hovered?: boolean }): ReactElement {
   return (
@@ -89,9 +93,10 @@ export function useGoalActions(serverId: string, goal: Goal): GoalActions {
   const controls = useHostFeature(serverId, "goalControls");
   const acknowledge = useHostFeature(serverId, "goalAcknowledge");
   const management = useHostFeature(serverId, "goalManagement");
+  const configEdit = useHostFeature(serverId, "goalConfigEdit");
   return useMemo(
-    () => goalAvailableActions(goal, { controls, acknowledge, management }),
-    [acknowledge, controls, goal, management],
+    () => goalAvailableActions(goal, { controls, acknowledge, management, configEdit }),
+    [acknowledge, configEdit, controls, goal, management],
   );
 }
 
@@ -224,9 +229,10 @@ export function GoalActionsMenu({
   const { t } = useTranslation();
   const actions = useGoalActions(serverId, goal);
   const handlers = useGoalActionHandlers(serverId, { onDeleted });
-  const [isRenaming, setIsRenaming] = useState(false);
-  const openRename = useCallback(() => setIsRenaming(true), []);
-  const closeRename = useCallback(() => setIsRenaming(false), []);
+  const [sheet, setSheet] = useState<"rename" | "settings" | null>(null);
+  const openRename = useCallback(() => setSheet("rename"), []);
+  const openSettings = useCallback(() => setSheet("settings"), []);
+  const closeSheet = useCallback(() => setSheet(null), []);
   const priority = goalPriority(goal);
 
   const pages = useMemo<MenuPageDefinition[]>(
@@ -254,7 +260,7 @@ export function GoalActionsMenu({
     return null;
   }
   const hasStateActions = actions.pause || actions.resume || actions.retry || actions.dismiss;
-  const hasEditActions = actions.rename || actions.priority;
+  const hasEditActions = actions.rename || actions.priority || actions.editSettings;
 
   return (
     <>
@@ -275,25 +281,13 @@ export function GoalActionsMenu({
           sheetTitle={goal.title}
           testID={`${testID}-content`}
         >
-          {actions.rename ? (
-            <DropdownMenuItem
-              leading={renameIcon}
-              onSelect={openRename}
-              testID={`${testID}-rename`}
-            >
-              {t("goals.actions.rename")}
-            </DropdownMenuItem>
-          ) : null}
-          {actions.priority ? (
-            <DropdownMenuSubTrigger
-              id={PRIORITY_PAGE_ID}
-              leading={priorityIcon}
-              value={t(`goals.priority.levels.${priority}`)}
-              testID={`${testID}-priority-trigger`}
-            >
-              {t("goals.priority.label")}
-            </DropdownMenuSubTrigger>
-          ) : null}
+          <EditItems
+            actions={actions}
+            priority={priority}
+            onRename={openRename}
+            onEditSettings={openSettings}
+            testID={testID}
+          />
           {hasEditActions && hasStateActions ? <DropdownMenuSeparator /> : null}
           <StateItems goal={goal} actions={actions} handlers={handlers} testID={testID} />
           {(hasEditActions || hasStateActions) &&
@@ -303,8 +297,60 @@ export function GoalActionsMenu({
           <EndItems goal={goal} actions={actions} handlers={handlers} testID={testID} />
         </DropdownMenuContent>
       </DropdownMenu>
-      {isRenaming ? (
-        <GoalRenameSheet goal={goal} handlers={handlers} onClose={closeRename} />
+      {sheet === "rename" ? (
+        <GoalRenameSheet goal={goal} handlers={handlers} onClose={closeSheet} />
+      ) : null}
+      {sheet === "settings" && goal.config ? (
+        <GoalSettingsSheet
+          serverId={serverId}
+          goal={goal}
+          config={goal.config}
+          onClose={closeSheet}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function EditItems({
+  actions,
+  priority,
+  onRename,
+  onEditSettings,
+  testID,
+}: {
+  actions: GoalActions;
+  priority: GoalPriority;
+  onRename: () => void;
+  onEditSettings: () => void;
+  testID: string;
+}): ReactElement {
+  const { t } = useTranslation();
+  return (
+    <>
+      {actions.rename ? (
+        <DropdownMenuItem leading={renameIcon} onSelect={onRename} testID={`${testID}-rename`}>
+          {t("goals.actions.rename")}
+        </DropdownMenuItem>
+      ) : null}
+      {actions.priority ? (
+        <DropdownMenuSubTrigger
+          id={PRIORITY_PAGE_ID}
+          leading={priorityIcon}
+          value={t(`goals.priority.levels.${priority}`)}
+          testID={`${testID}-priority-trigger`}
+        >
+          {t("goals.priority.label")}
+        </DropdownMenuSubTrigger>
+      ) : null}
+      {actions.editSettings ? (
+        <DropdownMenuItem
+          leading={settingsIcon}
+          onSelect={onEditSettings}
+          testID={`${testID}-edit-settings`}
+        >
+          {t("goals.actions.editSettings")}
+        </DropdownMenuItem>
       ) : null}
     </>
   );
@@ -337,7 +383,7 @@ function StateItems({ goal, actions, handlers, testID }: ItemGroupProps): ReactE
       ) : null}
       {actions.retry ? (
         <DropdownMenuItem leading={retryIcon} onSelect={handleRetry} testID={`${testID}-retry`}>
-          {t("goals.detail.retryGoal")}
+          {actions.retryPlanning ? t("goals.detail.retryPlanning") : t("goals.detail.retryGoal")}
         </DropdownMenuItem>
       ) : null}
       {actions.dismiss ? (

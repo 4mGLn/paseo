@@ -53,6 +53,30 @@ export function goalFormMemoryFromConfig(
 }
 
 /**
+ * Version 2 changed what a remembered `fail` means. Until then `fail` was the form's default,
+ * so memory written by version 1 holds it whether or not you chose it; it is read as the new
+ * default, `wait`. A `fail` you choose now is remembered as such.
+ */
+export const GOAL_FORM_MEMORY_VERSION = 2;
+
+export function migrateGoalFormMemory(
+  byServer: Readonly<Record<string, GoalFormMemory>>,
+  fromVersion: number,
+): Record<string, GoalFormMemory> {
+  if (fromVersion >= 2) {
+    return { ...byServer };
+  }
+  return Object.fromEntries(
+    Object.entries(byServer).map(([serverId, memory]) => [
+      serverId,
+      memory.settings.onPermissionRequest === "fail"
+        ? { ...memory, settings: { ...memory.settings, onPermissionRequest: "wait" as const } }
+        : memory,
+    ]),
+  );
+}
+
+/**
  * Seeds a new goal from your last one. The directory you are working in wins over the
  * remembered one, and the test command comes along only for the same directory, since it
  * belongs to that project.
