@@ -17,6 +17,15 @@ const SETTINGS = Object.keys(GOAL_SETTING_FIELDS) as GoalNumberSetting[];
 const BUDGETS = Object.keys(GOAL_BUDGET_FIELDS) as GoalBudgetKey[];
 
 describe("goal number fields", () => {
+  it("offer the decimal pad only where a fraction is a valid value", () => {
+    for (const setting of SETTINGS) {
+      expect(GOAL_SETTING_FIELDS[setting].inputMode).toBe("numeric");
+    }
+    expect(GOAL_BUDGET_FIELDS.maxTotalTokens.inputMode).toBe("numeric");
+    expect(GOAL_BUDGET_FIELDS.maxCostUsd.inputMode).toBe("decimal");
+    expect(GOAL_BUDGET_FIELDS.maxCostUsd.format.parse("0.5")).toBe(0.5);
+  });
+
   it("cover every number setting with its range", () => {
     expect(SETTINGS.sort()).toEqual((Object.keys(GOAL_SETTING_RANGES) as string[]).sort());
     for (const setting of SETTINGS) {
