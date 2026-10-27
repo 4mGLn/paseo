@@ -43,7 +43,7 @@ paseo goal unarchive <id>
 paseo goal delete <id> [--yes]    # remove an ended goal for good
 ```
 
-`paseo goal ls` shows each goal's progress, elapsed time, reported usage and what it is waiting on. `paseo goal inspect` shows the same per task.
+`paseo goal ls` shows each goal's progress, elapsed time, reported usage and what it is waiting on. `paseo goal inspect` shows the same per task, and `paseo goal inspect <id> --usage` lists usage per agent, per role and in total.
 
 Without `--cwd` the goal is manual: it records plans and state and nothing runs. With `--cwd` the Manager takes over. `--cwd` must be a git repository.
 
@@ -82,7 +82,7 @@ The result is the integration branch and its worktree. Nothing is merged into yo
 - **Delete.** `goal.delete` removes an ended goal for good; a live goal is refused, and so is one whose agents are still stopping. The daemon does not ask for confirmation: the app and `paseo goal delete` do (the CLI needs `--yes` without a terminal or with `--json`). Deleting a goal that is already gone succeeds with `deleted: false`. See [Operations](#operations) for what is removed and what stays; the response lists what stays as `retained`.
 - **Acknowledge.** `paseo goal ack <id>` (`goal.acknowledge`) dismisses an ended goal so it stops asking for attention. It records a `goal.acknowledged` event and sets `acknowledgedAt`, so the mark survives a restart. It changes nothing else: the status stays, and a failed goal can still be retried. A retry that reopens the goal clears the mark, so its next ending needs attention again. A live goal cannot be acknowledged; acknowledging twice returns the goal unchanged.
 
-Gate each on its own `server_info.features` flag: `goalControls` for pause, resume, retry and plan rejection, `goalAcknowledge` for acknowledge, `goalBudgets` before sending `limits.maxTotalTokens`, `limits.maxCostUsd` or `limits.deadlineAt` (an older daemon drops them silently), `goalThinking` before sending any thinking field (the client refuses them without it, since an older daemon would drop them), `goalUpdates` for pushes, and `goalManagement` for rename, priority (on create too), archive, unarchive, delete and the `goal.list` filters, and `goalConfigEdit` for settings changes, the `auto` policy (the client refuses it without the flag, since an older daemon's schema rejects it) and reopening a planning failure. An older daemon ignores the filters and has nothing archived, so the client refuses filters without the flag. An older daemon also records nothing for a goal created without `onPermissionRequest`, which it runs as `fail`.
+Gate each on its own `server_info.features` flag: `goalControls` for pause, resume, retry and plan rejection, `goalAcknowledge` for acknowledge, `goalBudgets` before sending `limits.maxTotalTokens`, `limits.maxCostUsd` or `limits.deadlineAt` (an older daemon drops them silently), `goalThinking` before sending any thinking field (the client refuses them without it, since an older daemon would drop them), `goalUpdates` for pushes, and `goalManagement` for rename, priority (on create too), archive, unarchive, delete and the `goal.list` filters, `goalConfigEdit` for settings changes, the `auto` policy (the client refuses it without the flag, since an older daemon's schema rejects it) and reopening a planning failure, and `goalUsageBreakdown` for usage per role and per agent. An older daemon ignores the filters and has nothing archived, so the client refuses filters without the flag. An older daemon also records nothing for a goal created without `onPermissionRequest`, which it runs as `fail`.
 
 `describeGoalWaitingOn` in `packages/protocol/src/goal/waiting-on.ts` names what a live goal is waiting on (plan approval, a held change set, running tasks, review, merge, retry, verification, or a pause); the CLI and the app both use it. It returns an English `label` for the CLI and a translation `key` (`goals.waitingOn.*`) with `params` (`count`, `ids`, `title`, `tasks`) for the app. Use `count` for plural forms.
 
@@ -98,15 +98,32 @@ The reducer records when each stage started and ended, from the events alone, so
 
 ## Usage and budgets
 
-The Manager records one `usage.recorded` event per agent turn: Lead, workers, reviewers and the verifier. It holds what the provider reported at the end of the turn, or nothing. The goal carries the sum as `usage` (`inputTokens`, `cachedInputTokens`, `outputTokens`, `totalTokens` = input + output, `costUsd`, `reportedTurns`, `totalTurns`), and each worker run carries its own.
+The Manager records one `usage.recorded` event per agent turn: Lead, workers, reviewers and the verifier. It holds what the provider reported for the turn, or nothing, plus a reviewer's `changeSetId` and the agent's `thinking`. The reducer adds each turn up four ways:
 
-Providers report differently, so treat the numbers as a floor:
+- `usage` on the goal: every turn (`inputTokens`, `cachedInputTokens`, `outputTokens`, `totalTokens`, `costUsd`, `reportedTurns`, `totalTurns`, `costReportedTurns`, `tokenReportedTurns`).
+- `usage` on each worker run.
+- `usageByRole`: the same totals per role, a role absent until one of its turns is recorded.
+- `usageBreakdown`: one entry per agent with its role, task, run or change set, provider, model, thinking and totals. Retries and reworks start new agents, so they get their own entries. The provider and model come from the run, or from the role's provider in the goal's config, so older logs are broken down too. The breakdown keeps the 200 most recently active agents; `usageBreakdownTruncated` counts the ones dropped, which still count in `usage` and `usageByRole`.
 
-- Some report nothing, or report after the turn has ended (pi and omp poll session stats in the background). Those turns count in `totalTurns` and not in `reportedTurns`. Show "reported for N of M turns" next to any total.
-- Some report the agent's session total rather than the turn's. A Lead or reviewer that needs a correction turn can then be counted twice. Workers run one turn per agent and are not affected.
-- `costUsd` is only what the provider computed. Most report tokens without cost.
+Tokens mean the same for every provider:
 
-`limits.maxTotalTokens` and `limits.maxCostUsd` fail the goal once the reported totals reach them, and a goal over budget is not reopened. They cannot stop a turn already running, and they never count what was not reported.
+- `inputTokens` is fresh input: tokens the model read that did not come from the prompt cache. Cache writes count here.
+- `cachedInputTokens` is input read from the prompt cache. It is tracked and shown, and left out of `totalTokens`.
+- `totalTokens` is `inputTokens` + `outputTokens`, the number `limits.maxTotalTokens` is checked against. Cache reads are left out because a long agent re-reads its context on every model call, so they would dwarf the work done, and they cost a fraction of fresh input.
+- Every field covers the whole turn, subagents and every model call included.
+
+Providers do not report this way, so the daemon converts at the boundary (`toTurnUsage` in `goal/goal-ports.ts`). Claude reports the process's running totals in `modelUsage` and `total_cost_usd`; its adapter reports each turn's share. Codex reports its last model call, with cache reads inside input; its adapter reports the turn's growth of the thread total. OpenCode, pi and omp report session totals; the goal takes their growth since the agent's previous turn. That baseline lives in memory, so after a daemon restart a resumed session's first turn counts the session so far. Other providers (ACP agents, Copilot) are taken as reported.
+
+The conversion applies to turns recorded from v0.13.3 on. Older events keep the numbers they were written with and replay unchanged: Codex input there includes cache reads and covers only a turn's last model call, and a Claude agent's later turns repeat its earlier cost.
+
+Treat the totals as a floor:
+
+- Some turns report nothing, or report after the turn has ended (pi and omp poll session stats in the background). They count in `totalTurns` only.
+- `costUsd` is what providers computed; Paseo never prices tokens itself. Codex reports no cost. When `costReportedTurns` is below `totalTurns`, the cost is a lower bound, and the CLI shows it as `>=$0.53`. Show the same next to any total: "cost reported for 1 of 4 turns". `tokenReportedTurns` does the same for tokens. Both are absent from older daemons.
+
+`limits.maxTotalTokens` and `limits.maxCostUsd` fail the goal once the reported totals reach them, and a goal over budget is not reopened. They cannot stop a turn already running, and they never count what was not reported: a goal whose workers report no cost is held to `maxCostUsd` by its Lead and reviewers alone.
+
+Gate the breakdown on `server_info.features.goalUsageBreakdown`. Clients without the `goal_usage_breakdown` capability get goals without `usageByRole`, `usageBreakdown` and `usageBreakdownTruncated`.
 
 ## Configuration
 
@@ -139,8 +156,8 @@ Set on `paseo goal create`; the fields listed under [Settings](#control-a-runnin
 | `limits.goalTimeoutMinutes`  | `--goal-timeout`     | 1440       | Time from creation until the goal must be finished                                                                                      |
 | `limits.retryBackoffSeconds` | `--retry-backoff`    | 5          | Pause before a retry, times the attempt number                                                                                          |
 | `limits.deadlineAt`          | `--deadline`         | none       | ISO time the goal must be finished by. Must be in the future at creation; the earlier of this and `goalTimeoutMinutes` applies          |
-| `limits.maxTotalTokens`      | `--max-tokens`       | none       | Reported input plus output tokens over the goal's life, 1000 to 10 billion. See [Usage and budgets](#usage-and-budgets)                 |
-| `limits.maxCostUsd`          | `--max-cost`         | none       | Reported cost in USD over the goal's life, 0.01 to 100000                                                                               |
+| `limits.maxTotalTokens`      | `--max-tokens`       | none       | Reported fresh input plus output tokens over the goal's life, 1000 to 10 billion. See [Usage and budgets](#usage-and-budgets)           |
+| `limits.maxCostUsd`          | `--max-cost`         | none       | Reported cost in USD over the goal's life, 0.01 to 100000; turns without a reported cost add nothing                                    |
 
 Every provider field, and a task's `provider` in a plan, takes `<provider>/<model>`, so each role (Lead, workers, reviewer, verifier) can run its own provider and model (`--lead codex/<model>`) as well as a bare provider id. The daemon splits at the first `/`; a bare id starts the provider's default model. `allowedProviders` lists bare provider ids and is matched against the part before the `/`.
 
@@ -219,15 +236,15 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 | `goal/change-set-pipeline.test.ts`   | Capture, review, rework, integration, verification, crash windows                                                                                         |
 | `goal/limits-and-policy.test.ts`     | Time and run limits, backoff, permission policy and the `auto` check, provider boundaries, read-only roles                                                |
 | `goal/recovery-matrix.test.ts`       | A restart after every event of a full run finishes the goal                                                                                               |
-| `goal/log-compat.test.ts`            | Logs from earlier phases replay, a goal without a stored policy runs as `fail`; unknown logs are set aside                                                |
-| `goal/goal-controls.test.ts`         | Reject plan, pause and resume, retry and reopen, reopening a planning failure, settings changes, usage totals and budgets, across restarts                |
+| `goal/log-compat.test.ts`            | Logs from earlier phases replay, a goal without a stored policy runs as `fail`, usage recorded before one token meaning; unknown logs are set aside       |
+| `goal/goal-controls.test.ts`         | Reject plan, pause and resume, retry and reopen, reopening a planning failure, settings changes, usage totals, breakdown and budgets, across restarts     |
 | `goal/goal-update-publisher.test.ts` | `goal.update` pushes: sent at once, bursts folded per goal, stopped cleanly, a deletion pushed once                                                       |
 | `goal/goal-management.test.ts`       | Rename, priority, archive, delete: reducer rules, list filters and order, crash-safe and idempotent deletion, worktree cleanup, priority on a full daemon |
 | `goal/review-fixes.test.ts`          | Regressions from independent review: restarts, stuck turns, base commit, external cancel, backoff slots, test-command runner, integration head, quoting   |
-| `goal/goal-ports.test.ts`            | The permission wait loop, turn-end detection, and how provider, model, thinking and the policy's mode reach the create path                               |
+| `goal/goal-ports.test.ts`            | The permission wait loop, turn-end detection, one token meaning per turn, and how provider, model, thinking and the policy's mode reach the create path   |
 | `goal/goal-thinking.test.ts`         | Per-role thinking: resolution, catalog validation, what each agent and run gets, replay, configs without it                                               |
 | `goal/git-ops.test.ts`               | Capture, merge, conflict abort and reset on real repositories                                                                                             |
-| `goal.e2e.test.ts`                   | A real daemon on real worktrees: full runs, conflicts, failing tests, restarts, renames, settings changes and a reopened planning failure                 |
+| `goal.e2e.test.ts`                   | A real daemon on real worktrees: full runs, conflicts, failing tests, restarts, renames, settings changes, a reopened planning failure, usage per agent   |
 
 ## Changing goals
 
@@ -235,5 +252,5 @@ In an agent chat, `/goal <objective>` or **Start goal from this chat** in the ta
 - Put every rule the Manager relies on in the reducer. The Manager can then be wrong without corrupting a goal.
 - Use commits, not branch names, for anything stored. Paseo can rename a worktree's branch.
 - Keep new RPCs under the `goal.*` namespace and gated on `server_info.features.goals`, or on the flag added with them.
-- A new event type breaks an older client's strict event union. `goal-session.ts` leaves such types out of `goal.inspect` for clients without the matching capability (`goal_control_events` covers `goal.paused`, `goal.resumed`, `goal.retried` and `usage.recorded`; `goal_acknowledge_events` covers `goal.acknowledged`; `goal_management_events` covers `goal.renamed`, `goal.priority_set`, `goal.archived` and `goal.unarchived`; `goal_config_edit` covers `goal.config_updated` and `goal.reopened`, and without it an `auto` policy is sent as `wait`, in `goal.list`, `goal.inspect`, mutation responses and `goal.update` pushes); add yours there.
+- A new event type breaks an older client's strict event union. `goal-session.ts` leaves such types out of `goal.inspect` for clients without the matching capability (`goal_control_events` covers `goal.paused`, `goal.resumed`, `goal.retried` and `usage.recorded`; `goal_acknowledge_events` covers `goal.acknowledged`; `goal_management_events` covers `goal.renamed`, `goal.priority_set`, `goal.archived` and `goal.unarchived`; `goal_config_edit` covers `goal.config_updated` and `goal.reopened`, and without it an `auto` policy is sent as `wait`, in `goal.list`, `goal.inspect`, mutation responses and `goal.update` pushes; without `goal_usage_breakdown` the same payloads leave out the usage breakdown); add yours there.
 - A new push message must reach only clients that asked for it. Deliver it as a session event subscription, as `goal.update` is, and return false for it in `legacyWantsEvent` in `session.ts`.

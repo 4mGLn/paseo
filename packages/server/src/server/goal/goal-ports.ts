@@ -4,7 +4,8 @@ import { ensureAgentLoaded } from "../agent/agent-loading.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
 import type { TurnUsage } from "@getpaseo/protocol/goal/types";
 import type { AgentManager, AgentManagerEvent } from "../agent/agent-manager.js";
-import type { AgentUsage } from "../agent/agent-sdk-types.js";
+import type { AgentUsage, AgentUsageTotals } from "../agent/agent-sdk-types.js";
+import { usageTotalsSince } from "../agent/usage-totals.js";
 import { startAgentRun } from "../agent/agent-prompt.js";
 import { markPaseoWorktreeFirstAgentBranchAutoNameAttempted } from "../../utils/worktree-metadata.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -43,26 +44,71 @@ export type TurnEnd =
 export interface TurnWatcher {
   /** How the turn ended according to the agent's own event stream, if it has. */
   end(): TurnEnd | null;
-  /** The last usage the provider reported during the turn, if any. */
+  /** The last reading the provider sent during the turn that carried accounting numbers. */
+  reading(): AgentUsage | undefined;
+  /** The turn's usage, as toTurnUsage reads `reading()` without a baseline. */
   usage(): TurnUsage | undefined;
   stop(): void;
 }
 
-/** Keep the fields a goal tracks; drop anything that is not a finite, non-negative number. */
-export function toTurnUsage(usage: AgentUsage | undefined): TurnUsage | undefined {
+const USAGE_FIELDS = ["inputTokens", "cachedInputTokens", "outputTokens", "costUsd"] as const;
+
+/**
+ * The turn's usage, with one meaning for every provider: fresh input, cached input,
+ * output and cost of the whole turn. Each field comes from the provider's `turnTotals`
+ * when it has the field, else from the growth of its `sessionTotals` since `baseline`
+ * (the totals after the agent's previous turn), else from the reading's own field.
+ * Anything that is not a finite, non-negative number is dropped.
+ */
+export function toTurnUsage(
+  usage: AgentUsage | undefined,
+  baseline?: AgentUsageTotals,
+): TurnUsage | undefined {
   if (!usage) return undefined;
-  const pick = (value: number | undefined) =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+  const reported: AgentUsageTotals = {
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    outputTokens: usage.outputTokens,
+    costUsd: usage.totalCostUsd,
+  };
+  const sources = [
+    usage.turnTotals ? usageTotalsSince(usage.turnTotals, undefined) : {},
+    usage.sessionTotals ? usageTotalsSince(usage.sessionTotals, baseline) : {},
+    usageTotalsSince(reported, undefined),
+  ];
   const result: TurnUsage = {};
-  const inputTokens = pick(usage.inputTokens);
-  const cachedInputTokens = pick(usage.cachedInputTokens);
-  const outputTokens = pick(usage.outputTokens);
-  const costUsd = pick(usage.totalCostUsd);
-  if (inputTokens !== undefined) result.inputTokens = inputTokens;
-  if (cachedInputTokens !== undefined) result.cachedInputTokens = cachedInputTokens;
-  if (outputTokens !== undefined) result.outputTokens = outputTokens;
-  if (costUsd !== undefined) result.costUsd = costUsd;
+  for (const field of USAGE_FIELDS) {
+    const value = sources.find((source) => source[field] !== undefined)?.[field];
+    if (value !== undefined) result[field] = value;
+  }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+export interface TurnUsageMeter {
+  /** The turn's usage from its last reading; remembers the agent's session totals for its next turn. */
+  measure(agentId: string, reading: AgentUsage | undefined): TurnUsage | undefined;
+}
+
+/**
+ * Measures each agent's turns from where its previous turn ended. What it remembers is
+ * lost on restart: a provider that resumes its old count then reports the session so far
+ * as the first turn after it.
+ */
+export function createTurnUsageMeter(): TurnUsageMeter {
+  const baselines = new Map<string, AgentUsageTotals>();
+  return {
+    measure(agentId, reading) {
+      const usage = toTurnUsage(reading, baselines.get(agentId));
+      if (reading?.sessionTotals) {
+        baselines.set(agentId, { ...baselines.get(agentId), ...reading.sessionTotals });
+      }
+      return usage;
+    },
+  };
+}
+
+function hasAccounting(usage: AgentUsage | undefined): usage is AgentUsage {
+  return !!usage && toTurnUsage(usage) !== undefined;
 }
 
 /**
@@ -74,19 +120,28 @@ export function watchTurn(
   subscribe: (listener: (event: AgentManagerEvent) => void) => () => void,
 ): TurnWatcher {
   let end: TurnEnd | null = null;
-  let usage: TurnUsage | undefined;
+  let reading: AgentUsage | undefined;
   const unsubscribe = subscribe((event) => {
     if (end || event.type !== "agent_stream") return;
     const inner = event.event;
-    // Providers report usage on turn completion or as updates during the turn.
-    if (inner.type === "usage_updated" || inner.type === "turn_completed") {
-      usage = toTurnUsage(inner.usage) ?? usage;
+    // Providers report usage on turn completion or as updates during the turn; updates
+    // that only describe the context window are skipped.
+    if (
+      (inner.type === "usage_updated" || inner.type === "turn_completed") &&
+      hasAccounting(inner.usage)
+    ) {
+      reading = inner.usage;
     }
     if (inner.type === "turn_completed") end = { type: "turn_completed" };
     else if (inner.type === "turn_canceled") end = { type: "turn_canceled" };
     else if (inner.type === "turn_failed") end = { type: "turn_failed", error: inner.error };
   });
-  return { end: () => end, usage: () => usage, stop: unsubscribe };
+  return {
+    end: () => end,
+    reading: () => reading,
+    usage: () => toTurnUsage(reading),
+    stop: unsubscribe,
+  };
 }
 
 interface AgentWait {
@@ -204,6 +259,7 @@ async function waitForSetup(deps: GoalPortDeps, workspaceId: string): Promise<vo
 }
 
 export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
+  const meter = createTurnUsageMeter();
   return {
     async createAgent(input) {
       const { provider, model } = splitProviderModel(input.provider);
@@ -248,7 +304,7 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
           options?.signal,
         );
         const end = watcher.end();
-        const usage = watcher.usage();
+        const usage = meter.measure(agentId, watcher.reading());
         const reported = usage ? { usage } : {};
         if (end?.type === "turn_canceled") return { outcome: "canceled", ...reported };
         if (end?.type === "turn_failed")

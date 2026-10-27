@@ -782,3 +782,56 @@ test("config edits: settings change after creation, and a goal that failed while
   expect(types).toContain("goal.reopened");
   expect(types.filter((t) => t === "lead.attached")).toHaveLength(2);
 }, 60_000);
+
+test("usage breakdown: every agent's turns are listed by role and add up to the goal's usage", async () => {
+  const repo = createGitRepo(root);
+  const respond = scriptedAgents([implementTask("a")], (_prompt, cwd) => {
+    writeFileSync(path.join(cwd, "a.txt"), "from a\n");
+    return "built a";
+  });
+  const client = await boot(respond);
+  expect(client.getLastServerInfoMessage()?.features?.goalUsageBreakdown).toBe(true);
+  const pushed: { usageBreakdown?: unknown[] }[] = [];
+  const owner = client.observeGoalUpdates();
+  owner.subscribe({
+    snapshot: () => {},
+    update: (message) => {
+      if (message.type === "goal.update") pushed.push(message.payload.goal);
+    },
+  });
+  await owner.ready;
+
+  await client.goalCreate({
+    goalId: "g1",
+    title: "Ship",
+    objective: "add a.txt",
+    criteria: ["a.txt exists"],
+    config: managedConfig(repo),
+  });
+  const done = await waitFor(() => client.goalInspect("g1"), isFinished);
+  expect(done.goal?.status).toBe("completed");
+  const usage = done.goal?.usage;
+  const breakdown = done.goal?.usageBreakdown ?? [];
+  expect(usage?.totalTurns).toBeGreaterThan(0);
+  expect(breakdown.map((e) => e.role)).toEqual(
+    expect.arrayContaining(["lead", "worker", "reviewer", "verifier"]),
+  );
+  expect(breakdown.find((e) => e.role === "worker")).toMatchObject({
+    taskId: "a",
+    runId: expect.any(String),
+    provider: expect.any(String),
+  });
+  expect(breakdown.find((e) => e.role === "reviewer")?.changeSetId).toEqual(expect.any(String));
+  const sum = (key: "totalTurns" | "totalTokens") =>
+    breakdown.reduce((total, e) => total + e.usage[key], 0);
+  expect(sum("totalTurns")).toBe(usage?.totalTurns);
+  expect(sum("totalTokens")).toBe(usage?.totalTokens);
+  const byRole = Object.values(done.goal?.usageByRole ?? {});
+  expect(byRole.reduce((total, u) => total + (u?.totalTurns ?? 0), 0)).toBe(usage?.totalTurns);
+  // The pushed summary carries the breakdown to a client that declared the capability.
+  await waitFor(
+    async () => pushed.at(-1),
+    (goal) => (goal?.usageBreakdown?.length ?? 0) === breakdown.length,
+  );
+  await owner.release();
+}, 60_000);
