@@ -627,6 +627,8 @@ export const fr: TranslationResources = {
         "Corrigez ce que l’erreur signale dans le worktree d’intégration ({{path}}), puis relancez la fusion. La revue et l’approbation restent valables.",
       permissionFailureHint:
         "Un agent a demandé une autorisation et son exécution s'est terminée. Choisissez Me demander ou Mode Auto dans les réglages, puis relancez.",
+      questionFailureHint:
+        "Un agent a posé une question à laquelle personne ne pouvait répondre et son exécution s'est terminée. Choisissez Me demander ou Mode Auto dans les réglages, ou supprimez ce qui provoque la question, puis relancez.",
       retryTask: "Relancer",
       criteria: "Critères d'acceptation",
       tasks: "Tâches",

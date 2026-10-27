@@ -617,6 +617,8 @@ export const en = {
         "Fix what the error names in the integration worktree ({{path}}), then Retry merge. The review and approval stand.",
       permissionFailureHint:
         "An agent asked for a permission and its run ended. Choose Ask me or Auto mode in the settings, then retry.",
+      questionFailureHint:
+        "An agent asked a question nobody could answer and its run ended. Choose Ask me or Auto mode in the settings, or remove what makes it ask, then retry.",
       retryTask: "Retry",
       criteria: "Acceptance criteria",
       tasks: "Tasks",

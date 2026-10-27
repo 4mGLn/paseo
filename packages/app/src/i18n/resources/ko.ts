@@ -622,6 +622,8 @@ export const ko: TranslationResources = {
         "오류가 가리키는 문제를 통합 워크트리({{path}})에서 고친 뒤 병합 다시 시도를 누르세요. 검토와 승인은 그대로 유지됩니다.",
       permissionFailureHint:
         "에이전트가 권한을 요청해 실행이 끝났습니다. 설정에서 '내게 묻기'나 'Auto 모드'를 고른 뒤 다시 시도하세요.",
+      questionFailureHint:
+        "에이전트가 아무도 답할 수 없는 질문을 해 실행이 끝났습니다. 설정에서 '내게 묻기'나 'Auto 모드'를 고르거나 질문의 원인을 없앤 뒤 다시 시도하세요.",
       retryTask: "다시 시도",
       criteria: "수락 기준",
       tasks: "작업",

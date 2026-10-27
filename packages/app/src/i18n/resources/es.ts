@@ -626,6 +626,8 @@ export const es: TranslationResources = {
         "Corrige lo que indica el error en el worktree de integración ({{path}}) y reintenta la fusión. La revisión y la aprobación siguen vigentes.",
       permissionFailureHint:
         "Un agente pidió un permiso y su ejecución terminó. Elige Preguntarme o Modo Auto en los ajustes y vuelve a intentarlo.",
+      questionFailureHint:
+        "Un agente hizo una pregunta que nadie podía responder y su ejecución terminó. Elige Preguntarme o Modo Auto en los ajustes, o quita lo que provoca la pregunta, y vuelve a intentarlo.",
       retryTask: "Reintentar",
       criteria: "Criterios de aceptación",
       tasks: "Tareas",

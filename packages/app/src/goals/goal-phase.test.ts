@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   goalControlsAvailable,
   goalFailedOnPermission,
+  goalFailedOnQuestion,
   goalGuidance,
   goalPhase,
   goalRetryLabelKey,
@@ -267,5 +268,22 @@ describe("goalFailedOnPermission", () => {
     expect(goalFailedOnPermission({ status: "executing", failureReason: "needs_permission" })).toBe(
       false,
     );
+  });
+});
+
+describe("goalFailedOnQuestion", () => {
+  const question =
+    "No task can make progress. Failed or blocked: a. Task a stopped on a request " +
+    '(needs_permission): Agent asked a question and the goal\'s permission policy (fail) cannot answer it: "Configure or skip?". ' +
+    "Change the policy to wait or auto, or resolve what triggers the question, then retry.";
+
+  it("tells a task that stopped on a question from one that stopped on a permission", () => {
+    expect(goalFailedOnPermission({ status: "failed", failureReason: question })).toBe(true);
+    expect(goalFailedOnQuestion({ status: "failed", failureReason: question })).toBe(true);
+    const permission =
+      "No task can make progress. Failed or blocked: a. Task a stopped on a request " +
+      '(needs_permission): Agent is waiting for permission to use Bash: "git push"';
+    expect(goalFailedOnPermission({ status: "failed", failureReason: permission })).toBe(true);
+    expect(goalFailedOnQuestion({ status: "failed", failureReason: permission })).toBe(false);
   });
 });
