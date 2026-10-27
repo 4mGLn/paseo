@@ -47,6 +47,7 @@ interface SupportedMutableConfigPatch {
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
   /** Validated with the daemon's team schema; replaces the whole record. */
   teams?: AgentTeamsConfig;
+  goals?: { maxConcurrentRuns?: number };
   skills?: MutableDaemonConfig["skills"];
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
@@ -289,6 +290,7 @@ const RELOADABLE_PATHS = [
   "daemon.terminalProfiles",
   "daemon.agentProfiles",
   "daemon.teams",
+  "daemon.goals.maxConcurrentRuns",
   "app.baseUrl",
   "agents.idleRuntimeCleanup",
   "agents.resumeOnStartup",
@@ -318,6 +320,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.teams", "teams"],
+  ["daemon.goals.maxConcurrentRuns", "goals.maxConcurrentRuns"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.idleRuntimeCleanup", "idleRuntimeCleanup"],
   ["agents.resumeOnStartup", "resumeOnStartup"],
@@ -376,6 +379,14 @@ function pickRelayPatch(
   return Object.keys(picked).length > 0 ? { relay: picked } : {};
 }
 
+function pickGoalsPatch(
+  goals: MutableDaemonConfigPatch["goals"],
+): Pick<SupportedMutableConfigPatch, "goals"> {
+  return goals?.maxConcurrentRuns !== undefined
+    ? { goals: { maxConcurrentRuns: goals.maxConcurrentRuns } }
+    : {};
+}
+
 function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
   return {
     ...pickRelayPatch(patch.relay),
@@ -408,6 +419,7 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
     ...(patch.terminalProfiles !== undefined ? { terminalProfiles: patch.terminalProfiles } : {}),
     ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
     ...(patch.teams !== undefined ? { teams: parseAgentTeamsConfigPatch(patch.teams) } : {}),
+    ...pickGoalsPatch(patch.goals),
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
     ...(patch.features !== undefined ? { features: patch.features } : {}),
@@ -957,6 +969,9 @@ function mergeMutableDaemonPatch(
   if (patch.teams !== undefined) {
     if (Object.keys(patch.teams).length > 0) next.teams = patch.teams;
     else delete next.teams;
+  }
+  if (patch.goals?.maxConcurrentRuns !== undefined) {
+    next.goals = { ...next.goals, maxConcurrentRuns: patch.goals.maxConcurrentRuns };
   }
   return Object.keys(next).length > 0 ? next : undefined;
 }
