@@ -643,6 +643,9 @@ export const ar: TranslationResources = {
       resume: "استئناف",
       retryGoal: "إعادة محاولة المهام الفاشلة",
       retryPlanning: "إعادة محاولة التخطيط",
+      retryMerge: "إعادة محاولة الدمج",
+      mergeFailureHint:
+        "أصلح ما يذكره الخطأ في شجرة عمل التكامل ({{path}})، ثم أعد محاولة الدمج. تبقى المراجعة والموافقة سارية.",
       permissionFailureHint:
         "طلب وكيل إذنًا فانتهى تشغيله. اختر «اسألني» أو «وضع Auto» في الإعدادات، ثم أعد المحاولة.",
       retryTask: "إعادة المحاولة",
@@ -745,6 +748,7 @@ export const ar: TranslationResources = {
       goalAcknowledged: "تم التجاهل",
       goalConfigUpdated: "تم تغيير الإعدادات",
       goalReopened: "إعادة التخطيط",
+      integrationRetried: "إعادة الدمج: {{subject}}",
     },
     toasts: {
       plan_review: "الخطة جاهزة للمراجعة: {{title}}",

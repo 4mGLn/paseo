@@ -617,6 +617,9 @@ export const en = {
       resume: "Resume",
       retryGoal: "Retry failed tasks",
       retryPlanning: "Retry planning",
+      retryMerge: "Retry merge",
+      mergeFailureHint:
+        "Fix what the error names in the integration worktree ({{path}}), then Retry merge. The review and approval stand.",
       permissionFailureHint:
         "An agent asked for a permission and its run ended. Choose Ask me or Auto mode in the settings, then retry.",
       retryTask: "Retry",
@@ -719,6 +722,7 @@ export const en = {
       goalAcknowledged: "Dismissed",
       goalConfigUpdated: "Settings changed",
       goalReopened: "Planning again",
+      integrationRetried: "Merging again: {{subject}}",
     },
     toasts: {
       plan_review: "Plan ready for review: {{title}}",

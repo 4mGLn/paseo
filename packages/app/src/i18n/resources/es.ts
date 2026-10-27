@@ -626,6 +626,9 @@ export const es: TranslationResources = {
       resume: "Reanudar",
       retryGoal: "Reintentar tareas fallidas",
       retryPlanning: "Reintentar la planificación",
+      retryMerge: "Reintentar la fusión",
+      mergeFailureHint:
+        "Corrige lo que indica el error en el worktree de integración ({{path}}) y reintenta la fusión. La revisión y la aprobación siguen vigentes.",
       permissionFailureHint:
         "Un agente pidió un permiso y su ejecución terminó. Elige Preguntarme o Modo Auto en los ajustes y vuelve a intentarlo.",
       retryTask: "Reintentar",
@@ -728,6 +731,7 @@ export const es: TranslationResources = {
       goalAcknowledged: "Descartado",
       goalConfigUpdated: "Ajustes cambiados",
       goalReopened: "Planificando de nuevo",
+      integrationRetried: "Fusionando de nuevo: {{subject}}",
     },
     toasts: {
       plan_review: "Plan listo para revisar: {{title}}",

@@ -636,6 +636,9 @@ export const ru: TranslationResources = {
       resume: "Продолжить",
       retryGoal: "Повторить неудачные задачи",
       retryPlanning: "Повторить планирование",
+      retryMerge: "Повторить слияние",
+      mergeFailureHint:
+        "Устраните то, что указано в ошибке, в рабочем дереве интеграции ({{path}}), затем повторите слияние. Проверка и одобрение сохраняются.",
       permissionFailureHint:
         "Агент запросил разрешение, и его запуск завершился. Выберите в настройках «Спросить меня» или «Режим Auto» и повторите.",
       retryTask: "Повторить",
@@ -738,6 +741,7 @@ export const ru: TranslationResources = {
       goalAcknowledged: "Скрыто",
       goalConfigUpdated: "Настройки изменены",
       goalReopened: "Планирование заново",
+      integrationRetried: "Повторное слияние: {{subject}}",
     },
     toasts: {
       plan_review: "План готов к проверке: {{title}}",
