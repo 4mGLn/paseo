@@ -836,3 +836,16 @@ test("usage breakdown: every agent's turns are listed by role and add up to the 
   );
   await owner.release();
 }, 60_000);
+
+test("the worker run cap is read and changed through the daemon config, and a bad value is refused", async () => {
+  const client = await boot();
+  expect(client.getLastServerInfoMessage()?.features?.goalConcurrencyConfig).toBe(true);
+  expect((await client.getDaemonConfig()).config.goals?.maxConcurrentRuns).toBeUndefined();
+
+  const patched = await client.patchDaemonConfig({ goals: { maxConcurrentRuns: 6 } });
+  expect(patched.config.goals?.maxConcurrentRuns).toBe(6);
+  expect((await client.getDaemonConfig()).config.goals?.maxConcurrentRuns).toBe(6);
+
+  await expect(client.patchDaemonConfig({ goals: { maxConcurrentRuns: 0 } })).rejects.toThrow();
+  expect((await client.getDaemonConfig()).config.goals?.maxConcurrentRuns).toBe(6);
+});

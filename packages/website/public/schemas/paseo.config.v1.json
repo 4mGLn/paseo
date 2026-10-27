@@ -247,6 +247,18 @@
             "additionalProperties": false
           }
         },
+        "goals": {
+          "type": "object",
+          "properties": {
+            "maxConcurrentRuns": {
+              "description": "Worker runs across all goals at once (default 4). Applied without a restart.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            }
+          },
+          "additionalProperties": false
+        },
         "cors": {
           "type": "object",
           "properties": {
