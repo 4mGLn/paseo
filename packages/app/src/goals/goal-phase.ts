@@ -159,12 +159,20 @@ export function goalGuidance(goal: Goal): GoalGuidance {
 }
 
 /**
- * The goal failed because an agent asked for a permission. The daemon names the turn outcome
- * `needs_permission` in the reason when the Lead stops on it ("Lead agent did not finish
- * planning (needs_permission).", goal-manager.ts); that identifier is the stable part of the text.
+ * The goal failed because an agent asked for a permission or asked a question. The daemon
+ * names the turn outcome `needs_permission` in the reason when the Lead or a task stops on it
+ * ("Lead agent did not finish planning (needs_permission).", "Task a stopped on a request
+ * (needs_permission): ...", goal-manager.ts); that identifier is the stable part of the text.
  */
 export function goalFailedOnPermission(goal: Pick<Goal, "status" | "failureReason">): boolean {
   return goal.status === "failed" && (goal.failureReason ?? "").includes("needs_permission");
+}
+
+/** Of those, one where the agent asked a question; the daemon quotes it in the reason. */
+export function goalFailedOnQuestion(goal: Pick<Goal, "status" | "failureReason">): boolean {
+  return (
+    goalFailedOnPermission(goal) && (goal.failureReason ?? "").includes("Agent asked a question")
+  );
 }
 
 /** The daemon refuses more plan rejections than this (docs/goals.md "Control a running goal"). */
