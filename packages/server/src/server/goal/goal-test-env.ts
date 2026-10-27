@@ -170,6 +170,10 @@ export class Harness {
   notifyFailures = 0;
   /** Every notification attempt, accepted or not. */
   notifyAttempts = 0;
+  /** Mode switches asked for, in order. */
+  modeSwitches: { agentId: string; permission: string }[] = [];
+  /** Agents whose mode switch fails. */
+  failModeSwitch = new Set<string>();
   turns: Turn[] = [];
   active = 0;
   peakActive = 0;
@@ -210,6 +214,13 @@ export class Harness {
           },
         });
       });
+    },
+    setPermissionMode: async (agentId, permission) => {
+      this.modeSwitches.push({ agentId, permission });
+      if (this.failModeSwitch.has(agentId)) throw new Error(`agent ${agentId} unavailable`);
+      // The fake Codex applies a new mode from the next turn, as the real one does.
+      const provider = this.agents.find((a) => a.agentId === agentId)?.provider ?? "";
+      return { modeId: permission, nextTurn: provider.startsWith("codex") };
     },
     knownProviders: () => ["claude", "codex", "opencode", "claude-review"],
     cancel: async (agentId) => {
