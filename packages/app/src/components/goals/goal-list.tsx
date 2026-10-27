@@ -1,52 +1,26 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  Check,
-  ChevronRight,
-  Flag,
-  Folder,
-} from "lucide-react-native";
+import { ArrowDown, ArrowUp, Check, ChevronRight } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Goal, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { SettingsCard, SettingsSection } from "@/components/settings";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { PressHighlight } from "@/components/ui/press-highlight";
-import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative } from "@/constants/platform";
 import {
-  GOAL_LIST_FILTERS,
   buildGoalListSections,
   canAcknowledgeGoal,
-  countGoalsByFilter,
   goalAttention,
   isBlockedOnUser,
   type GoalListFilter,
 } from "@/goals/goal-attention";
 import { goalBadge, priorityBadgeLabel, rowUsageLabel } from "@/goals/goal-labels";
-import {
-  GOAL_PRIORITIES,
-  GOAL_PRIORITY_FILTER_ALL,
-  GOAL_SORTS,
-  goalPriority,
-  isGoalArchived,
-  type GoalPriorityFilter,
-  type GoalSort,
-} from "@/goals/goal-management";
+import { goalPriority, isGoalArchived } from "@/goals/goal-management";
 import { goalListProgress, goalPercent } from "@/goals/goal-progress";
-import {
-  GOAL_PROJECT_FILTER_ALL,
-  describeGoalProject,
-  type GoalProjectFilterOption,
-  type GoalProjectOption,
-} from "@/goals/goal-projects";
+import { describeGoalProject, type GoalProjectOption } from "@/goals/goal-projects";
 import { goalWaitingOnText } from "@/goals/goal-waiting-on";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { settingsStyles } from "@/styles/settings";
@@ -56,15 +30,9 @@ import { GoalActionsMenu } from "./goal-actions-menu";
 import { GoalBar } from "./goal-bar";
 
 const ThemedChevronRight = withUnistyles(ChevronRight);
-const ThemedFolder = withUnistyles(Folder);
-const ThemedFlag = withUnistyles(Flag);
-const ThemedArrowUpDown = withUnistyles(ArrowUpDown);
 const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedArrowDown = withUnistyles(ArrowDown);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const folderIcon = <ThemedFolder size={ICON_SIZE.sm} uniProps={mutedColorMapping} />;
-const flagIcon = <ThemedFlag size={ICON_SIZE.sm} uniProps={mutedColorMapping} />;
-const sortIcon = <ThemedArrowUpDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />;
 const highPriorityIcon = <ThemedArrowUp size={12} uniProps={mutedColorMapping} />;
 const lowPriorityIcon = <ThemedArrowDown size={12} uniProps={mutedColorMapping} />;
 
@@ -75,230 +43,10 @@ export interface GoalListDismiss {
   pendingGoalId: string | null;
 }
 
-export function GoalListFilters({
-  goals,
-  filter,
-  onChange,
-}: {
-  goals: readonly GoalSummary[];
-  filter: GoalListFilter;
-  onChange: (filter: GoalListFilter) => void;
-}): ReactElement {
-  const { t } = useTranslation();
-  const size = useIsCompactFormFactor() ? "sm" : "xs";
-  const counts = useMemo(() => countGoalsByFilter(goals), [goals]);
-  const options = useMemo<SegmentedControlOption<GoalListFilter>[]>(
-    () =>
-      GOAL_LIST_FILTERS.map((value) => {
-        const label = t(`goals.filters.${value}`);
-        const showCount = value === "needs_you" && counts.needs_you > 0;
-        return {
-          value,
-          label: showCount ? t("goals.filterWithCount", { label, n: counts.needs_you }) : label,
-          testID: `goals-filter-${value}`,
-        };
-      }),
-    [counts.needs_you, t],
-  );
-  return (
-    <SegmentedControl
-      options={options}
-      value={filter}
-      onValueChange={onChange}
-      size={size}
-      testID="goals-filter"
-    />
-  );
-}
-
-/** Narrows the list to one project; the caller shows it only when goals span more than one. */
-export function GoalProjectFilter({
-  options,
-  value,
-  onChange,
-}: {
-  options: readonly GoalProjectFilterOption[];
-  value: string;
-  onChange: (key: string) => void;
-}): ReactElement {
-  const { t } = useTranslation();
-  const size = useIsCompactFormFactor() ? "sm" : "xs";
-  const allLabel = t("goals.projectFilter.all");
-  const selected = options.find((option) => option.key === value);
-  const label = selected?.name ?? allLabel;
-  const selectAll = useCallback(() => onChange(GOAL_PROJECT_FILTER_ALL), [onChange]);
-  return (
-    <DropdownMenu>
-      <DropdownTrigger
-        size={size}
-        leading={folderIcon}
-        accessibilityRole="button"
-        accessibilityLabel={t("goals.projectFilter.label", { project: label })}
-        testID="goals-project-filter-trigger"
-      >
-        {label}
-      </DropdownTrigger>
-      <DropdownMenuContent
-        side="bottom"
-        align="start"
-        minWidth={240}
-        maxWidth={360}
-        testID="goals-project-filter-menu"
-      >
-        <DropdownMenuItem
-          selected={!selected}
-          onSelect={selectAll}
-          testID="goals-project-filter-all"
-        >
-          {allLabel}
-        </DropdownMenuItem>
-        {options.map((option) => (
-          <GoalProjectFilterItem
-            key={option.key}
-            option={option}
-            selected={option.key === selected?.key}
-            onChange={onChange}
-          />
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function GoalProjectFilterItem({
-  option,
-  selected,
-  onChange,
-}: {
-  option: GoalProjectFilterOption;
-  selected: boolean;
-  onChange: (key: string) => void;
-}): ReactElement {
-  const { t } = useTranslation();
-  const handleSelect = useCallback(() => onChange(option.key), [onChange, option.key]);
-  return (
-    <DropdownMenuItem
-      selected={selected}
-      description={option.path ?? undefined}
-      onSelect={handleSelect}
-      testID={`goals-project-filter-option-${option.key}`}
-    >
-      {t("goals.projectFilter.option", { project: option.name, n: option.count })}
-    </DropdownMenuItem>
-  );
-}
-
-/** Narrows the list to one priority; a goal without one counts as normal. */
-export function GoalPriorityFilterMenu({
-  value,
-  onChange,
-}: {
-  value: GoalPriorityFilter;
-  onChange: (value: GoalPriorityFilter) => void;
-}): ReactElement {
-  const { t } = useTranslation();
-  const size = useIsCompactFormFactor() ? "sm" : "xs";
-  const label =
-    value === GOAL_PRIORITY_FILTER_ALL
-      ? t("goals.priorityFilter.all")
-      : t("goals.priorityFilter.label", { priority: t(`goals.priority.levels.${value}`) });
-  const choices: GoalPriorityFilter[] = [GOAL_PRIORITY_FILTER_ALL, ...GOAL_PRIORITIES];
-  return (
-    <DropdownMenu>
-      <DropdownTrigger
-        size={size}
-        leading={flagIcon}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        testID="goals-priority-filter-trigger"
-      >
-        {label}
-      </DropdownTrigger>
-      <DropdownMenuContent
-        side="bottom"
-        align="start"
-        minWidth={200}
-        testID="goals-priority-filter-menu"
-      >
-        {choices.map((choice) => (
-          <ChoiceItem
-            key={choice}
-            value={choice}
-            label={
-              choice === GOAL_PRIORITY_FILTER_ALL
-                ? t("goals.priorityFilter.all")
-                : t(`goals.priority.levels.${choice}`)
-            }
-            selected={choice === value}
-            onChange={onChange}
-            testID={`goals-priority-filter-${choice}`}
-          />
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-/** The order inside each group; remembered on this device. */
-export function GoalSortMenu({
-  value,
-  onChange,
-}: {
-  value: GoalSort;
-  onChange: (value: GoalSort) => void;
-}): ReactElement {
-  const { t } = useTranslation();
-  const size = useIsCompactFormFactor() ? "sm" : "xs";
-  const label = t("goals.sort.label", { sort: t(`goals.sort.${value}`) });
-  return (
-    <DropdownMenu>
-      <DropdownTrigger
-        size={size}
-        leading={sortIcon}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        testID="goals-sort-trigger"
-      >
-        {label}
-      </DropdownTrigger>
-      <DropdownMenuContent side="bottom" align="start" minWidth={200} testID="goals-sort-menu">
-        {GOAL_SORTS.map((sort) => (
-          <ChoiceItem
-            key={sort}
-            value={sort}
-            label={t(`goals.sort.${sort}`)}
-            selected={sort === value}
-            onChange={onChange}
-            testID={`goals-sort-${sort}`}
-          />
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function ChoiceItem<T extends string>({
-  value,
-  label,
-  selected,
-  onChange,
-  testID,
-}: {
-  value: T;
-  label: string;
-  selected: boolean;
-  onChange: (value: T) => void;
-  testID: string;
-}): ReactElement {
-  const handleSelect = useCallback(() => onChange(value), [onChange, value]);
-  return (
-    <DropdownMenuItem selected={selected} onSelect={handleSelect} testID={testID}>
-      {label}
-    </DropdownMenuItem>
-  );
-}
-
-/** Shows archived goals in their own group; offered only on hosts with `goalManagement`. */
+/**
+ * Shows archived goals under the empty state, where the list toolbar is absent; offered only on
+ * hosts with `goalManagement`. The toolbar has its own icon toggle.
+ */
 export function GoalArchivedToggle({
   value,
   onChange,

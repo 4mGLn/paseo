@@ -8,15 +8,14 @@ import type { Goal, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { GoalDetail } from "@/components/goals/goal-detail";
 import { GoalEmptyState } from "@/components/goals/goal-empty-state";
 import { GoalFormSheet } from "@/components/goals/goal-form-sheet";
+import { GoalArchivedToggle, GoalList, type GoalListDismiss } from "@/components/goals/goal-list";
 import {
-  GoalArchivedToggle,
-  GoalList,
-  GoalListFilters,
+  GoalArchivedIconToggle,
   GoalPriorityFilterMenu,
   GoalProjectFilter,
   GoalSortMenu,
-  type GoalListDismiss,
-} from "@/components/goals/goal-list";
+  GoalStatusFilterMenu,
+} from "@/components/goals/goal-list-toolbar";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HostFilter } from "@/components/hosts/host-filter";
 import { Button } from "@/components/ui/button";
@@ -38,6 +37,7 @@ import {
   filterGoalsByProject,
 } from "@/goals/goal-projects";
 import { buildTemplatePrefill, type GoalTemplate } from "@/goals/goal-templates";
+import { DEFAULT_GOAL_LIST_FILTER, activeGoalToolbarControls } from "@/goals/goal-toolbar";
 import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
 import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -297,7 +297,7 @@ function GoalsListContent({
   onCreate: () => void;
 }): ReactElement {
   const { t } = useTranslation();
-  const [filter, setFilter] = useState<GoalListFilter>("all");
+  const [filter, setFilter] = useState<GoalListFilter>(DEFAULT_GOAL_LIST_FILTER);
   const [projectFilter, setProjectFilter] = useState<string>(GOAL_PROJECT_FILTER_ALL);
   const [priorityFilter, setPriorityFilter] =
     useState<GoalPriorityFilter>(GOAL_PRIORITY_FILTER_ALL);
@@ -334,42 +334,62 @@ function GoalsListContent({
     onClearSearch();
     setPriorityFilter(GOAL_PRIORITY_FILTER_ALL);
     setProjectFilter(GOAL_PROJECT_FILTER_ALL);
-    setFilter("all");
+    setFilter(DEFAULT_GOAL_LIST_FILTER);
   }, [onClearSearch]);
+  const active = activeGoalToolbarControls({
+    status: filter,
+    project: projectFilter,
+    priority: priorityFilter,
+    sort,
+  });
 
   return (
     <>
       <View style={styles.listToolbar}>
-        <View style={styles.searchSlot}>
-          <SearchField
-            key={searchFieldKey}
-            value={searchInput}
-            onChangeText={onSearchInputChange}
-            placeholder={t("goals.search.placeholder")}
-            clearAccessibilityLabel={t("goals.search.clear")}
-            testID="goals-search-input"
-            clearTestID="goals-search-clear"
-          />
+        <View style={styles.listToolbarStart}>
+          <View style={styles.searchSlot}>
+            <SearchField
+              key={searchFieldKey}
+              value={searchInput}
+              onChangeText={onSearchInputChange}
+              placeholder={t("goals.search.placeholder")}
+              clearAccessibilityLabel={t("goals.search.clear")}
+              testID="goals-search-input"
+              clearTestID="goals-search-clear"
+            />
+          </View>
+          <GoalsHostFilter hosts={hosts} serverId={serverId} onSelectHost={onSelectHost} />
+          <View style={styles.filterIcons}>
+            <GoalStatusFilterMenu
+              // Counted before search, project and priority narrow the list, so a filter never
+              // hides how many goals wait on you.
+              goals={allGoals}
+              filter={filter}
+              onChange={setFilter}
+              active={active.status}
+            />
+            {projectFilterOptions.length > 1 ? (
+              <GoalProjectFilter
+                options={projectFilterOptions}
+                value={projectFilter}
+                onChange={setProjectFilter}
+                active={active.project}
+              />
+            ) : null}
+            {supportsManagement ? (
+              <GoalPriorityFilterMenu
+                value={priorityFilter}
+                onChange={setPriorityFilter}
+                active={active.priority}
+              />
+            ) : null}
+            <GoalSortMenu value={sort} onChange={setSort} active={active.sort} />
+            {supportsManagement ? (
+              <GoalArchivedIconToggle value={showArchived} onChange={onShowArchivedChange} />
+            ) : null}
+          </View>
         </View>
-        <GoalsHostFilter hosts={hosts} serverId={serverId} onSelectHost={onSelectHost} />
-        <GoalListFilters goals={goals} filter={filter} onChange={setFilter} />
-        {projectFilterOptions.length > 1 ? (
-          <GoalProjectFilter
-            options={projectFilterOptions}
-            value={projectFilter}
-            onChange={setProjectFilter}
-          />
-        ) : null}
-        {supportsManagement ? (
-          <GoalPriorityFilterMenu value={priorityFilter} onChange={setPriorityFilter} />
-        ) : null}
-        <GoalSortMenu value={sort} onChange={setSort} />
-        {supportsManagement ? (
-          <GoalArchivedToggle value={showArchived} onChange={onShowArchivedChange} />
-        ) : null}
-        <View style={styles.toolbarEnd}>
-          <GoalsNewButton visible={canCreate} onPress={onCreate} />
-        </View>
+        <GoalsNewButton visible={canCreate} onPress={onCreate} />
       </View>
       <ScrollView
         style={styles.scroll}
@@ -552,22 +572,32 @@ const styles = StyleSheet.create((theme) => ({
     maxWidth: 720,
     alignSelf: "center",
   },
-  // Search, filters and the new-goal button share one wrapping row. On a phone the search
-  // field takes the whole first line; on a wide window it is a third of what it used to be.
+  // Two blocks: search and filters wrap inside the start block, so New goal stays on the
+  // first line at any width. On a phone the search field fills the first line beside it and
+  // the filters wrap underneath.
   listToolbar: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingTop: theme.spacing[4],
+  },
+  listToolbarStart: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
     gap: theme.spacing[2],
-    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
-    paddingTop: theme.spacing[4],
   },
   searchSlot: {
     width: { xs: "100%", md: 240 },
     minWidth: 0,
   },
-  toolbarEnd: {
-    marginLeft: "auto",
+  filterIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
   },
   listScrollContent: {
     flexGrow: 1,
