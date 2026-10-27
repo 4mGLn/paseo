@@ -1,6 +1,6 @@
 import type pino from "pino";
 import { toGoalSummary } from "@getpaseo/protocol/goal/progress";
-import type { Goal } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalEvent } from "@getpaseo/protocol/goal/types";
 import type { SessionInboundMessage, SessionOutboundMessage } from "../../messages.js";
 import type { GoalService } from "../../goal/goal-service.js";
 
@@ -12,6 +12,8 @@ export interface GoalSessionHost {
   supportsGoalAcknowledgeEvents?(): boolean;
   /** Whether the client parses the goal management events. Assumed when absent. */
   supportsGoalManagementEvents?(): boolean;
+  /** Whether the client parses config edits and the "auto" policy. Assumed when absent. */
+  supportsGoalConfigEdit?(): boolean;
 }
 
 // COMPAT(goalControlEvents): added in v0.13.0, remove after 2027-04-26.
@@ -32,6 +34,25 @@ const GOAL_MANAGEMENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "goal.archived",
   "goal.unarchived",
 ]);
+
+// COMPAT(goalConfigEdit): added in v0.13.3, remove after 2027-04-27.
+const GOAL_CONFIG_EDIT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "goal.config_updated",
+  "goal.reopened",
+]);
+
+// COMPAT(goalConfigEdit): added in v0.13.3, remove after 2027-04-27. An older client's
+// policy enum has no "auto"; the nearest it knows is "wait", which auto also does when
+// an agent still asks.
+export function withoutAutoPolicy<T extends Pick<Goal, "config">>(goal: T): T {
+  if (goal.config?.onPermissionRequest !== "auto") return goal;
+  return { ...goal, config: { ...goal.config, onPermissionRequest: "wait" } };
+}
+
+function eventWithoutAutoPolicy(event: GoalEvent): GoalEvent {
+  if (event.type !== "goal.created" || event.config?.onPermissionRequest !== "auto") return event;
+  return { ...event, config: { ...event.config, onPermissionRequest: "wait" } };
+}
 
 export interface GoalSessionOptions {
   host: GoalSessionHost;
@@ -61,7 +82,8 @@ type GoalMutationRequest = Extract<
       | "goal.rename.request"
       | "goal.set_priority.request"
       | "goal.archive.request"
-      | "goal.unarchive.request";
+      | "goal.unarchive.request"
+      | "goal.update_config.request";
   }
 >;
 
@@ -82,7 +104,8 @@ type GoalMutationResponseType =
   | "goal.rename.response"
   | "goal.set_priority.response"
   | "goal.archive.response"
-  | "goal.unarchive.response";
+  | "goal.unarchive.response"
+  | "goal.update_config.response";
 
 export class GoalSession {
   private readonly host: GoalSessionHost;
@@ -170,6 +193,10 @@ export class GoalSession {
         return this.mutate(msg, "goal.unarchive.response", () =>
           this.goalService.unarchive(msg.goalId, msg.eventId),
         );
+      case "goal.update_config.request":
+        return this.mutate(msg, "goal.update_config.response", () =>
+          this.goalService.updateConfig(msg.goalId, msg.changes, msg.eventId),
+        );
       case "goal.delete.request":
         return this.handleDelete(msg.requestId, msg.goalId);
       case "goal.list.request":
@@ -187,7 +214,7 @@ export class GoalSession {
     run: () => Promise<Goal>,
   ): Promise<void> {
     try {
-      const goal = await run();
+      const goal = this.forClient(await run());
       this.host.emit({
         type: responseType,
         payload: { requestId: request.requestId, goal, error: null },
@@ -208,7 +235,11 @@ export class GoalSession {
       });
       this.host.emit({
         type: "goal.list.response",
-        payload: { requestId: msg.requestId, goals: goals.map(toGoalSummary), error: null },
+        payload: {
+          requestId: msg.requestId,
+          goals: goals.map((goal) => toGoalSummary(this.forClient(goal))),
+          error: null,
+        },
       });
     } catch (error) {
       this.emitError(msg.requestId, "goal.list.request", error);
@@ -234,22 +265,33 @@ export class GoalSession {
       const hideControl = this.host.supportsGoalControlEvents?.() === false;
       const hideAcknowledge = this.host.supportsGoalAcknowledgeEvents?.() === false;
       const hideManagement = this.host.supportsGoalManagementEvents?.() === false;
+      const hideConfigEdit = this.host.supportsGoalConfigEdit?.() === false;
       const visible =
-        hideControl || hideAcknowledge || hideManagement
+        hideControl || hideAcknowledge || hideManagement || hideConfigEdit
           ? events.filter(
               (e) =>
                 !(hideControl && GOAL_CONTROL_EVENT_TYPES.has(e.type)) &&
                 !(hideAcknowledge && GOAL_ACKNOWLEDGE_EVENT_TYPES.has(e.type)) &&
-                !(hideManagement && GOAL_MANAGEMENT_EVENT_TYPES.has(e.type)),
+                !(hideManagement && GOAL_MANAGEMENT_EVENT_TYPES.has(e.type)) &&
+                !(hideConfigEdit && GOAL_CONFIG_EDIT_EVENT_TYPES.has(e.type)),
             )
           : events;
       this.host.emit({
         type: "goal.inspect.response",
-        payload: { requestId, goal, events: visible, error: null },
+        payload: {
+          requestId,
+          goal: this.forClient(goal),
+          events: hideConfigEdit ? visible.map(eventWithoutAutoPolicy) : visible,
+          error: null,
+        },
       });
     } catch (error) {
       this.emitError(requestId, "goal.inspect.request", error);
     }
+  }
+
+  private forClient(goal: Goal): Goal {
+    return this.host.supportsGoalConfigEdit?.() === false ? withoutAutoPolicy(goal) : goal;
   }
 
   private emitError(requestId: string, requestType: string, error: unknown): void {

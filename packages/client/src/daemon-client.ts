@@ -9,7 +9,13 @@ import {
   type HostRouteFrame,
 } from "@getpaseo/protocol/binary-frames/index";
 import type { GoalListArchivedFilter } from "@getpaseo/protocol/goal/rpc-schemas";
-import type { GoalConfig, GoalPriority, GoalStatus, TaskSpec } from "@getpaseo/protocol/goal/types";
+import type {
+  GoalConfig,
+  GoalConfigChanges,
+  GoalPriority,
+  GoalStatus,
+  TaskSpec,
+} from "@getpaseo/protocol/goal/types";
 import { messageTooLargeError } from "./daemon-client-transport-utils.js";
 import type { HostAdd, HostUpdate, HostDirectory } from "@getpaseo/protocol/hosts";
 import { legacyUsageIcon } from "./legacy-usage-icons.js";
@@ -6684,6 +6690,7 @@ export class DaemonClient {
       // An older daemon would drop the thinking settings and run on model defaults.
       throw new Error("Update the host to choose a thinking level per goal role.");
     }
+    if (config?.onPermissionRequest === "auto") this.requireGoalConfigEdit();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.create.response">({
       requestId: options.requestId,
       message: {
@@ -6908,6 +6915,38 @@ export class DaemonClient {
     });
   }
 
+  supportsGoalConfigEdit(): boolean {
+    return this.lastServerInfoMessage?.features?.goalConfigEdit === true;
+  }
+
+  private requireGoalConfigEdit(): void {
+    if (!this.supportsGoalConfigEdit()) {
+      throw new Error("Update the host to change goal settings or use the auto permission policy.");
+    }
+  }
+
+  /**
+   * Change a goal's settings after creation; see GoalConfigChangesSchema. Absent keeps a
+   * setting, null clears an optional one. Refused for an archived goal.
+   */
+  async goalUpdateConfig(options: {
+    goalId: string;
+    changes: GoalConfigChanges;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalConfigEdit();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.update_config.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.update_config.request",
+        goalId: options.goalId,
+        changes: options.changes,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
   private requireGoalControls(): void {
     if (this.lastServerInfoMessage?.features?.goalControls !== true) {
       throw new Error("Update the host to reject plans, retry, pause or resume goals.");
@@ -6933,7 +6972,10 @@ export class DaemonClient {
     });
   }
 
-  /** Retry one failed or cancelled task, or all of them; a failed goal is reopened. */
+  /**
+   * Retry one failed or cancelled task, or all of them; a failed goal is reopened. With
+   * goalConfigEdit, a goal that failed while planning is reopened with a fresh Lead.
+   */
   async goalRetry(options: {
     goalId: string;
     taskId?: string;

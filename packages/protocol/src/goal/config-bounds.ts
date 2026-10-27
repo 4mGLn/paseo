@@ -37,3 +37,20 @@ export const DEFAULT_GOAL_BRANCH_PREFIX = "paseo-goal";
 export const GOAL_BRANCH_PREFIX_PATTERN =
   /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
 export const GOAL_BRANCH_PREFIX_MAX_LENGTH = 100;
+
+/** What a goal does when one of its agents asks for a permission; see GoalConfig.onPermissionRequest. */
+export const GOAL_PERMISSION_POLICIES = ["fail", "wait", "auto"] as const;
+export type GoalPermissionPolicy = (typeof GOAL_PERMISSION_POLICIES)[number];
+
+/** Recorded on every goal created without a policy. */
+export const DEFAULT_GOAL_PERMISSION_POLICY: GoalPermissionPolicy = "wait";
+
+/**
+ * The policy a goal runs under. A config without one was stored before "wait" became
+ * the default, when a missing policy meant "fail"; it keeps that meaning.
+ */
+export function goalPermissionPolicy(
+  config: { onPermissionRequest?: GoalPermissionPolicy } | null | undefined,
+): GoalPermissionPolicy {
+  return config?.onPermissionRequest ?? "fail";
+}

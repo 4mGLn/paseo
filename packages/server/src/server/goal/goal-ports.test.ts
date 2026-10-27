@@ -175,10 +175,18 @@ describe("workspace port", () => {
 });
 
 describe("agent port", () => {
-  function setup(reported: { runtime?: string | null; config?: string } = {}) {
+  function setup(
+    reported: { runtime?: string | null; config?: string } = {},
+    modes: Record<string, string[]> = { claude: ["default", "auto", "bypassPermissions"] },
+  ) {
     const calls: Record<string, unknown>[] = [];
     const deps = {
       logger: pino({ level: "silent" }),
+      modeCatalog: async (provider: string) => {
+        const ids = modes[provider];
+        if (!ids) throw new Error(`no catalog for ${provider}`);
+        return ids.map((id) => ({ id }));
+      },
       createAgent: async (input: Record<string, unknown>) => {
         calls.push(input);
         return {
@@ -228,5 +236,25 @@ describe("agent port", () => {
     expect(await silent.port.createAgent({ ...base, provider: "codex" })).toEqual({
       agentId: "agent-1",
     });
+  });
+
+  test("each permission policy picks how the agent starts", async () => {
+    const { port, calls } = setup({}, { claude: ["default", "auto"], codex: ["read-only"] });
+    // Absent is the policy of goals stored before policies were recorded.
+    await port.createAgent({ ...base, provider: "claude" });
+    await port.createAgent({ ...base, provider: "claude", permission: "fail" });
+    await port.createAgent({ ...base, provider: "claude", permission: "wait" });
+    await port.createAgent({ ...base, provider: "claude/opus", permission: "auto" });
+    // A provider without an auto mode, or whose modes cannot be read, starts as under wait.
+    await port.createAgent({ ...base, provider: "codex", permission: "auto" });
+    await port.createAgent({ ...base, provider: "opencode", permission: "auto" });
+    expect(calls.map((c) => ({ unattended: c.unattended, mode: c.mode }))).toEqual([
+      { unattended: true, mode: undefined },
+      { unattended: true, mode: undefined },
+      { unattended: false, mode: undefined },
+      { unattended: false, mode: "auto" },
+      { unattended: false, mode: undefined },
+      { unattended: false, mode: undefined },
+    ]);
   });
 });

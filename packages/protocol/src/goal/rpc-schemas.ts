@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  GoalConfigChangesSchema,
   GoalConfigSchema,
   GoalEventSchema,
   GoalPrioritySchema,
@@ -110,6 +111,8 @@ export const GoalRetryRequestSchema = z.object({
   requestId: z.string(),
   goalId: z.string(),
   // Omit to retry every failed or cancelled task. A failed goal always retries all of them.
+  // With server_info.features.goalConfigEdit, a goal that failed while planning (no tasks)
+  // is reopened with a fresh Lead; send no taskId then.
   taskId: z.string().trim().min(1).optional(),
   eventId,
 });
@@ -167,6 +170,18 @@ export const GoalUnarchiveRequestSchema = z.object({
   type: z.literal("goal.unarchive.request"),
   requestId: z.string(),
   goalId: z.string(),
+  eventId,
+});
+
+// Gated on server_info.features.goalConfigEdit. Changes a goal's settings in any state but
+// archived; see GoalConfigChangesSchema for what can change. Validated as on create. A live
+// goal uses the new settings from its next turn or run on; the same settings again return
+// the goal unchanged.
+export const GoalUpdateConfigRequestSchema = z.object({
+  type: z.literal("goal.update_config.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  changes: GoalConfigChangesSchema,
   eventId,
 });
 
@@ -285,6 +300,11 @@ export const GoalArchiveResponseSchema = z.object({
 
 export const GoalUnarchiveResponseSchema = z.object({
   type: z.literal("goal.unarchive.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalUpdateConfigResponseSchema = z.object({
+  type: z.literal("goal.update_config.response"),
   payload: GoalMutationPayloadSchema,
 });
 

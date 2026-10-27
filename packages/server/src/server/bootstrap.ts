@@ -163,7 +163,10 @@ import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { GoalEventLog } from "./goal/event-log.js";
 import { createGitPort } from "./goal/git-ops.js";
-import { createGoalConfigValidator } from "./goal/goal-config-validation.js";
+import {
+  createGoalConfigUpdateValidator,
+  createGoalConfigValidator,
+} from "./goal/goal-config-validation.js";
 import { GoalManager } from "./goal/goal-manager.js";
 import { createGoalAgentPort, createGoalWorkspacePort } from "./goal/goal-ports.js";
 import { GoalService } from "./goal/goal-service.js";
@@ -1502,6 +1505,8 @@ export async function createPaseoDaemon(
   const goalGit = createGitPort();
   const goalModelCatalog = (provider: string, cwd: string) =>
     providerSnapshotManager.listModels({ provider, cwd, wait: true });
+  const goalModeCatalog = (provider: string, cwd: string) =>
+    providerSnapshotManager.listModes({ provider, cwd, wait: true });
   const goalService = new GoalService(
     goalStore,
     goalEventLog,
@@ -1509,7 +1514,9 @@ export async function createPaseoDaemon(
       git: goalGit,
       knownProviders: () => agentManager.getRegisteredProviderIds(),
       modelCatalog: goalModelCatalog,
+      modeCatalog: goalModeCatalog,
     }),
+    createGoalConfigUpdateValidator({ modeCatalog: goalModeCatalog }),
   );
   await goalService.start();
   for (const [goalId, error] of goalStore.unreadable) {
@@ -1526,6 +1533,7 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveScheduleWorkspaceExternal,
     waitForWorkspaceSetup: (workspaceId: string) => workspaceSetupRuntime.wait(workspaceId),
     modelCatalog: goalModelCatalog,
+    modeCatalog: goalModeCatalog,
   };
   const goalManager = new GoalManager({
     store: goalStore,

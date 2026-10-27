@@ -1,7 +1,11 @@
 import path from "node:path";
 import type { Command } from "commander";
 import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
-import { GoalPrioritySchema, type GoalConfig } from "@getpaseo/protocol/goal/types";
+import {
+  GoalPermissionPolicySchema,
+  GoalPrioritySchema,
+  type GoalConfig,
+} from "@getpaseo/protocol/goal/types";
 import { parseEnum } from "./ls.js";
 import type { SingleResult } from "../../output/index.js";
 import {
@@ -41,7 +45,7 @@ export interface GoalCreateOptions extends GoalCommandOptions {
   runTimeout?: string;
   goalTimeout?: string;
   retryBackoff?: string;
-  onPermission?: "fail" | "wait";
+  onPermission?: string;
   allowProvider?: string[];
   priority?: string;
 }
@@ -103,7 +107,15 @@ function buildConfig(options: GoalCreateOptions): GoalConfig | undefined {
     ...(options.requireApproval ? { requireHumanApproval: true } : {}),
     ...(options.maxRework ? { maxReworkRounds: Number.parseInt(options.maxRework, 10) } : {}),
     ...(buildLimits(options) ? { limits: buildLimits(options) } : {}),
-    ...(options.onPermission ? { onPermissionRequest: options.onPermission } : {}),
+    ...(options.onPermission
+      ? {
+          onPermissionRequest: parseEnum(
+            GoalPermissionPolicySchema,
+            options.onPermission,
+            "--on-permission",
+          ),
+        }
+      : {}),
     ...(options.allowProvider?.length ? { allowedProviders: options.allowProvider } : {}),
   };
 }
