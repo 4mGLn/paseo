@@ -20,6 +20,7 @@ import {
   goalRetryLabelKey,
   isIntegrationFailedChangeSet,
   goalFailedOnPermission,
+  goalFailedOnQuestion,
   goalGuidance,
   goalSteps,
 } from "@/goals/goal-phase";
@@ -413,7 +414,11 @@ function GoalGuidanceBanner({ serverId, goal }: { serverId: string; goal: Goal }
       >
         {showPermissionHint ? (
           <View style={styles.bannerHint} testID="goal-permission-failure-hint">
-            <Text style={styles.meta}>{t("goals.detail.permissionFailureHint")}</Text>
+            <Text style={styles.meta}>
+              {goalFailedOnQuestion(goal)
+                ? t("goals.detail.questionFailureHint")
+                : t("goals.detail.permissionFailureHint")}
+            </Text>
             <View style={styles.bannerActions}>
               <Button
                 size="sm"
