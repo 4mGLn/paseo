@@ -426,3 +426,202 @@ describe("goal controls in the Manager", () => {
     expect(verifier?.provider).toBe("opencode");
   });
 });
+
+describe("config edits and reopening a planning failure in the reducer", () => {
+  test("a config update replaces the settings, even after the goal failed", () => {
+    const goal = failedGoal();
+    const next = { ...CONFIG, maxAttempts: 3, onPermissionRequest: "wait" as const };
+    const updated = run([{ type: "goal.config_updated", config: next }], goal);
+    expect(updated.config).toEqual(next);
+    expect(updated.status).toBe("failed");
+  });
+
+  test("providers, the repository and the other fixed fields cannot change", () => {
+    const goal = run([managed()]);
+    for (const change of [
+      { defaultProvider: "claude" },
+      { cwd: "/elsewhere" },
+      { leadThinking: "high" },
+      { allowedProviders: ["codex"] },
+    ]) {
+      expect(() =>
+        run([{ type: "goal.config_updated", config: { ...CONFIG, ...change } }], goal),
+      ).toThrow(/cannot be changed after creation/);
+    }
+  });
+
+  test("a manual or archived goal's settings cannot change", () => {
+    const manual = run([{ type: "goal.created", title: "T", objective: "", criteria: [] }]);
+    expect(() => run([{ type: "goal.config_updated", config: CONFIG }], manual)).toThrow(
+      /manual goal/,
+    );
+    const archived = run([{ type: "goal.archived" }], failedGoal());
+    expect(() => run([{ type: "goal.config_updated", config: CONFIG }], archived)).toThrow(
+      /archived/,
+    );
+  });
+
+  test("a goal that failed while planning reopens to planning", () => {
+    const failed = run([
+      managed(),
+      { type: "goal.failed", reason: "Lead agent did not finish planning (needs_permission)." },
+      { type: "goal.acknowledged" },
+    ]);
+    const reopened = run([{ type: "goal.reopened" }], failed);
+    expect(reopened).toMatchObject({
+      status: "planning",
+      failureReason: null,
+      reopens: 1,
+      acknowledgedAt: null,
+    });
+    // Only a failed goal without tasks, within its limits.
+    expect(() => run([{ type: "goal.reopened" }], reopened)).toThrow(/goal is planning/);
+    expect(() => run([{ type: "goal.reopened" }], failedGoal())).toThrow(/retry its tasks/);
+    const late = run([
+      managed({ limits: { goalTimeoutMinutes: 1 } }),
+      { type: "goal.failed", reason: "x" },
+    ]);
+    expect(() =>
+      applyGoalEvent(late, ev(late, { type: "goal.reopened" }, "2026-01-01T00:05:00.000Z")),
+    ).toThrow(/time limit has passed/);
+  });
+});
+
+describe("config edits and reopening in the Manager", () => {
+  let env: GoalTestEnv;
+
+  beforeEach(async () => {
+    env = createGoalTestEnv();
+    await env.init();
+  });
+  afterEach(() => env.cleanup());
+
+  const tick = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test("a goal whose Lead stopped for a permission is reopened by retry with a fresh Lead", async () => {
+    let leadTurns = 0;
+    env.script([task("a")]);
+    const scripted = env.harness.respond;
+    env.harness.respond = (turn) => {
+      if (turn.prompt.includes("You are the Lead")) {
+        leadTurns += 1;
+        if (leadTurns === 1) return { outcome: "needs_permission" };
+      }
+      return scripted?.(turn) ?? "hold";
+    };
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, onPermissionRequest: "fail" });
+    await env.settle(manager);
+    const failed = env.goalOf(store);
+    expect(failed.status).toBe("failed");
+    expect(failed.failureReason).toMatch(/did not finish planning \(needs_permission\)/);
+    const firstLead = failed.leadAgentId;
+
+    // Change the policy, then reopen; a resend with the same eventId does nothing more.
+    await service.updateConfig("g1", { onPermissionRequest: "wait" });
+    await expect(service.retry("g1", "a")).rejects.toThrow(/not found/);
+    await service.retry("g1", undefined, "reopen-1");
+    await service.retry("g1", undefined, "reopen-1");
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("completed");
+    expect(goal.reopens).toBe(1);
+    expect(goal.leadAgentId).not.toBe(firstLead);
+    const leads = env.harness.agents.filter((a) => a.labels["paseo.goal-role"] === "lead");
+    expect(leads.map((a) => a.permission)).toEqual(["fail", "wait"]);
+    const events = await env.readEvents();
+    expect(events.filter((e) => e.type === "goal.reopened")).toHaveLength(1);
+    // The first Lead stays in the history.
+    expect(events.filter((e) => e.type === "lead.attached")).toHaveLength(2);
+  });
+
+  test("a live goal picks up new settings: more parallel runs and the next turn's policy", async () => {
+    const seen: (string | undefined)[] = [];
+    const runTurn = env.harness.agentPort.runTurn;
+    env.harness.agentPort.runTurn = (agentId, prompt, options) => {
+      seen.push(options?.permission);
+      return runTurn(agentId, prompt, options);
+    };
+    env.script([task("a"), task("b"), task("c")], () => "hold");
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, maxParallel: 1, onPermissionRequest: "fail" });
+    await tick();
+    expect(env.harness.turns).toHaveLength(1);
+
+    await service.updateConfig("g1", { maxParallel: 3, onPermissionRequest: "auto" });
+    await tick();
+    expect(env.harness.turns).toHaveLength(3);
+    // The Lead and the first worker ran under fail; the turns after the change wait.
+    expect(seen).toEqual(["fail", "fail", "wait", "wait"]);
+    const workers = env.harness.agents.filter((a) => a.labels["paseo.goal-task"]);
+    expect(workers.map((a) => a.permission)).toEqual(["fail", "auto", "auto"]);
+
+    env.script([task("a"), task("b"), task("c")]);
+    for (const turn of env.harness.turns) turn.resolve({ outcome: "completed", text: "ok" });
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("completed");
+  });
+
+  test("a goal that used up its runs can be given more and retried", async () => {
+    let failing = true;
+    env.script([task("a"), task("b", { dependsOn: ["a"] })], () =>
+      failing ? { outcome: "failed", error: "flaky" } : { outcome: "completed", text: "ok" },
+    );
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, {
+      ...CONFIG,
+      maxAttempts: 1,
+      limits: { maxRuns: 1, retryBackoffSeconds: 0 },
+    });
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("failed");
+    await expect(service.retry("g1", undefined)).rejects.toThrow(/run limit of 1 is used up/);
+
+    failing = false;
+    await service.updateConfig("g1", { limits: { maxRuns: 10 } }, "more-runs");
+    await service.retry("g1", undefined);
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("completed");
+  });
+
+  test("the service records the wait default, checks changes and ignores a repeat", async () => {
+    const { store, service } = await env.boot();
+    env.script([task("a")], () => "hold");
+    expect(CONFIG.onPermissionRequest).toBeUndefined();
+    const created = await service.create({
+      goalId: "g2",
+      title: "T",
+      objective: "O",
+      criteria: ["works"],
+      config: CONFIG,
+    });
+    expect(created.config?.onPermissionRequest).toBe("wait");
+
+    const before = env.goalOf(store, "g2").lastSeq;
+    // The current settings again, or no changes, record nothing.
+    await service.updateConfig("g2", { onPermissionRequest: "wait", maxParallel: 2 });
+    await service.updateConfig("g2", {});
+    expect(env.goalOf(store, "g2").lastSeq).toBe(before);
+
+    // A cleared optional setting falls back to its default; a cleared last limit drops limits.
+    const updated = await service.updateConfig("g2", {
+      testCommand: "npm test",
+      limits: { retryBackoffSeconds: null, maxCostUsd: 5 },
+    });
+    expect(updated.config?.limits).toEqual({ maxCostUsd: 5 });
+    expect(updated.config?.testCommand).toBe("npm test");
+    const cleared = await service.updateConfig("g2", {
+      testCommand: null,
+      limits: { maxCostUsd: null },
+    });
+    expect(cleared.config?.testCommand).toBeUndefined();
+    expect(cleared.config?.limits).toBeUndefined();
+
+    await expect(service.updateConfig("g2", { maxParallel: 99 })).rejects.toThrow(
+      /Invalid goal settings/,
+    );
+    const manual = await service.create({ goalId: "m", title: "M", objective: "", criteria: [] });
+    await expect(service.updateConfig(manual.id, { maxParallel: 3 })).rejects.toThrow(/manual/);
+  });
+});

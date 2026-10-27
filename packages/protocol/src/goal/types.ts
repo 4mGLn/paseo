@@ -4,12 +4,15 @@ import {
   GOAL_BRANCH_PREFIX_MAX_LENGTH,
   GOAL_BRANCH_PREFIX_PATTERN,
   GOAL_CONFIG_BOUNDS as B,
+  GOAL_PERMISSION_POLICIES,
   type GoalNumberBound,
 } from "./config-bounds.js";
 
 function boundedInt(bound: GoalNumberBound) {
   return z.number().int().min(bound.min).max(bound.max);
 }
+
+export const GoalPermissionPolicySchema = z.enum(GOAL_PERMISSION_POLICIES);
 
 export const GoalStatusSchema = z.enum([
   "planning",
@@ -132,15 +135,52 @@ export const GoalConfigSchema = z.object({
       deadlineAt: z.string().trim().min(1).optional(),
     })
     .optional(),
-  // What to do when an unattended agent asks for a permission: fail the run, or leave
-  // the request pending in Paseo for a person to answer (bounded by the run timeout).
-  onPermissionRequest: z.enum(["fail", "wait"]).optional(),
+  // What to do when an agent asks for a permission. `fail`: agents start in the provider's
+  // unattended mode and a run that still asks fails. `wait`: agents start in the provider's
+  // default mode and requests stay pending in Paseo for a person (bounded by the run
+  // timeout). `auto`: like `wait`, but agents start in the provider's "auto" mode when it
+  // lists one. Absent means `fail` (goals stored before `wait` became the default);
+  // read it with goalPermissionPolicy. `auto` needs server_info.features.goalConfigEdit.
+  onPermissionRequest: GoalPermissionPolicySchema.optional(),
   // The chat the goal was started from. Its outcome is posted back there when the goal ends.
   originAgentId: z.string().trim().min(1).optional(),
   // Providers the goal may use; a plan naming any other is sent back to the Lead.
   allowedProviders: z.array(AgentProviderSchema.trim().min(1)).min(1).optional(),
 });
 export type GoalConfig = z.infer<typeof GoalConfigSchema>;
+
+// The settings goal.update_config can change after creation. Absent leaves a setting as it
+// is; null clears an optional one (its default applies, or the budget or deadline is
+// removed). Providers, models, thinking, cwd, branchPrefix, allowedProviders and the
+// objective are fixed for the goal's life.
+export const GoalConfigChangesSchema = z.object({
+  onPermissionRequest: GoalPermissionPolicySchema.optional(),
+  notifyLead: z.boolean().optional(),
+  autoApprovePlan: z.boolean().optional(),
+  requireHumanApproval: z.boolean().optional(),
+  testCommand: z.string().trim().min(1).nullable().optional(),
+  maxParallel: boundedInt(B.maxParallel).optional(),
+  maxAttempts: boundedInt(B.maxAttempts).optional(),
+  maxReworkRounds: boundedInt(B.maxReworkRounds).nullable().optional(),
+  limits: z
+    .object({
+      maxTasks: boundedInt(B.limits.maxTasks).nullable().optional(),
+      maxRuns: boundedInt(B.limits.maxRuns).nullable().optional(),
+      runTimeoutMinutes: boundedInt(B.limits.runTimeoutMinutes).nullable().optional(),
+      goalTimeoutMinutes: boundedInt(B.limits.goalTimeoutMinutes).nullable().optional(),
+      retryBackoffSeconds: boundedInt(B.limits.retryBackoffSeconds).nullable().optional(),
+      maxTotalTokens: boundedInt(B.limits.maxTotalTokens).nullable().optional(),
+      maxCostUsd: z
+        .number()
+        .min(B.limits.maxCostUsd.min)
+        .max(B.limits.maxCostUsd.max)
+        .nullable()
+        .optional(),
+      deadlineAt: z.string().trim().min(1).nullable().optional(),
+    })
+    .optional(),
+});
+export type GoalConfigChanges = z.infer<typeof GoalConfigChangesSchema>;
 
 export const RunStatusSchema = z.enum(["running", "succeeded", "failed", "interrupted"]);
 
@@ -540,6 +580,13 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
   // Accepted only after the goal has ended.
   z.object({ ...eventEnvelope, type: z.literal("goal.archived") }),
   z.object({ ...eventEnvelope, type: z.literal("goal.unarchived") }),
+  // A person changed the goal's settings; `config` is the whole config from now on. Accepted
+  // in any state but archived, ended goals included. Only the fields GoalConfigChanges
+  // lists may differ from the current config.
+  z.object({ ...eventEnvelope, type: z.literal("goal.config_updated"), config: GoalConfigSchema }),
+  // A person reopened a goal that failed while planning (it has no tasks); a fresh Lead
+  // plans again. A goal that failed later is reopened by goal.retried instead.
+  z.object({ ...eventEnvelope, type: z.literal("goal.reopened") }),
 ]);
 export type GoalEvent = z.infer<typeof GoalEventSchema>;
 export type GoalEventType = GoalEvent["type"];
