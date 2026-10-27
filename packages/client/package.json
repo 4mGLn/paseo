@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/client",
-  "version": "0.13.3-mgln-dev",
+  "version": "0.13.4-mgln-dev",
   "description": "Paseo client SDK package",
   "files": [
     "dist",
@@ -47,8 +47,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@getpaseo/protocol": "0.13.3-mgln-dev",
-    "@getpaseo/relay": "0.13.3-mgln-dev",
+    "@getpaseo/protocol": "0.13.4-mgln-dev",
+    "@getpaseo/relay": "0.13.4-mgln-dev",
     "ws": "^8.20.0",
     "zod": "^4.4.3"
   },
