@@ -185,7 +185,12 @@ export type GoalConfigChanges = z.infer<typeof GoalConfigChangesSchema>;
 export const RunStatusSchema = z.enum(["running", "succeeded", "failed", "interrupted"]);
 
 // What a provider reported for one agent turn. Any field may be missing: providers
-// report different subsets, and some report nothing.
+// report different subsets, and some report nothing. Daemons from v0.13.3 record every
+// provider the same way: `inputTokens` is fresh input (cache writes included, cache reads
+// not), `cachedInputTokens` is input read from the prompt cache, and every field covers
+// the whole turn. Earlier daemons stored what the provider sent: Codex input included
+// cache reads and covered only the turn's last model call, and Claude cost was the
+// session's running total.
 export const TurnUsageSchema = z.object({
   inputTokens: z.number().nonnegative().optional(),
   cachedInputTokens: z.number().nonnegative().optional(),
@@ -200,16 +205,50 @@ export const UsageTotalsSchema = z.object({
   inputTokens: z.number().nonnegative(),
   cachedInputTokens: z.number().nonnegative(),
   outputTokens: z.number().nonnegative(),
-  // inputTokens + outputTokens; what limits.maxTotalTokens is checked against.
+  // inputTokens + outputTokens, cache reads excluded; what limits.maxTotalTokens is checked against.
   totalTokens: z.number().nonnegative(),
+  // Only what providers reported; a turn without a cost adds nothing.
   costUsd: z.number().nonnegative(),
   reportedTurns: z.number().int().nonnegative(),
   totalTurns: z.number().int().nonnegative(),
+  // Turns that reported a cost, and turns that reported a token count. Fewer than
+  // totalTurns means the matching total is a lower bound. Absent from daemons before v0.13.3.
+  costReportedTurns: z.number().int().nonnegative().optional(),
+  tokenReportedTurns: z.number().int().nonnegative().optional(),
 });
 export type UsageTotals = z.infer<typeof UsageTotalsSchema>;
 
 export const UsageRoleSchema = z.enum(["lead", "worker", "reviewer", "verifier"]);
 export type UsageRole = z.infer<typeof UsageRoleSchema>;
+
+// Usage of one agent over all its turns. Retries and reworks start new agents, so they
+// are separate entries.
+export const UsageBreakdownEntrySchema = z.object({
+  agentId: z.string(),
+  role: UsageRoleSchema,
+  // A worker's task and run; a reviewer's change set and its task.
+  taskId: z.string().optional(),
+  runId: z.string().optional(),
+  changeSetId: z.string().optional(),
+  // Provider id and model, split from the goal's "provider/model" setting; model is absent
+  // when the setting names the provider only.
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  thinking: z.string().optional(),
+  usage: UsageTotalsSchema,
+  firstAt: z.string(),
+  lastAt: z.string(),
+});
+export type UsageBreakdownEntry = z.infer<typeof UsageBreakdownEntrySchema>;
+
+// Usage totals per role. A role is absent until one of its turns is recorded.
+export const UsageByRoleSchema = z.object({
+  lead: UsageTotalsSchema.optional(),
+  worker: UsageTotalsSchema.optional(),
+  reviewer: UsageTotalsSchema.optional(),
+  verifier: UsageTotalsSchema.optional(),
+});
+export type UsageByRole = z.infer<typeof UsageByRoleSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 // One execution attempt of a task by one agent. Tracked apart from the task so
@@ -359,6 +398,13 @@ export const GoalSchema = z.object({
   // Usage of every agent turn: Lead, workers, reviewers, verifier. Absent until the
   // first turn is recorded, and from daemons that predate usage tracking.
   usage: UsageTotalsSchema.optional(),
+  // Usage per role and per agent; their sums equal `usage`. Absent until the first turn is
+  // recorded, from daemons before v0.13.3, and for clients without the goal_usage_breakdown
+  // capability. The breakdown keeps the agents most recently active; `usageBreakdownTruncated`
+  // counts the ones dropped, whose usage still counts in `usage` and `usageByRole`.
+  usageByRole: UsageByRoleSchema.optional(),
+  usageBreakdown: z.array(UsageBreakdownEntrySchema).optional(),
+  usageBreakdownTruncated: z.number().int().nonnegative().optional(),
   // When every task succeeded and every change set settled, so verification could start.
   // Absent until then, and from daemons that predate stage times.
   verifyStartedAt: z.string().optional(),
@@ -548,13 +594,16 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventEnvelope, type: z.literal("goal.failed"), reason: z.string() }),
   z.object({ ...eventEnvelope, type: z.literal("goal.cancelled") }),
   // One agent turn ended. `usage` is what the provider reported, absent when it reported
-  // nothing. `runId` is set for a worker run's turn.
+  // nothing. `runId` is set for a worker run's turn, `changeSetId` for a reviewer's.
+  // `thinking` is the agent's thinking option; absent from daemons before v0.13.3.
   z.object({
     ...eventEnvelope,
     type: z.literal("usage.recorded"),
     role: UsageRoleSchema,
     agentId: z.string().min(1),
     runId: IdSchema.optional(),
+    changeSetId: IdSchema.optional(),
+    thinking: z.string().min(1).optional(),
     usage: TurnUsageSchema.optional(),
   }),
   // A person stops new worker runs from starting, then lets them start again.

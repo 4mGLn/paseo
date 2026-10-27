@@ -7433,6 +7433,11 @@ export class DaemonClient {
     return this.lastServerInfoMessage?.features?.goalConfigEdit === true;
   }
 
+  /** Goals carry usage per role and per agent, and turns that reported cost or tokens. */
+  supportsGoalUsageBreakdown(): boolean {
+    return this.lastServerInfoMessage?.features?.goalUsageBreakdown === true;
+  }
+
   private requireGoalConfigEdit(): void {
     if (!this.supportsGoalConfigEdit()) {
       throw new Error("Update the host to change goal settings or use the auto permission policy.");

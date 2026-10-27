@@ -3,6 +3,7 @@ import pino from "pino";
 import {
   createGoalAgentPort,
   createGoalWorkspacePort,
+  createTurnUsageMeter,
   settleTurn,
   toTurnUsage,
   watchTurn,
@@ -107,6 +108,91 @@ describe("turn usage", () => {
   test("a turn without usage, or with only unusable numbers, reports none", () => {
     expect(toTurnUsage(undefined)).toBeUndefined();
     expect(toTurnUsage({ inputTokens: Number.NaN, outputTokens: -1 })).toBeUndefined();
+  });
+
+  test("a provider's whole-turn totals win over its context fields", () => {
+    // Codex-like: the top level is the turn's last model call, input including cache reads.
+    expect(
+      toTurnUsage({
+        inputTokens: 206_044,
+        cachedInputTokens: 204_160,
+        outputTokens: 1_372,
+        turnTotals: { inputTokens: 31_000, cachedInputTokens: 2_400_000, outputTokens: 18_000 },
+      }),
+    ).toEqual({ inputTokens: 31_000, cachedInputTokens: 2_400_000, outputTokens: 18_000 });
+    // Claude-like: tokens and the session's cost come as turn totals; the top level holds the
+    // main loop's tokens and the running cost.
+    expect(
+      toTurnUsage({
+        inputTokens: 8,
+        cachedInputTokens: 174_852,
+        outputTokens: 7_609,
+        totalCostUsd: 1.2,
+        turnTotals: {
+          inputTokens: 21_000,
+          cachedInputTokens: 180_000,
+          outputTokens: 7_700,
+          costUsd: 0.53,
+        },
+      }),
+    ).toEqual({
+      inputTokens: 21_000,
+      cachedInputTokens: 180_000,
+      outputTokens: 7_700,
+      costUsd: 0.53,
+    });
+  });
+
+  test("session totals count only their growth since the agent's previous turn", () => {
+    const reading = {
+      inputTokens: 999,
+      sessionTotals: { inputTokens: 300, cachedInputTokens: 50, outputTokens: 40, costUsd: 0.3 },
+    };
+    expect(toTurnUsage(reading)).toEqual({
+      inputTokens: 300,
+      cachedInputTokens: 50,
+      outputTokens: 40,
+      costUsd: 0.3,
+    });
+    expect(
+      toTurnUsage(reading, {
+        inputTokens: 100,
+        cachedInputTokens: 50,
+        outputTokens: 10,
+        costUsd: 0.1,
+      }),
+    ).toEqual({
+      inputTokens: 200,
+      cachedInputTokens: 0,
+      outputTokens: 30,
+      costUsd: expect.closeTo(0.2),
+    });
+    // A total below the baseline means the provider started counting again.
+    expect(toTurnUsage(reading, { inputTokens: 5_000 })).toMatchObject({ inputTokens: 300 });
+    // A field the totals lack falls back to the reading's own.
+    expect(
+      toTurnUsage({ outputTokens: 7, sessionTotals: { costUsd: 2 } }, { costUsd: 1.5 }),
+    ).toEqual({ outputTokens: 7, costUsd: expect.closeTo(0.5) });
+  });
+
+  test("each turn of an agent is measured from where its previous turn ended", () => {
+    const meter = createTurnUsageMeter();
+    const reading = (sessionTotals: Record<string, number>) => ({ sessionTotals });
+    expect(meter.measure("a1", reading({ inputTokens: 100, costUsd: 0.1 }))).toEqual({
+      inputTokens: 100,
+      costUsd: 0.1,
+    });
+    expect(meter.measure("a2", reading({ inputTokens: 40 }))).toEqual({ inputTokens: 40 });
+    expect(meter.measure("a1", reading({ inputTokens: 250, costUsd: 0.25 }))).toEqual({
+      inputTokens: 150,
+      costUsd: expect.closeTo(0.15),
+    });
+    // A turn that reported nothing leaves the agent's baseline where it was.
+    expect(meter.measure("a1", undefined)).toBeUndefined();
+    expect(meter.measure("a1", reading({ inputTokens: 300, costUsd: 0.25 }))).toEqual({
+      inputTokens: 50,
+      costUsd: 0,
+    });
   });
 });
 

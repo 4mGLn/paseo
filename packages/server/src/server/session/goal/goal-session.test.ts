@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
@@ -34,6 +34,7 @@ describe("GoalSession", () => {
     acknowledgeEvents?: boolean,
     managementEvents?: boolean,
     configEdit?: boolean,
+    usageBreakdown?: boolean,
   ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
@@ -49,6 +50,9 @@ describe("GoalSession", () => {
           ? {}
           : { supportsGoalManagementEvents: () => managementEvents }),
         ...(configEdit === undefined ? {} : { supportsGoalConfigEdit: () => configEdit }),
+        ...(usageBreakdown === undefined
+          ? {}
+          : { supportsGoalUsageBreakdown: () => usageBreakdown }),
       },
       goalService: service,
       logger: pino({ level: "silent" }),
@@ -523,6 +527,68 @@ describe("GoalSession", () => {
       );
       const created = inspected.events[0];
       expect(created?.type === "goal.created" && created.config?.onPermissionRequest).toBe(policy);
+    });
+  }
+
+  for (const capable of [true, false]) {
+    test(`the usage breakdown ${capable ? "reaches" : "is left out for"} clients ${capable ? "with" : "without"} the capability`, async () => {
+      const at = "2026-01-01T00:00:00.000Z";
+      const events = [
+        {
+          type: "goal.created",
+          title: "T",
+          objective: "o",
+          criteria: [{ id: "c1", text: "works" }],
+          config: {
+            cwd: "/repo",
+            leadProvider: "claude",
+            defaultProvider: "codex",
+            maxParallel: 2,
+            maxAttempts: 2,
+            autoApprovePlan: false,
+            notifyLead: false,
+          },
+        },
+        {
+          type: "usage.recorded",
+          role: "lead",
+          agentId: "lead-1",
+          usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.1 },
+        },
+      ];
+      await writeFile(
+        join(dir, "g1.jsonl"),
+        `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+      );
+      const session = await openSession(true, true, true, true, capable);
+      await send(session, { type: "goal.list.request", requestId: "r1" });
+      await send(session, { type: "goal.inspect.request", requestId: "r2", goalId: "g1" });
+      await send(session, {
+        type: "goal.rename.request",
+        requestId: "r3",
+        goalId: "g1",
+        title: "U",
+      });
+
+      const goals = [
+        lastOf("goal.list.response").payload.goals[0],
+        lastOf("goal.inspect.response").payload.goal,
+        lastOf("goal.rename.response").payload.goal,
+      ];
+      for (const goal of goals) {
+        // The totals reach every client; only the breakdown is new.
+        expect(goal?.usage).toMatchObject({ totalTokens: 15, costReportedTurns: 1 });
+        if (capable) {
+          expect(goal?.usageByRole?.lead).toMatchObject({ totalTokens: 15 });
+          expect(goal?.usageBreakdown).toEqual([
+            expect.objectContaining({ agentId: "lead-1", role: "lead", provider: "claude" }),
+          ]);
+        } else {
+          expect(goal).not.toHaveProperty("usageByRole");
+          expect(goal).not.toHaveProperty("usageBreakdown");
+          expect(goal).not.toHaveProperty("usageBreakdownTruncated");
+        }
+      }
     });
   }
 });

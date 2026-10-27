@@ -1150,6 +1150,7 @@ test("advertises client capabilities in hello", async () => {
       goal_acknowledge_events: true,
       goal_management_events: true,
       goal_config_edit: true,
+      goal_usage_breakdown: true,
       hello_rejection: true,
       background_agents: true,
       browser_host: {
