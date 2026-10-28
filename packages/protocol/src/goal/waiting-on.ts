@@ -1,3 +1,4 @@
+import { interventionClass } from "./interventions.js";
 import type { Goal, Task } from "./types.js";
 
 export type GoalWaitingOnKind =
@@ -5,6 +6,8 @@ export type GoalWaitingOnKind =
   | "planning"
   | "plan_approval"
   | "change_set_approval"
+  | "plan_revision_approval"
+  | "lead_decision"
   | "running"
   | "review"
   | "merge"
@@ -20,6 +23,8 @@ export type GoalWaitingOnKey =
   | "goals.waitingOn.planApproval"
   | "goals.waitingOn.manualTasks"
   | "goals.waitingOn.changeSetApproval"
+  | "goals.waitingOn.planRevisionApproval"
+  | "goals.waitingOn.leadDecision"
   | "goals.waitingOn.runningTask"
   | "goals.waitingOn.startingTask"
   | "goals.waitingOn.review"
@@ -81,6 +86,16 @@ export function describeGoalWaitingOn(goal: Goal): GoalWaitingOn | null {
       params: { count: held.length, ids: ids(held) },
     };
   }
+  // A revision held for a person; one that needs no approval is decided at once.
+  if (goal.planRevisions?.some((r) => r.status === "pending")) {
+    return fixed(
+      "plan_revision_approval",
+      "approval of a plan change",
+      "goals.waitingOn.planRevisionApproval",
+    );
+  }
+  const deciding = leadDecision(goal);
+  if (deciding) return deciding;
   const running = goal.tasks.filter((t) => t.status === "running");
   if (running.length > 0) {
     return {
@@ -134,6 +149,24 @@ export function describeGoalWaitingOn(goal: Goal): GoalWaitingOn | null {
     label: `starting ${plural(pending.length, "task")} ${tasks(pending)}`,
     key: "goals.waitingOn.startingTask",
     params: taskParams(pending),
+  };
+}
+
+/**
+ * The Lead was woken about a failed task. A check-in on a running task does not hold the
+ * goal: the task keeps running meanwhile.
+ */
+function leadDecision(goal: Goal): GoalWaitingOn | null {
+  const deciding = goal.interventions?.find(
+    (i) => i.status === "open" && interventionClass(i) === "failure",
+  );
+  const taskId = deciding?.taskId;
+  if (!taskId) return null;
+  return {
+    kind: "lead_decision",
+    label: `the Lead's decision about ${taskId}`,
+    key: "goals.waitingOn.leadDecision",
+    params: { count: 1, ids: taskId, title: goal.tasks.find((t) => t.id === taskId)?.title ?? "" },
   };
 }
 
