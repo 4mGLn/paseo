@@ -4285,6 +4285,11 @@ export const ServerInfoStatusPayloadSchema = z
         // unverified criteria waived (goal.accepted, Goal.accepted, criterion `waived`). An
         // older daemon refuses the RPC.
         goalAccept: z.boolean().optional(),
+        // COMPAT(goalUserWait): added in v0.13.14, remove gate after 2027-10-28.
+        // limits.userWaitMinutes: the longest one permission request or question waits for a
+        // person's answer; time spent waiting does not count toward the run or goal time
+        // limit (wait.* events, Goal.waits). An older daemon drops the setting silently.
+        goalUserWait: z.boolean().optional(),
         // COMPAT(goalTimeBase): added in v0.13.13, remove gate after 2027-10-28.
         // goal.retry takes `timeMode` (fresh or remaining) to restart a goal's time limit,
         // and goals carry `timeBaseAt`. An older daemon drops the field and refuses the retry
@@ -8400,6 +8405,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.goalLeadInterventions]: z.boolean().optional(),
       [CLIENT_CAPS.goalRecovery]: z.boolean().optional(),
       [CLIENT_CAPS.goalAccept]: z.boolean().optional(),
+      [CLIENT_CAPS.goalUserWait]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()

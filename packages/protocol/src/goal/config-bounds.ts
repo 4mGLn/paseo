@@ -17,6 +17,8 @@ export const GOAL_CONFIG_BOUNDS = {
     maxRuns: { min: 1, max: 500, default: 60 },
     runTimeoutMinutes: { min: 1, max: 1440, default: 60 },
     goalTimeoutMinutes: { min: 1, max: 10080, default: 1440 },
+    // Longest one permission request or question waits for a person's answer.
+    userWaitMinutes: { min: 5, max: 10080, default: 720 },
     retryBackoffSeconds: { min: 0, max: 3600, default: 5 },
     // Fresh input plus output tokens the providers report, over the goal's life; cache
     // reads are not counted. See UsageTotalsSchema.

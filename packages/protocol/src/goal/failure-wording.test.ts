@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 import {
   MAX_WORKER_BLOCKED_REASON_CHARS,
+  NO_ANSWER_PREFIX,
   WORKER_BLOCKED_PREFIX,
+  isNoAnswerFailure,
   isPendingRequestFailure,
+  mentionsNoAnswer,
   isWorkerBlocked,
   needsPerson,
   personDecides,
@@ -185,5 +188,25 @@ describe("blocked errors", () => {
     expect(workerBlockedFailureText("t6", error)).toBe(
       'Task t6 stopped: the worker reported it was blocked: "disk full". Fix what it names and retry.',
     );
+  });
+});
+
+describe("no-answer errors", () => {
+  const error = `${NO_ANSWER_PREFIX} 720 minutes: Agent is waiting for permission to use Bash: git commit`;
+
+  test("need a person whatever the policy, and are not pending requests", () => {
+    expect(isNoAnswerFailure(error)).toBe(true);
+    expect(isNoAnswerFailure("Turn timed out after 60 minutes")).toBe(false);
+    expect(isPendingRequestFailure(error)).toBe(false);
+    expect(needsPerson(error)).toBe(true);
+    expect(personDecides(error, false)).toBe(true);
+  });
+
+  test("are found quoted inside another role's failure", () => {
+    expect(mentionsNoAnswer(`Review failed: Reviewer did not finish (failed: ${error})`)).toBe(
+      true,
+    );
+    expect(mentionsNoAnswer("Review failed: Reviewer did not finish (canceled)")).toBe(false);
+    expect(mentionsNoAnswer(null)).toBe(false);
   });
 });
