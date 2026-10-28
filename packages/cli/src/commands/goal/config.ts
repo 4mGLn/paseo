@@ -28,6 +28,7 @@ export interface GoalConfigOptions extends GoalCommandOptions {
   maxRuns?: string;
   runTimeout?: string;
   goalTimeout?: string;
+  userWait?: string;
   retryBackoff?: string;
   maxTokens?: string;
   maxCost?: string;
@@ -76,6 +77,7 @@ export function buildConfigChanges(options: GoalConfigOptions): GoalConfigChange
     maxRuns: numberChange(options.maxRuns, "--max-runs"),
     runTimeoutMinutes: numberChange(options.runTimeout, "--run-timeout"),
     goalTimeoutMinutes: numberChange(options.goalTimeout, "--goal-timeout"),
+    userWaitMinutes: numberChange(options.userWait, "--user-wait"),
     retryBackoffSeconds: numberChange(options.retryBackoff, "--retry-backoff"),
     maxTotalTokens: numberChange(options.maxTokens, "--max-tokens"),
     maxCostUsd: numberChange(options.maxCost, "--max-cost", false),

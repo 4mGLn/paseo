@@ -93,6 +93,10 @@ export function createGoalCommand(): Command {
       .option("--max-runs <n>", "Agent runs allowed over the goal's lifetime (default 60)")
       .option("--run-timeout <minutes>", "Time allowed for any one agent turn (default 60)")
       .option("--goal-timeout <minutes>", "Time allowed for the whole goal (default 1440)")
+      .option(
+        "--user-wait <minutes>",
+        "Longest one request waits for a person's answer, not counted as run or goal time (default 720)",
+      )
       .option("--retry-backoff <seconds>", "Pause before a failed task is retried (default 5)")
       .option("--max-tokens <n>", "Fail the goal once providers report this many tokens")
       .option("--max-cost <usd>", "Fail the goal once providers report this much cost in USD")
@@ -174,6 +178,10 @@ export function createGoalCommand(): Command {
       .option("--max-runs <n>", "Agent runs over the goal's lifetime, or none for the default")
       .option("--run-timeout <minutes>", "Time for any one agent turn, or none for the default")
       .option("--goal-timeout <minutes>", "Time for the whole goal, or none for the default")
+      .option(
+        "--user-wait <minutes>",
+        "Longest one request waits for an answer, or none for the default",
+      )
       .option("--retry-backoff <seconds>", "Pause before a retry, or none for the default")
       .option("--max-tokens <n>", "Token budget, or none to remove it")
       .option("--max-cost <usd>", "Cost budget in USD, or none to remove it")
