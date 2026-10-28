@@ -8,10 +8,17 @@ import {
   TIME_LIMIT_REACHED_PREFIX,
   TURN_TIMEOUT_PREFIX,
   WORK_NOT_RECOVERED_PREFIX,
+  isCriteriaNotMetFailure,
   isPendingRequestFailure,
 } from "./failure-wording.js";
-import { capText } from "./interventions.js";
-import { CHANGE_SET_INTEGRATION_FAILED, type ChangeSet, type Goal, type Task } from "./types.js";
+import { MAX_RECOVERIES, capText } from "./interventions.js";
+import {
+  CHANGE_SET_INTEGRATION_FAILED,
+  CHANGE_SET_REWORK_FAILED,
+  type ChangeSet,
+  type Goal,
+  type Task,
+} from "./types.js";
 
 /**
  * Why a goal failed and what would let it continue, computed from its state alone. The goal
@@ -27,6 +34,7 @@ export type GoalFailureKind =
   | "budget"
   | "run_limit"
   | "integration_failed"
+  | "rework_failed"
   | "verification"
   | "stuck"
   | "capture"
@@ -108,7 +116,10 @@ export interface GoalDiagnosis {
   merged: { changeSetId: string; taskId: string }[];
   runs: { used: number; max: number };
   blockingLimits: BlockingLimit[];
-  /** False when the goal cannot be recovered in place: a change set was rejected by review. */
+  /**
+   * False when the goal cannot be recovered in place: a change set was rejected by review. One
+   * whose merge or rework failed does not count; a recovery merges or reworks it again.
+   */
   recoverable: boolean;
 }
 
@@ -140,6 +151,10 @@ function deadlineMs(goal: Goal): number {
 
 function isIntegrationFailed(cs: ChangeSet): boolean {
   return cs.status === "rejected" && cs.rejectionReason === CHANGE_SET_INTEGRATION_FAILED;
+}
+
+function isReworkFailed(cs: ChangeSet): boolean {
+  return cs.status === "rejected" && cs.rejectionReason === CHANGE_SET_REWORK_FAILED;
 }
 
 function causeOf(error: string): TaskFailureCause {
@@ -226,8 +241,14 @@ interface Failure {
  */
 function underlyingFailure(goal: Goal): Failure {
   const recovery = goal.recovery;
+  if (!recovery) return { reason: goal.failureReason, failedAt: goal.failedAt ?? null };
+  // A recovery still deciding started from the goal's failure as it was then, which an earlier
+  // recovery's ending may have rewritten since.
+  if (recovery.status !== "ended" && recovery.status !== "applied") {
+    return { reason: recovery.failureReason, failedAt: recovery.failedAt ?? goal.failedAt ?? null };
+  }
   if (
-    recovery?.status === "ended" &&
+    recovery.status === "ended" &&
     recovery.outcome !== "applied" &&
     recovery.resolvedAt === goal.failedAt
   ) {
@@ -356,7 +377,11 @@ function findingsOf(context: FindingContext): GoalFailureFinding[] {
   const { goal, reason, tasks, blocked } = context;
   const findings: GoalFailureFinding[] = [];
   // First: nothing else matters while the goal cannot complete in place.
-  if (goal.changeSets.some((c) => c.status === "rejected" && !isIntegrationFailed(c))) {
+  if (
+    goal.changeSets.some(
+      (c) => c.status === "rejected" && !isIntegrationFailed(c) && !isReworkFailed(c),
+    )
+  ) {
     findings.push({
       kind: "review_rejected",
       remedy:
@@ -396,18 +421,15 @@ function findingsOf(context: FindingContext): GoalFailureFinding[] {
       personNeeded: "depends",
     });
   }
+  const reworks = goal.changeSets.filter(isReworkFailed);
+  if (reworks.length > 0) findings.push(reworkFinding(goal, reworks, tasks));
   if (
     goal.tasks.length > 0 &&
     goal.tasks.every((t) => t.status === "succeeded") &&
     goal.criteria.some((c) => !c.verifiedAt) &&
     context.timePassedAtFailure !== true
   ) {
-    findings.push({
-      kind: "verification",
-      remedy:
-        "Every task succeeded but a criterion was not verified. Recovering with retry verifies again; the plan can only lose tasks now.",
-      personNeeded: "no",
-    });
+    findings.push(verificationFinding(goal, reason));
   }
   if (tasks.some((t) => t.status === "failed") || blocked.length > 0) {
     findings.push({
@@ -420,6 +442,72 @@ function findingsOf(context: FindingContext): GoalFailureFinding[] {
   const byReason = reasonFinding(reason);
   if (byReason) findings.push(byReason);
   return findings;
+}
+
+/**
+ * Every task succeeded but a criterion is unverified. When the verifier judged it unmet, a
+ * recovery's Lead can add fix tasks, after which every criterion is verified again. When it was
+ * never judged (the verifier gave no usable answer, or time ran out mid-verification), a recovery
+ * with retry asks the verifier again. With no recovery left only a person can go on.
+ */
+function verificationFinding(goal: Goal, reason: string | null): GoalFailureFinding {
+  const notMet = isCriteriaNotMetFailure(reason);
+  const what = notMet
+    ? "Every task succeeded but a criterion was not met"
+    : "Every task succeeded but verification did not finish, so a criterion was not verified";
+  const left = MAX_RECOVERIES - (goal.recoveries ?? 0);
+  if (left <= 0) {
+    // A retry does not reopen a goal with nothing failed, so with no recovery left the next
+    // step is a person's: a follow-up goal for now.
+    return {
+      kind: "verification",
+      remedy: `${what}, and all ${MAX_RECOVERIES} recoveries are used. Start a follow-up goal from its integration branch.`,
+      personNeeded: "yes",
+    };
+  }
+  const next = notMet
+    ? "Recover: the Lead can add fix tasks, and every criterion is checked again afterwards."
+    : "Recover with retry: the verifier is asked again about the criteria not verified.";
+  const last = left === 1 ? " This is the last recovery." : "";
+  return { kind: "verification", remedy: `${what}. ${next}${last}`, personNeeded: "no" };
+}
+
+/**
+ * A change set whose rework failed for good. A retry or recovery reopens it and runs the rework
+ * again in the same worktree, so the remedy is whatever stopped the rework task.
+ */
+function reworkFinding(
+  goal: Goal,
+  reworks: readonly ChangeSet[],
+  tasks: readonly TaskDiagnosis[],
+): GoalFailureFinding {
+  const ids = new Set(reworks.map((c) => c.id));
+  const reworkTasks = new Set(
+    goal.tasks.filter((t) => t.rework && ids.has(t.rework.changeSetId)).map((t) => t.id),
+  );
+  const causes = new Set(tasks.filter((t) => reworkTasks.has(t.taskId)).map((t) => t.cause));
+  if (causes.has("pending_request")) {
+    return {
+      kind: "rework_failed",
+      remedy:
+        "A rework stopped on a request nobody could answer. Change the permission policy or resolve what asks, then retry or recover; the rework runs again in its worktree.",
+      personNeeded: "yes",
+    };
+  }
+  if (causes.has("timeout")) {
+    return {
+      kind: "rework_failed",
+      remedy:
+        "A rework timed out. Raise runTimeoutMinutes or recover with advice for it; the rework runs again in its worktree.",
+      personNeeded: "depends",
+    };
+  }
+  return {
+    kind: "rework_failed",
+    remedy:
+      "A rework failed for good. Retry or recover runs it again in its worktree; see the rework task's cause.",
+    personNeeded: "depends",
+  };
 }
 
 function timeFinding(timeMode: string | undefined): GoalFailureFinding {

@@ -116,7 +116,9 @@ export const GoalRetryRequestSchema = z.object({
   // With server_info.features.goalConfigEdit, a goal that failed while planning (no tasks)
   // is reopened with a fresh Lead; send no taskId then. With
   // server_info.features.goalIntegrationRetry, a failed goal's change sets whose merge
-  // failed are merged again too, even when no task failed.
+  // failed are merged again too, even when no task failed. With
+  // server_info.features.goalReworkRetry, change sets whose rework failed are reworked again;
+  // the daemon picks them from the goal, so the request names none.
   taskId: z.string().trim().min(1).optional(),
   // With server_info.features.goalTimeBase: how the time limit restarts, one of
   // GOAL_TIME_MODES. Required once the goal's time limit has passed; omit it to keep the
