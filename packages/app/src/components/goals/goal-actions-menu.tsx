@@ -16,7 +16,7 @@ import {
   Trash2,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import type { Goal, GoalPriority } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalEvent, GoalPriority } from "@getpaseo/protocol/goal/types";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,6 +46,7 @@ import { useHostFeature } from "@/runtime/host-features";
 import type { Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
+import { useRetryTimeChoice } from "./goal-retry-time-sheet";
 import { GoalSettingsSheet } from "./goal-settings-sheet";
 
 const ICON_SIZE = 14;
@@ -221,6 +222,7 @@ type GoalActionHandlers = ReturnType<typeof useGoalActionHandlers>;
 export function GoalActionsMenu({
   serverId,
   goal,
+  events,
   onDeleted,
   open,
   onOpenChange,
@@ -228,6 +230,12 @@ export function GoalActionsMenu({
 }: {
   serverId: string;
   goal: Goal;
+  /**
+   * The goal's history, when the caller has it (the detail does, a list row does not). With it
+   * the retry's time choice says how much Remaining leaves and turns it off when nothing does;
+   * without it the host refuses a Remaining that leaves nothing.
+   */
+  events?: readonly GoalEvent[];
   /** Called after the goal was deleted, such as to leave its detail. */
   onDeleted?: () => void;
   /** Lifted so a hover-revealed trigger stays while its menu is up (docs/hover.md). */
@@ -238,10 +246,16 @@ export function GoalActionsMenu({
   const { t } = useTranslation();
   const actions = useGoalActions(serverId, goal);
   const handlers = useGoalActionHandlers(serverId, { onDeleted });
+  const toast = useToast();
+  const retryChoice = useRetryTimeChoice({ serverId, goal, events });
   const [sheet, setSheet] = useState<"rename" | "settings" | null>(null);
   const openRename = useCallback(() => setSheet("rename"), []);
   const openSettings = useCallback(() => setSheet("settings"), []);
   const closeSheet = useCallback(() => setSheet(null), []);
+  const retryWithChoice = retryChoice.retry;
+  const handleRetry = useCallback(() => {
+    retryWithChoice().catch((error: unknown) => toast.error(toErrorMessage(error)));
+  }, [retryWithChoice, toast]);
   const priority = goalPriority(goal);
 
   const pages = useMemo<MenuPageDefinition[]>(
@@ -298,7 +312,13 @@ export function GoalActionsMenu({
             testID={testID}
           />
           {hasEditActions && hasStateActions ? <DropdownMenuSeparator /> : null}
-          <StateItems goal={goal} actions={actions} handlers={handlers} testID={testID} />
+          <StateItems
+            goal={goal}
+            actions={actions}
+            handlers={handlers}
+            onRetry={handleRetry}
+            testID={testID}
+          />
           {(hasEditActions || hasStateActions) &&
           (actions.archive || actions.unarchive || actions.cancel || actions.delete) ? (
             <DropdownMenuSeparator />
@@ -309,6 +329,7 @@ export function GoalActionsMenu({
       {sheet === "rename" ? (
         <GoalRenameSheet goal={goal} handlers={handlers} onClose={closeSheet} />
       ) : null}
+      {retryChoice.sheet}
       {sheet === "settings" && goal.config ? (
         <GoalSettingsSheet
           serverId={serverId}
@@ -372,11 +393,16 @@ interface ItemGroupProps {
   testID: string;
 }
 
-function StateItems({ goal, actions, handlers, testID }: ItemGroupProps): ReactElement {
+function StateItems({
+  goal,
+  actions,
+  handlers,
+  onRetry,
+  testID,
+}: ItemGroupProps & { onRetry: () => void }): ReactElement {
   const { t } = useTranslation();
   const handlePause = useCallback(() => handlers.pause(goal), [goal, handlers]);
   const handleResume = useCallback(() => handlers.resume(goal), [goal, handlers]);
-  const handleRetry = useCallback(() => handlers.retry(goal), [goal, handlers]);
   const handleDismiss = useCallback(() => handlers.dismiss(goal), [goal, handlers]);
   return (
     <>
@@ -391,7 +417,7 @@ function StateItems({ goal, actions, handlers, testID }: ItemGroupProps): ReactE
         </DropdownMenuItem>
       ) : null}
       {actions.retry ? (
-        <DropdownMenuItem leading={retryIcon} onSelect={handleRetry} testID={`${testID}-retry`}>
+        <DropdownMenuItem leading={retryIcon} onSelect={onRetry} testID={`${testID}-retry`}>
           {t(
             goalRetryLabelKey({
               canRetryPlanning: actions.retryPlanning,

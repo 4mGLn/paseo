@@ -1,5 +1,6 @@
 import type { Goal } from "@getpaseo/protocol/goal/types";
 import { describeGoalWaitingOn, type GoalWaitingOnKind } from "@getpaseo/protocol/goal/waiting-on";
+import { liveRecovery } from "./goal-recovery";
 
 /** Where a goal stands, in the words the detail screen explains it with. */
 export type GoalPhase =
@@ -39,6 +40,9 @@ const PHASE_OF_WAITING: Record<GoalWaitingOnKind, GoalPhase> = {
   planning: "planning",
   plan_approval: "plan_review",
   change_set_approval: "change_review",
+  // The plan already runs; a revision waiting for approval does not send the goal back a step.
+  plan_revision_approval: "working",
+  lead_decision: "working",
   running: "working",
   review: "reviewing",
   merge: "integrating",
@@ -242,8 +246,10 @@ export function goalControlsAvailable(
   const hasRejectedChange = goal.changeSets.some(
     (changeSet) => changeSet.status === "rejected" && !remergeable(changeSet),
   );
-  // The daemon reopens an archived failed goal only after it is unarchived.
-  const retryable = goal.status === "failed" && !hasRejectedChange && !goal.archivedAt;
+  // The daemon reopens an archived failed goal only after it is unarchived, and refuses a retry
+  // while a recovery is open.
+  const retryable =
+    goal.status === "failed" && !hasRejectedChange && !goal.archivedAt && !liveRecovery(goal);
   const failedPlanning = goal.tasks.length === 0;
   return {
     canRejectPlan: goal.status === "awaiting_plan_approval" && rejections < MAX_PLAN_REJECTIONS,

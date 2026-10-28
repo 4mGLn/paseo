@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Goal, GoalEvent, GoalSummary } from "@getpaseo/protocol/goal/types";
 import { useFetchQuery } from "@/data/query";
 import { isGoalTerminal } from "@/goals/goal-derivation";
+import { liveRecovery } from "@/goals/goal-recovery";
 import { mergePolledGoals, type GoalListArchivedMode } from "@/goals/goal-updates";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useGoalPushLive } from "@/stores/goal-attention-store";
@@ -141,7 +142,8 @@ export function useGoalDetail(input: {
     staleTimeMs: pollMs,
     refetchInterval: (activeQuery) => {
       const goal = activeQuery.state.data?.goal;
-      const settled = goal ? isGoalTerminal(goal.status) : false;
+      // A failed goal under recovery still changes: the Lead decides, then it reopens.
+      const settled = goal ? isGoalTerminal(goal.status) && !liveRecovery(goal) : false;
       return shouldFetch && !settled ? pollMs : false;
     },
   });

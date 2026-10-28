@@ -6,6 +6,7 @@ import { formatDuration } from "@/utils/time";
 import { goalAttention } from "./goal-attention";
 import { GOAL_STATUS_BADGE, isGoalTerminal } from "./goal-derivation";
 import { formatUsd, type GoalEstimate } from "./goal-progress";
+import { liveRecovery } from "./goal-recovery";
 import type { DurationParts, GoalSettingsSummaryPart } from "./goal-settings";
 import { compactUsageBudgetLabel, formatTokenCount, goalUsageBudgets } from "./goal-usage";
 
@@ -46,10 +47,18 @@ export interface GoalBadge {
 /** The status pill for a goal: what it waits on when it waits on you, else its status. */
 export function goalBadge(
   t: TFunction,
-  goal: Pick<Goal, "status" | "changeSets" | "pausedAt">,
+  goal: Pick<Goal, "status" | "changeSets" | "pausedAt" | "planRevisions" | "recovery">,
 ): GoalBadge {
-  if (goalAttention(goal) === "change_review") {
+  const attention = goalAttention(goal);
+  if (attention === "change_review") {
     return { label: t("goals.changeSetStatus.awaiting_human"), variant: "warning" };
+  }
+  if (attention === "revision_review" || attention === "recovery_review") {
+    return { label: t("goals.status.awaitingPlanChange"), variant: "warning" };
+  }
+  // The goal stays failed while a recovery decides; it is being worked on, not given up.
+  if (liveRecovery(goal)) {
+    return { label: t("goals.status.recovering"), variant: "running" };
   }
   const status: GoalStatus = goal.status;
   // A paused goal is still "executing" in its status; the person sees it as stopped.

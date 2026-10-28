@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Text, View } from "react-native";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { ChevronLeft, Copy, Pause, Play } from "lucide-react-native";
@@ -24,6 +25,8 @@ import {
   goalGuidance,
   goalSteps,
 } from "@/goals/goal-phase";
+import { goalDeadline } from "@/goals/goal-progress";
+import { guidanceTextCut } from "@/goals/goal-recovery";
 import { goalTeam } from "@/goals/goal-settings";
 import { goalWaitingOnDetail } from "@/goals/goal-waiting-on";
 import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
@@ -31,15 +34,21 @@ import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useGoalDetail } from "@/hooks/use-goals";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { useHostFeature } from "@/runtime/host-features";
+import { useRelativeTimeTick } from "@/usage/use-relative-time-tick";
 import { settingsStyles } from "@/styles/settings";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
+import { formatDuration } from "@/utils/time";
 import { GoalActivity } from "./goal-activity";
 import { GoalChangeSetList } from "./goal-change-set-list";
 import { GoalFeedbackSheet } from "./goal-feedback-sheet";
 import { GoalActionsMenu } from "./goal-actions-menu";
 import { GoalPriorityBadge, GoalProjectLine } from "./goal-list";
+import { GoalPlanRevisionSection } from "./goal-plan-revision-section";
 import { GoalProgressPanel } from "./goal-progress-panel";
+import { GoalRecoverButton } from "./goal-recover-sheet";
+import { GoalRecoverySection } from "./goal-recovery-section";
+import { useRetryTimeChoice } from "./goal-retry-time-sheet";
 import { GoalSettingsSheet } from "./goal-settings-sheet";
 import { GoalStepper } from "./goal-stepper";
 import { GoalTaskList, OpenAgentButton } from "./goal-task-list";
@@ -118,19 +127,22 @@ function GoalDetailContent({
   const hasControls = useHostFeature(serverId, "goalControls");
   return (
     <View>
-      <GoalSummary serverId={serverId} goal={goal} onDeleted={onDeleted} />
+      <GoalSummary serverId={serverId} goal={goal} events={events} onDeleted={onDeleted} />
       {steps ? (
         <View style={styles.stepper}>
           <GoalStepper steps={steps} />
         </View>
       ) : null}
       <GoalGuidanceBanner serverId={serverId} goal={goal} />
+      <GoalRecoverySection serverId={serverId} goal={goal} events={events} />
       {goal.config ? <GoalProgressPanel goal={goal} /> : null}
       {goal.config ? <GoalUsageSection serverId={serverId} goal={goal} /> : null}
       <GoalChangeSetList serverId={serverId} goal={goal} />
+      <GoalPlanRevisionSection serverId={serverId} goal={goal} />
       <GoalTaskList
         serverId={serverId}
         goal={goal}
+        events={events}
         canRetryTasks={goalControlsAvailable(goal, hasControls).canRetryTasks}
       />
       <GoalCriteria goal={goal} />
@@ -140,13 +152,25 @@ function GoalDetailContent({
   );
 }
 
+/** After a retry restarted the time limit, how much of it is left; null otherwise. */
+function timeLimitRestartedLabel(t: TFunction, goal: Goal, now: number): string | null {
+  const deadline = goal.timeBaseAt ? goalDeadline(goal, now) : null;
+  if (deadline?.kind !== "running") {
+    return null;
+  }
+  const minutes = Math.floor(deadline.remainingMs / 60_000) * 60_000;
+  return t("goals.detail.timeBase", { time: formatDuration(minutes) });
+}
+
 function GoalSummary({
   serverId,
   goal,
+  events,
   onDeleted,
 }: {
   serverId: string;
   goal: Goal;
+  events: GoalEvent[];
   onDeleted?: () => void;
 }): ReactElement {
   const { t } = useTranslation();
@@ -156,6 +180,7 @@ function GoalSummary({
   const [actionError, setActionError] = useState<string | null>(null);
   const [isRejectOpen, setIsRejectOpen] = useState(false);
   const hasControls = useHostFeature(serverId, "goalControls");
+  const retryChoice = useRetryTimeChoice({ serverId, goal, events });
   const canAcknowledge = useHostFeature(serverId, "goalAcknowledge");
   const configEdit = useHostFeature(serverId, "goalConfigEdit");
   const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
@@ -175,6 +200,7 @@ function GoalSummary({
   const archivedAgo = useCompactTimeAgo(
     useMemo(() => new Date(goal.archivedAt ?? goal.createdAt), [goal.archivedAt, goal.createdAt]),
   );
+  const now = useRelativeTimeTick({ enabled: Boolean(goal.timeBaseAt) && showCancel });
   const lead = useMemo(
     () =>
       goal.leadAgentId ? { agentId: goal.leadAgentId, workspaceId: goal.leadWorkspaceId } : null,
@@ -189,6 +215,10 @@ function GoalSummary({
   }
   if (goal.archivedAt) {
     meta.push(t("goals.detail.archivedAt", { time: archivedAgo }));
+  }
+  const restarted = timeLimitRestartedLabel(t, goal, now);
+  if (restarted) {
+    meta.push(restarted);
   }
 
   const handleApprove = useCallback(() => {
@@ -216,10 +246,11 @@ function GoalSummary({
     setActionError(null);
     action.catch((error: unknown) => setActionError(toErrorMessage(error)));
   }, []);
-  const { rejectPlan, retry, pause, resume, acknowledge } = mutations;
+  const { rejectPlan, pause, resume, acknowledge } = mutations;
   const handlePause = useCallback(() => run(pause(goal.id)), [goal.id, pause, run]);
   const handleResume = useCallback(() => run(resume(goal.id)), [goal.id, resume, run]);
-  const handleRetry = useCallback(() => run(retry({ goalId: goal.id })), [goal.id, retry, run]);
+  const retryWithChoice = retryChoice.retry;
+  const handleRetry = useCallback(() => run(retryWithChoice()), [retryWithChoice, run]);
   const handleDismiss = useCallback(() => run(acknowledge(goal.id)), [acknowledge, goal.id, run]);
   const openReject = useCallback(() => setIsRejectOpen(true), []);
   const closeReject = useCallback(() => setIsRejectOpen(false), []);
@@ -260,6 +291,7 @@ function GoalSummary({
           <GoalActionsMenu
             serverId={serverId}
             goal={goal}
+            events={events}
             onDeleted={onDeleted}
             testID="goal-detail-menu"
           />
@@ -267,6 +299,7 @@ function GoalSummary({
       </View>
       <GoalProjectLine projects={projects} cwd={goal.config?.cwd} testID="goal-detail-project" />
       {goal.objective ? <Text style={styles.objective}>{goal.objective}</Text> : null}
+      <GoalInstructionLine goal={goal} />
       <Text style={styles.meta} numberOfLines={2}>
         {meta.join(" · ")}
       </Text>
@@ -292,12 +325,13 @@ function GoalSummary({
             size="sm"
             variant="default"
             onPress={handleRetry}
-            loading={mutations.pendingRetryTaskId === ""}
+            loading={retryChoice.pendingTaskId === ""}
             testID="goal-retry"
           >
             {t(goalRetryLabelKey(controls))}
           </Button>
         ) : null}
+        <GoalRecoverButton serverId={serverId} goal={goal} events={events} />
         {showDismiss ? (
           <Button
             size="sm"
@@ -375,7 +409,28 @@ function GoalSummary({
           testID="goal-reject-plan-sheet"
         />
       ) : null}
+      {retryChoice.sheet}
     </View>
+  );
+}
+
+/** Your instruction for the goal's workers, given with a recovery or a retry. */
+function GoalInstructionLine({ goal }: { goal: Goal }): ReactElement | null {
+  const { t } = useTranslation();
+  const text = goal.guidance?.goal;
+  if (!text) {
+    return null;
+  }
+  return (
+    <>
+      {/* Ahead of the text, so the line limit below never hides it. */}
+      {guidanceTextCut(goal, text) ? (
+        <Text style={styles.meta}>{t("goals.detail.guidanceTruncated")}</Text>
+      ) : null}
+      <Text style={styles.meta} numberOfLines={3} testID="goal-detail-guidance">
+        {t("goals.detail.yourInstruction", { text })}
+      </Text>
+    </>
   );
 }
 
