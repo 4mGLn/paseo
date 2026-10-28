@@ -20,6 +20,7 @@ const ALL_FEATURES: GoalActionFeatures = {
   management: true,
   configEdit: true,
   integrationRetry: true,
+  reworkRetry: true,
 };
 const NO_FEATURES: GoalActionFeatures = {
   controls: false,
@@ -27,6 +28,7 @@ const NO_FEATURES: GoalActionFeatures = {
   management: false,
   configEdit: false,
   integrationRetry: false,
+  reworkRetry: false,
 };
 
 const projects: GoalProjectOption[] = [

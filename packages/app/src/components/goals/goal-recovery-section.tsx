@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import { formatCompactCount, formatUsd } from "@/goals/goal-progress";
 import {
+  diagnosisRemedyKey,
   endedRecovery,
   goalDiagnosisView,
   goalRecoveryControls,
@@ -26,6 +27,7 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { formatDuration } from "@/utils/time";
 import { GoalFeedbackSheet } from "./goal-feedback-sheet";
 import { GoalRevisionOps } from "./goal-plan-revision-section";
+import { GoalReasonText } from "./goal-reason-text";
 import { GoalSettingsSheet } from "./goal-settings-sheet";
 import { OpenAgentButton } from "./goal-task-list";
 import { useKeyedError } from "./use-keyed-error";
@@ -149,8 +151,6 @@ function RecoveryCard({
     meta.push(t(`goals.recovery.timeMode.${recovery.timeMode}`));
   }
   const isDeciding = pendingRecoveryApproval !== null;
-  // A recovery that ended rewrote the goal's reason: "Recovery needs a person: …" and the like.
-  const endedReason = recovery.status === "ended" ? goal.failureReason : null;
 
   return (
     <SettingsSection title={t("goals.recovery.title")} testID="goal-recovery">
@@ -160,12 +160,8 @@ function RecoveryCard({
             <Text style={settingsStyles.rowTitle}>{recoveryTitle(t, recovery)}</Text>
             <Text style={settingsStyles.rowHint}>{meta.join(" · ")}</Text>
           </View>
+          {/* The reason itself is in the banner above; the card keeps the decision, in one line. */}
           {recovery.decision ? <RecoveryDecisionBlock goal={goal} recovery={recovery} /> : null}
-          {endedReason ? (
-            <Text style={settingsStyles.rowHint} numberOfLines={6}>
-              {endedReason}
-            </Text>
-          ) : null}
           {controls.canDecide || controls.canCancel || lead ? (
             <View style={styles.actions}>
               {controls.canDecide ? (
@@ -258,9 +254,7 @@ function RecoveryDecisionBlock({
         {decision.fallback ? t("goals.recovery.decision.fallback") : label}
       </Text>
       {decision.reason ? (
-        <Text style={settingsStyles.rowHint} numberOfLines={6}>
-          {decision.reason}
-        </Text>
+        <GoalReasonText text={decision.reason} testID="goal-recovery-decision-reason" />
       ) : null}
       {hints.map(([taskId, hint]) => (
         <Text key={taskId} style={settingsStyles.rowHint} numberOfLines={4}>
@@ -330,6 +324,7 @@ function DiagnosisCard({
 }): ReactElement {
   const { t, i18n } = useTranslation();
   const configEdit = useHostFeature(serverId, "goalConfigEdit");
+  const verificationRecovery = useHostFeature(serverId, "goalVerificationRecovery");
   const [isEditingSettings, setIsEditingSettings] = useState(false);
   const openSettings = useCallback(() => setIsEditingSettings(true), []);
   const closeSettings = useCallback(() => setIsEditingSettings(false), []);
@@ -348,7 +343,7 @@ function DiagnosisCard({
             <Text style={settingsStyles.rowTitle}>{t(`goals.diagnosis.kind.${view.kind}`)}</Text>
             {first ? (
               <Text style={settingsStyles.rowHint}>
-                {t(`goals.diagnosis.remedy.${first.kind}`)}
+                {t(diagnosisRemedyKey(first, goal, verificationRecovery))}
               </Text>
             ) : null}
           </View>
@@ -368,7 +363,7 @@ function DiagnosisCard({
                 {t(`goals.diagnosis.kind.${finding.kind}`)}
               </Text>
               <Text style={settingsStyles.rowHint}>
-                {t(`goals.diagnosis.remedy.${finding.kind}`)}
+                {t(diagnosisRemedyKey(finding, goal, verificationRecovery))}
               </Text>
             </View>
           </View>
