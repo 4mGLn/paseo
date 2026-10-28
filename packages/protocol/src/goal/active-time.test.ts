@@ -58,3 +58,64 @@ describe("goalActiveMs and recoveries", () => {
     expect(goalActiveMs(log, T0 + 45 * MIN)).toBe(10 * MIN);
   });
 });
+
+describe("goalActiveMs and waits for a person's answer", () => {
+  const created: [number, Record<string, unknown>] = [
+    0,
+    { type: "goal.created", title: "T", objective: "", criteria: [] },
+  ];
+
+  test("a wait does not count, and overlapping waits are left out once", () => {
+    const log = events([
+      created,
+      [10, { type: "wait.started", agentId: "a1", role: "worker", runId: "r1" }],
+      [15, { type: "wait.started", agentId: "a2", role: "lead" }],
+      [20, { type: "wait.ended", agentId: "a1", outcome: "answered" }],
+      [30, { type: "wait.ended", agentId: "a2", outcome: "answered" }],
+    ]);
+    expect(goalActiveMs(log, T0 + 40 * MIN)).toBe(20 * MIN);
+  });
+
+  test("an open wait stops the clock until now", () => {
+    const log = events([
+      created,
+      [10, { type: "wait.started", agentId: "a1", role: "worker", runId: "r1" }],
+    ]);
+    expect(goalActiveMs(log, T0 + 90 * MIN)).toBe(10 * MIN);
+  });
+
+  test("run.finished closes the wait of its run", () => {
+    const log = events([
+      created,
+      [10, { type: "wait.started", agentId: "a1", role: "worker", runId: "r1" }],
+      [25, { type: "run.finished", runId: "r1", outcome: "interrupted" }],
+    ]);
+    expect(goalActiveMs(log, T0 + 30 * MIN)).toBe(15 * MIN);
+  });
+
+  test("a wait open when the goal fails closes with it", () => {
+    const log = events([
+      created,
+      [10, { type: "wait.started", agentId: "a1", role: "worker", runId: "r1" }],
+      [20, { type: "goal.failed", reason: "x" }],
+      [30, { type: "goal.retried", taskIds: ["t1"], reopen: true, timeMode: "remaining" }],
+    ]);
+    expect(goalActiveMs(log, T0 + 35 * MIN)).toBe(15 * MIN);
+  });
+
+  test("a pause and a wait that overlap stop the clock once", () => {
+    const log = events([
+      created,
+      [10, { type: "goal.paused" }],
+      [15, { type: "wait.started", agentId: "a1", role: "worker", runId: "r1" }],
+      [20, { type: "goal.resumed" }],
+      [30, { type: "wait.ended", agentId: "a1", outcome: "answered" }],
+    ]);
+    expect(goalActiveMs(log, T0 + 40 * MIN)).toBe(20 * MIN);
+  });
+
+  test("a log without waits counts as before", () => {
+    const log = events([created, [10, { type: "goal.paused" }], [20, { type: "goal.resumed" }]]);
+    expect(goalActiveMs(log, T0 + 30 * MIN)).toBe(20 * MIN);
+  });
+});
