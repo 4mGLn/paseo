@@ -46,7 +46,12 @@ import {
   isTerminalGoalStatus,
   liveRecovery,
 } from "./goal-reducer.js";
-import { GoalRecoveries, integrationProblem, recoveryHandler } from "./goal-recovery.js";
+import {
+  GoalRecoveries,
+  integrationProblem,
+  recoveryHandler,
+  reworkWorktreeProblem,
+} from "./goal-recovery.js";
 import type { GoalStore } from "./goal-store.js";
 import { ChangeSetPipeline } from "./change-set-pipeline.js";
 import type { GitPort } from "./git-ops.js";
@@ -894,6 +899,11 @@ export class GoalManager {
   /** Why the goal's integration worktree cannot take a recovery now, or null. */
   integrationProblem(goal: Goal): Promise<string | null> {
     return integrationProblem(goal, this.git);
+  }
+
+  /** Why a change set whose rework failed cannot be reworked again, or null. */
+  reworkWorktreeProblem(goal: Goal): Promise<string | null> {
+    return reworkWorktreeProblem(goal, this.git);
   }
 
   // ---- Lead interventions -------------------------------------------------

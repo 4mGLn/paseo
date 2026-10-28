@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { RECOVERY_DECISION_MS } from "@getpaseo/protocol/goal/interventions";
@@ -670,4 +670,91 @@ describe("recovery of a failed goal across restarts", () => {
   afterAll(() => {
     recorded = { events: [], lead: {} as RecordedRecovery["lead"] };
   });
+});
+
+// Goal b195cf6f (test-fixtures, anonymised): every task succeeded, c1 was not met and one
+// recovery is left. Its Lead adds a fix task, which is merged before every criterion is
+// verified again in round 1.
+const B195 = "b195cf6f-6f1c-4889-aff8-3f689db7ab15";
+const ADD_FIX = {
+  decision: "revise",
+  reason: "add a task that fixes F-01",
+  ops: [{ op: "add", task: task("t7", { dependsOn: ["t5"] }) }],
+};
+
+function scriptVerifyFix(env: GoalTestEnv): void {
+  env.script([]);
+  const base = env.harness.respond;
+  const recoveryLeads = new Set<string>();
+  env.harness.respond = (turn): TurnResult | "hold" => {
+    if (turn.prompt.includes("asked you to recover it")) recoveryLeads.add(turn.agentId);
+    if (!recoveryLeads.has(turn.agentId)) return base?.(turn) ?? "hold";
+    return { outcome: "completed", text: env.fenced(JSON.stringify(ADD_FIX)) };
+  };
+}
+
+/** Boot on `lines` of goal b195cf6f's log, with the agents the agent layer still knows. */
+async function bootB195(
+  lines: string[],
+  agents: (CreateGoalAgentInput & { agentId: string })[] = [],
+) {
+  const env = createGoalTestEnv();
+  await env.init();
+  await writeFile(join(env.logDir(), `${B195}.jsonl`), `${lines.join("\n")}\n`);
+  scriptVerifyFix(env);
+  env.harness.agents.push(...agents);
+  env.harness.git.counter = 1000;
+  env.harness.git.headValue = recordedHead(lines.map((line) => JSON.parse(line) as GoalEvent));
+  const { store, manager, service } = await env.boot();
+  service.attachActivityProbe(manager);
+  return { env, store, manager, service };
+}
+
+describe("recovery of a failed verification across restarts (b195cf6f)", () => {
+  let recorded: RecordedRecovery = { events: [], lead: {} as RecordedRecovery["lead"] };
+
+  test("the recovery adds a fix, which is merged before every criterion is verified again", async () => {
+    const fixture = await readFile(
+      join(import.meta.dirname, "test-fixtures", "b195cf6f-verify.jsonl"),
+      "utf8",
+    );
+    const { env, store, manager, service } = await bootB195(fixture.trim().split("\n"));
+    try {
+      await service.startRecovery(B195, { timeMode: "fresh" });
+      await env.settle(manager);
+      const goal = env.goalOf(store, B195);
+      expect(goal.status).toBe("completed");
+      expect(goal.verificationRound).toBe(1);
+      const lead = env.harness.agents.find((a) => a.labels["paseo.goal-recovery"]);
+      if (!lead) throw new Error("no recovery Lead");
+      recorded = { events: await env.readEvents(B195), lead };
+    } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
+
+  test("a daemon that restarts after any event of the recovery finishes the goal", async () => {
+    const failures: string[] = [];
+    for (let keep = 217; keep < recorded.events.length; keep += 1) {
+      const lines = recorded.events.slice(0, keep).map((e) => JSON.stringify(e));
+      const { env, store, manager } = await bootB195(lines, [recorded.lead]);
+      try {
+        await env.settle(manager);
+        const goal = store.get(B195) as Goal;
+        expect(goal.status).toBe("completed");
+        assertSound(goal);
+        expect(goal.verificationRound).toBe(1);
+        expect(goal.recoveries).toBe(3);
+        expect(goal.tasks.find((t) => t.id === "t7")?.status).toBe("succeeded");
+      } catch (error) {
+        const goal = store.get(B195);
+        failures.push(
+          `after event ${keep} (${recorded.events[keep - 1]?.type}): status=${goal?.status} reason=${goal?.failureReason ?? "-"} ${error instanceof Error ? error.message.split("\n")[0] : ""}`,
+        );
+      } finally {
+        await env.cleanup();
+      }
+    }
+    expect(failures).toEqual([]);
+  }, 180_000);
 });

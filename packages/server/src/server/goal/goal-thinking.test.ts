@@ -77,7 +77,7 @@ describe("goal role thinking resolution", () => {
 describe("goal thinking validation", () => {
   function validator(calls: string[] = [], modelCatalog = catalog(calls)) {
     return createGoalConfigValidator({
-      git: { head: async () => "abc" },
+      git: { head: async () => "abc", resolveCommit: async () => null },
       knownProviders: () => ["claude", "codex"],
       modelCatalog,
     });
@@ -128,7 +128,7 @@ describe("goal thinking validation", () => {
       validator([], failing)(withConfig({ leadThinking: "anything" })),
     ).resolves.toBeDefined();
     const noCatalog = createGoalConfigValidator({
-      git: { head: async () => "abc" },
+      git: { head: async () => "abc", resolveCommit: async () => null },
       knownProviders: () => ["claude", "codex"],
     });
     await expect(noCatalog(withConfig({ leadThinking: "anything" }))).resolves.toBeDefined();

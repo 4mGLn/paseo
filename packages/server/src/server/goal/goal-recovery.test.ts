@@ -1,9 +1,14 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { diagnoseGoalFailure } from "@getpaseo/protocol/goal/diagnosis";
-import { MAX_GUIDANCE_CHARS, RECOVERY_DECISION_MS } from "@getpaseo/protocol/goal/interventions";
+import {
+  MAX_GUIDANCE_CHARS,
+  MAX_RECOVERIES,
+  RECOVERY_DECISION_MS,
+} from "@getpaseo/protocol/goal/interventions";
 import type { Goal, GoalConfig } from "@getpaseo/protocol/goal/types";
 import type { GoalManager, TurnResult } from "./goal-manager.js";
-import { MAX_RECOVERIES } from "./goal-reducer.js";
 import { RECOVERY_LABEL } from "./goal-recovery.js";
 import type { GoalService } from "./goal-service.js";
 import type { GoalStore } from "./goal-store.js";
@@ -25,6 +30,20 @@ async function until(check: () => boolean, what: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`timed out waiting for ${what}`);
+}
+
+/** The criterion ids a verifier prompt asks about. */
+function askedIds(prompt: string): string[] {
+  return [...prompt.matchAll(/^- (\w+): /gm)].map((m) => m[1] ?? "");
+}
+
+function isVerifierTurn(turn: { prompt: string }): boolean {
+  return turn.prompt.includes("You are the verifier");
+}
+
+/** A verifier's answer: every asked criterion met except `unmet`. */
+function verdicts(ids: readonly string[], unmet: readonly string[]) {
+  return ids.map((id) => ({ id, met: !unmet.includes(id), evidence: `checked ${id} again` }));
 }
 
 interface Booted {
@@ -747,6 +766,99 @@ describe("recovering a failed goal through its Lead", () => {
     expect(goal.tasks.find((t) => t.id === "t7a")).toBeUndefined();
   });
 
+  /**
+   * a's change set gets a review asking for changes; its rework fails until `fix` is called, so
+   * the change set is rejected as `rework_failed` and the goal fails.
+   */
+  async function reworkFailedGoal(
+    config: Partial<GoalConfig>,
+    recover: RecoveryScript["recover"],
+  ): Promise<Booted & { failed: Goal; fix(): void }> {
+    let fixed = false;
+    scriptRecovery({ plan: [task("a")], recover });
+    const base = env.harness.respond;
+    env.harness.respond = (turn) =>
+      turn.prompt.includes("You are fixing your earlier work") && !fixed
+        ? { outcome: "failed", error: "cannot fix" }
+        : (base?.(turn) ?? "hold");
+    let reviews = 0;
+    env.stageReplies.review = () => {
+      reviews += 1;
+      const verdict =
+        reviews === 1
+          ? { verdict: "request_changes", findings: ["wrong"] }
+          : { verdict: "approve", findings: [] };
+      return { outcome: "completed", text: env.fenced(JSON.stringify(verdict)) };
+    };
+    const booted = await boot();
+    const failed = await failedGoal({ ...CONFIG, ...config }, booted);
+    expect(failed.changeSets[0]).toMatchObject({ id: "cs-a-a1", rejectionReason: "rework_failed" });
+    return {
+      ...booted,
+      failed,
+      fix: () => {
+        fixed = true;
+      },
+    };
+  }
+
+  test("an applied recovery reworks a change set whose rework failed, and the goal completes", async () => {
+    const { store, manager, service, fix } = await reworkFailedGoal({}, answerRetry);
+    fix();
+    await service.startRecovery("g1", {});
+    await env.settle(manager);
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("completed");
+    expect(goal.changeSets.map((c) => c.status)).toEqual(["superseded", "integrated"]);
+    const applied = (await env.readEvents()).find(
+      (e) => e.type === "recovery.resolved" && e.outcome === "applied",
+    );
+    expect(applied).toMatchObject({ reworkChangeSetIds: ["cs-a-a1"] });
+  });
+
+  test("a rework worktree gone before the decision applies ends the recovery for a person, uncounted", async () => {
+    let cwd = "";
+    const { store, manager, service, failed } = await reworkFailedGoal({}, () => {
+      // Archived while the Lead decided: the start's check passed, the apply's does not.
+      env.harness.git.missing.add(cwd);
+      return answerRetry();
+    });
+    cwd = failed.changeSets[0]?.cwd ?? "";
+    await service.startRecovery("g1", {});
+    await env.settle(manager);
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("failed");
+    expect(goal.recovery).toMatchObject({ status: "ended", outcome: "needs_person" });
+    expect(goal.recoveries ?? 0).toBe(0);
+    expect(goal.failureReason).toContain(`The rework worktree ${cwd} of cs-a-a1 is gone`);
+    expect(goal.failureReason).toContain(`Its work is on branch ${failed.changeSets[0]?.branch}`);
+  });
+
+  test("an approval whose rework worktree is gone ends the recovery for a person, uncounted", async () => {
+    const addCheck = {
+      decision: "revise",
+      reason: "add a check before the rework runs again",
+      ops: [{ op: "add", task: task("extra") }],
+    };
+    const { store, manager, service, failed } = await reworkFailedGoal({}, () => reply(addCheck));
+    // The Lead's plan change now waits for the person.
+    await service.updateConfig("g1", { autoApprovePlan: false });
+    const started = await service.startRecovery("g1", {});
+    await until(() => env.goalOf(store).recovery?.status === "awaiting_approval", "approval");
+    const cwd = failed.changeSets[0]?.cwd ?? "";
+    env.harness.git.missing.add(cwd);
+    const decided = await service.decideRecovery("g1", {
+      recoveryId: started.recovery?.id ?? "",
+      approve: true,
+    });
+    expect(decided.recovery).toMatchObject({ status: "ended", outcome: "needs_person" });
+    await env.settle(manager);
+    const goal = env.goalOf(store);
+    expect(goal.recoveries ?? 0).toBe(0);
+    expect(goal.failureReason).toContain(`The rework worktree ${cwd} of cs-a-a1 is gone`);
+    expect(goal.tasks.find((t) => t.id === "extra")).toBeUndefined();
+  });
+
   test("a run limit a person lowered while the split waited refuses the approval without counting it", async () => {
     const { store, manager, service, failed } = await timedOutGoal({ autoApprovePlan: false });
     const started = await service.startRecovery("g1", { timeMode: "fresh" });
@@ -848,5 +960,135 @@ describe("recovering a failed goal through its Lead", () => {
     expect(goal.status).toBe("completed");
     expect(verifies).toBe(2);
     expect(goal.runs.map((r) => r.taskId)).toEqual(["a"]);
+  });
+
+  // Goal b195cf6f: every task succeeded but c1 was not met.
+  // The real log, anonymised (test-fixtures): c2 to c10 verified, c1 unmet (finding F-01),
+  // two recoveries ended needs_person because a revise could not add work. One is left.
+  const B195 = "b195cf6f-6f1c-4889-aff8-3f689db7ab15";
+  const ADD_FIX = {
+    decision: "revise",
+    reason: "add a task that fixes F-01",
+    ops: [{ op: "add", task: task("t7", { dependsOn: ["t5"] }) }],
+  };
+  /** Verifier prompts, each as the criterion ids it asked about. */
+  let asked: string[][];
+
+  async function b195(options: { unmet?: string[] } = {}): Promise<Booted & { failed: Goal }> {
+    const text = await readFile(
+      join(import.meta.dirname, "test-fixtures", "b195cf6f-verify.jsonl"),
+      "utf8",
+    );
+    await writeFile(join(env.logDir(), `${B195}.jsonl`), text);
+    scriptRecovery({ plan: [], recover: () => reply(ADD_FIX) });
+    asked = [];
+    env.stageReplies.verify = (turn) => {
+      const ids = askedIds(turn.prompt);
+      asked.push(ids);
+      const criteria = verdicts(ids, options.unmet ?? []);
+      return { outcome: "completed", text: env.fenced(JSON.stringify({ criteria })) };
+    };
+    const booted = await boot();
+    const failed = env.goalOf(booted.store, B195);
+    // The integration worktree sits at the commit the goal recorded.
+    env.harness.git.headValue = failed.integration?.headCommit ?? "";
+    return { ...booted, failed };
+  }
+
+  const verifiedIds = async (criterionId: string) =>
+    (await env.readEvents(B195))
+      .filter((e) => e.type === "criterion.verified" && e.criterionId === criterionId)
+      .map((e) => e.id);
+
+  test("the last recovery adds a fix task; verification restarts after its merge and checks every criterion", async () => {
+    const { store, manager, service, failed } = await b195();
+    expect(failed).toMatchObject({ status: "failed", recoveries: 2 });
+    expect(failed.runs).toHaveLength(21);
+    const before = diagnoseGoalFailure(failed, { now: env.clock.now() });
+    expect(before.findings[0]).toMatchObject({ kind: "verification", personNeeded: "no" });
+    expect(before.findings[0]?.remedy).toContain("the Lead can add fix tasks");
+    expect(before.findings[0]?.remedy).toContain("This is the last recovery.");
+
+    await service.startRecovery(B195, { timeMode: "fresh" });
+    await env.settle(manager);
+
+    const goal = env.goalOf(store, B195);
+    expect(goal.status).toBe("completed");
+    expect(goal.recoveries).toBe(3);
+    expect(goal.verificationRound).toBe(1);
+    expect(goal.tasks.at(-1)).toMatchObject({ id: "t7", status: "succeeded" });
+    expect(goal.changeSets.find((c) => c.taskId === "t7")?.status).toBe("integrated");
+    expect(goal.runs).toHaveLength(22);
+    // The Lead saw c1 as not met and was offered fix tasks on its last recovery.
+    const prompt = recoveryPrompts[0]?.prompt ?? "";
+    expect(prompt).toContain("- [NOT MET] Criterion c1\n- [verified] Criterion c2");
+    expect(prompt).toContain("add implement tasks with new ids");
+    expect(prompt).toContain("This is the last recovery.");
+    // One verification, after the merge, of every criterion.
+    expect(asked).toEqual([goal.criteria.map((c) => c.id)]);
+    const events = await env.readEvents(B195);
+    const merged = events.findIndex(
+      (e) => e.type === "changeset.transitioned" && e.to === "integrated" && e.seq > 216,
+    );
+    const firstVerified = events.findIndex((e) => e.type === "criterion.verified" && e.seq > 216);
+    expect(merged).toBeGreaterThan(0);
+    expect(firstVerified).toBeGreaterThan(merged);
+    // Both rounds stay in the log: c2 was verified once in each, c1 only in round 1.
+    expect(await verifiedIds("c2")).toEqual([`${B195}:verified:c2`, `${B195}:verified:c2:v1`]);
+    expect(await verifiedIds("c1")).toEqual([`${B195}:verified:c1:v1`]);
+    expect(goal.criteria.every((c) => c.evidence === `checked ${c.id} again`)).toBe(true);
+  });
+
+  test("a criterion that regresses in round 1 fails the goal with no recovery left, for a person", async () => {
+    const { store, manager, service } = await b195({ unmet: ["c4"] });
+    await service.startRecovery(B195, { timeMode: "fresh" });
+    await env.settle(manager);
+    const goal = env.goalOf(store, B195);
+    expect(goal.status).toBe("failed");
+    expect(goal.recoveries).toBe(3);
+    expect(goal.failureReason).toBe("Acceptance criteria not met: Criterion c4 (checked c4 again)");
+    expect(goal.criteria.filter((c) => !c.verifiedAt).map((c) => c.id)).toEqual(["c4"]);
+    const finding = diagnoseGoalFailure(goal, { now: env.clock.now() }).findings[0];
+    expect(finding).toMatchObject({ kind: "verification", personNeeded: "yes" });
+    expect(finding?.remedy).toContain("Start a follow-up goal");
+    await expect(service.startRecovery(B195, { timeMode: "fresh" })).rejects.toThrow(
+      `already recovered ${MAX_RECOVERIES} times`,
+    );
+  });
+
+  test("a restart during round-1 verification asks only what was not recorded yet", async () => {
+    const first = await b195();
+    // The first round-1 verifier turn never answers: the daemon stops mid-verification.
+    let holdVerifier = true;
+    const base = env.harness.respond;
+    env.harness.respond = (turn) =>
+      holdVerifier && turn.prompt.includes("You are the verifier")
+        ? "hold"
+        : (base?.(turn) ?? "hold");
+    await first.service.startRecovery(B195, { timeMode: "fresh" });
+    const verifierHeld = () => env.harness.turns.some(isVerifierTurn);
+    await until(verifierHeld, "the round-1 verifier");
+    // c2 was recorded for round 1 before the stop.
+    const c2 = {
+      id: `${B195}:verified:c2:v1`,
+      goalId: B195,
+      type: "criterion.verified" as const,
+      criterionId: "c2",
+      evidence: "checked c2 before the stop",
+    };
+    await first.store.dispatch(B195, c2);
+    first.manager.stop();
+    holdVerifier = false;
+
+    const second = await boot();
+    await env.settle(second.manager);
+    const goal = env.goalOf(second.store, B195);
+    expect(goal.status).toBe("completed");
+    // The new verifier was asked about every criterion but c2.
+    expect(asked).toEqual([goal.criteria.map((c) => c.id).filter((id) => id !== "c2")]);
+    expect(goal.criteria.find((c) => c.id === "c2")?.evidence).toBe("checked c2 before the stop");
+    // Recording c2 again under its round id is a duplicate; the round-0 id was already used.
+    expect((await second.store.dispatch(B195, c2)).duplicate).toBe(true);
+    expect(await verifiedIds("c2")).toEqual([`${B195}:verified:c2`, `${B195}:verified:c2:v1`]);
   });
 });

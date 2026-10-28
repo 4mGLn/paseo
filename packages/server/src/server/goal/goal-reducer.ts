@@ -13,6 +13,7 @@ import type {
   PlanRevision,
   Recovery,
   RecoveryDecision,
+  ReworkReason,
   Task,
   TaskSpec,
   TurnUsage,
@@ -22,6 +23,7 @@ import type {
 } from "@getpaseo/protocol/goal/types";
 import {
   CHANGE_SET_INTEGRATION_FAILED,
+  CHANGE_SET_REWORK_FAILED,
   GOAL_TIME_LIMIT_PASSED,
   GOAL_TIME_MODES,
 } from "@getpaseo/protocol/goal/types";
@@ -31,6 +33,7 @@ import {
   MAX_GUIDANCE_CHARS,
   MAX_INTERVENTION_ERROR_CHARS,
   MAX_NUDGE_CHARS,
+  MAX_RECOVERIES,
   MAX_WORK_SUMMARY_CHARS,
   RECOVERY_DECISION_MS,
   type InterventionClass,
@@ -95,9 +98,6 @@ export const MAX_INTERVENTIONS_PER_TASK = 2;
 /** Check-ins on one run while it is still going, and over a goal's life. */
 export const MAX_CHECK_INS_PER_RUN = 3;
 export const MAX_CHECK_INS_PER_GOAL = 12;
-
-/** Recoveries a goal may count over its life: those the Lead decided, applied or not. */
-export const MAX_RECOVERIES = 3;
 
 export function isTerminalGoalStatus(status: GoalStatus): boolean {
   return TERMINAL_GOAL_STATUSES.has(status);
@@ -1438,7 +1438,7 @@ function transitionChangeSet(
     // A change set that ends keeps the reason it needed fixing; live ones start clean.
     error:
       event.error ?? (event.to === "superseded" || event.to === "rejected" ? current.error : null),
-    ...rejectionReason(current, event),
+    ...rejectionReason(goal, current, event),
     updatedAt: event.at,
   };
   return {
@@ -1451,12 +1451,16 @@ function transitionChangeSet(
   };
 }
 
+/** The error the pipeline writes when a change set's rework task failed for good. */
+const LEGACY_REWORK_FAILED = /^Rework \S+ failed: /;
+
 /**
- * Why a change set is rejected, when the merge step failed. Events from before v0.13.10
- * carry no reason; for them a rejection out of `integrating` whose error says the
- * integration failed means the same, since only the merge step writes that.
+ * Why a change set is rejected, when the transition says or the error tells. Events from
+ * before v0.13.10 carry no reason; for them a rejection out of `integrating` whose error says
+ * the integration failed means the same, since only the merge step writes that.
  */
 function rejectionReason(
+  goal: Goal,
   current: ChangeSet,
   event: Extract<GoalEvent, { type: "changeset.transitioned" }>,
 ): Pick<ChangeSet, "rejectionReason"> {
@@ -1464,12 +1468,50 @@ function rejectionReason(
   if (event.reason) return { rejectionReason: event.reason };
   const legacyIntegrationFailure =
     current.status === "integrating" && event.error?.startsWith("Integration failed") === true;
-  return legacyIntegrationFailure ? { rejectionReason: CHANGE_SET_INTEGRATION_FAILED } : {};
+  if (legacyIntegrationFailure) return { rejectionReason: CHANGE_SET_INTEGRATION_FAILED };
+  // COMPAT(goalReworkRetry): logs before v0.13.14 carry no reason; permanent for those logs.
+  // Only the pipeline's reworkFailed writes this error, for a change set waiting on its rework.
+  const legacyReworkFailure =
+    reworkReasonFor(current.status) !== null &&
+    LEGACY_REWORK_FAILED.test(event.error ?? "") &&
+    goal.tasks.some((t) => t.rework?.changeSetId === current.id);
+  return legacyReworkFailure ? { rejectionReason: CHANGE_SET_REWORK_FAILED } : {};
 }
 
 /** True for a change set rejected because its merge step failed, which a retry can merge again. */
 export function isIntegrationFailed(cs: ChangeSet): boolean {
   return cs.status === "rejected" && cs.rejectionReason === CHANGE_SET_INTEGRATION_FAILED;
+}
+
+/** True for a change set rejected because its rework failed, which a reopen can rework again. */
+export function isReworkFailed(cs: ChangeSet): boolean {
+  return cs.status === "rejected" && cs.rejectionReason === CHANGE_SET_REWORK_FAILED;
+}
+
+/** Why a change set in `status` needs rework, or null when it does not wait for one. */
+export function reworkReasonFor(status: ChangeSetStatus): ReworkReason | null {
+  switch (status) {
+    case "changes_requested":
+      return "review";
+    case "conflicted":
+      return "conflict";
+    case "test_failed":
+      return "tests";
+    default:
+      return null;
+  }
+}
+
+/** The status a change set waited for its rework in; the inverse of reworkReasonFor. */
+function statusForRework(reason: ReworkReason): ChangeSetStatus {
+  switch (reason) {
+    case "review":
+      return "changes_requested";
+    case "conflict":
+      return "conflicted";
+    case "tests":
+      return "test_failed";
+  }
 }
 
 /** Times a change set entered and left review and merge; the first entry into merging counts. */
@@ -1695,29 +1737,40 @@ function applyNotificationEvent(goal: Goal, event: GoalEvent): Goal {
   }
 }
 
+/** A criterion passed, in the goal's current verification round. */
+function verifyCriterion(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "criterion.verified" }>,
+): Goal {
+  requireStatus(goal, event, "executing");
+  const criterion = goal.criteria.find((c) => c.id === event.criterionId);
+  if (!criterion) {
+    throw new GoalTransitionError(event.type, `unknown criterion ${event.criterionId}`);
+  }
+  if (criterion.verifiedAt) {
+    throw new GoalTransitionError(event.type, `criterion ${event.criterionId} already verified`);
+  }
+  const round = goal.verificationRound ?? 0;
+  if (event.round !== undefined && event.round !== round) {
+    throw new GoalTransitionError(
+      event.type,
+      `the result is for verification round ${event.round}; the goal is in round ${round}`,
+    );
+  }
+  return {
+    ...goal,
+    criteria: goal.criteria.map((c) =>
+      c.id === event.criterionId
+        ? { ...c, verifiedAt: event.at, evidence: event.evidence ?? null }
+        : c,
+    ),
+  };
+}
+
 function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
   switch (event.type) {
-    case "criterion.verified": {
-      requireStatus(goal, event, "executing");
-      const criterion = goal.criteria.find((c) => c.id === event.criterionId);
-      if (!criterion) {
-        throw new GoalTransitionError(event.type, `unknown criterion ${event.criterionId}`);
-      }
-      if (criterion.verifiedAt) {
-        throw new GoalTransitionError(
-          event.type,
-          `criterion ${event.criterionId} already verified`,
-        );
-      }
-      return {
-        ...goal,
-        criteria: goal.criteria.map((c) =>
-          c.id === event.criterionId
-            ? { ...c, verifiedAt: event.at, evidence: event.evidence ?? null }
-            : c,
-        ),
-      };
-    }
+    case "criterion.verified":
+      return verifyCriterion(goal, event);
 
     case "goal.completed": {
       requireStatus(goal, event, "executing");
@@ -1828,7 +1881,13 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
       reopen ? "the goal failed; a retry must reopen it" : "only a failed goal can be reopened",
     );
   }
-  const retried = retryTasks(goal, event, event.taskIds, reopen, new Set());
+  const reworked = event.reworkChangeSetIds ?? [];
+  checkReworkReopen(goal, event, reworked, reopen);
+  const retried = reopenReworks(
+    retryTasks(goal, event, event.taskIds, reopen, new Set(reworked)),
+    reworked,
+    event.at,
+  );
   return event.guidance
     ? withGuidance(retried, mergeGuidance(goal, event, event.guidance))
     : retried;
@@ -1862,11 +1921,81 @@ function applyIntegrationRetry(
       );
     }
   }
-  const retried = retryTasks(goal, event, event.taskIds, true, new Set(event.changeSetIds));
+  const reworked = event.reworkChangeSetIds ?? [];
+  checkReworkReopen(goal, event, reworked, true);
+  const retried = reopenReworks(
+    retryTasks(goal, event, event.taskIds, true, new Set([...event.changeSetIds, ...reworked])),
+    reworked,
+    event.at,
+  );
   const ids = new Set(event.changeSetIds);
   return {
     ...retried,
     changeSets: retried.changeSets.map((c) => (ids.has(c.id) ? reapprove(c, event.at) : c)),
+  };
+}
+
+/**
+ * The change sets a retry or recovery reworks again must each be rejected because their rework
+ * failed, with a rework task to run. A reopen lists every such change set: one left rejected
+ * would keep the goal from completing.
+ */
+function checkReworkReopen(
+  goal: Goal,
+  event: RetryEvent,
+  ids: readonly string[],
+  reopen: boolean,
+): void {
+  for (const id of ids) {
+    const cs = goal.changeSets.find((c) => c.id === id);
+    if (!cs) throw new GoalTransitionError(event.type, `unknown change set ${id}`);
+    if (!isReworkFailed(cs)) {
+      throw new GoalTransitionError(
+        event.type,
+        `change set ${id} is ${cs.status}${cs.rejectionReason ? ` (${cs.rejectionReason})` : ""}; only a change set whose rework failed can be reworked again`,
+      );
+    }
+    if (!reworkTaskOf(goal, id)) {
+      throw new GoalTransitionError(event.type, `change set ${id} has no rework task`);
+    }
+  }
+  if (!reopen) {
+    if (ids.length > 0) {
+      throw new GoalTransitionError(
+        event.type,
+        "only a retry that reopens a failed goal reworks a change set again",
+      );
+    }
+    return;
+  }
+  const missing = goal.changeSets.filter((c) => isReworkFailed(c) && !ids.includes(c.id));
+  if (missing.length > 0) {
+    throw new GoalTransitionError(
+      event.type,
+      `reopening needs every change set whose rework failed reworked again; missing ${missing.map((c) => c.id).join(", ")}`,
+    );
+  }
+}
+
+function reworkTaskOf(goal: Goal, changeSetId: string): Task | undefined {
+  return goal.tasks.findLast((t) => t.rework?.changeSetId === changeSetId);
+}
+
+/**
+ * Each change set goes back to the status it waited for its rework in, keeping its round,
+ * findings and worktree; its rework task, retried with it, runs again and supersedes it.
+ */
+function reopenReworks(goal: Goal, ids: readonly string[], at: string): Goal {
+  if (ids.length === 0) return goal;
+  const reopened = new Set(ids);
+  return {
+    ...goal,
+    changeSets: goal.changeSets.map((c) => {
+      const task = reopened.has(c.id) ? reworkTaskOf(goal, c.id) : undefined;
+      if (!task?.rework) return c;
+      const { rejectionReason: _reason, ...rest } = c;
+      return { ...rest, status: statusForRework(task.rework.reason), error: null, updatedAt: at };
+    }),
   };
 }
 
@@ -1892,13 +2021,16 @@ type RetryEvent = Extract<
   }
 >;
 
-/** Return tasks to pending; on a reopen, check the goal can still finish. */
+/**
+ * Return tasks to pending; on a reopen, check the goal can still finish. `reopenedChangeSetIds`
+ * are rejected change sets the event merges or reworks again.
+ */
 function retryTasks(
   goal: Goal,
   event: RetryEvent,
   taskIds: readonly string[],
   reopen: boolean,
-  remergedChangeSetIds: ReadonlySet<string>,
+  reopenedChangeSetIds: ReadonlySet<string>,
 ): Goal {
   const retryable = new Set(
     goal.tasks.filter((t) => t.status === "failed" || t.status === "cancelled").map((t) => t.id),
@@ -1924,7 +2056,7 @@ function retryTasks(
       );
     }
     const rejected = goal.changeSets.filter(
-      (c) => c.status === "rejected" && !remergedChangeSetIds.has(c.id),
+      (c) => c.status === "rejected" && !reopenedChangeSetIds.has(c.id),
     );
     if (rejected.length > 0) {
       throw new GoalTransitionError(
@@ -2228,10 +2360,13 @@ function refuseDeadlineWhileDeciding(
   }
 }
 
-/** A change set rejected by review has no way back, so the goal can never complete. */
+/**
+ * A change set rejected by review has no way back, so the goal can never complete. One whose
+ * merge or rework failed is merged or reworked again.
+ */
 function refuseRejectedByReview(goal: Goal, event: GoalEvent): void {
   const rejected = goal.changeSets.filter(
-    (c) => c.status === "rejected" && !isIntegrationFailed(c),
+    (c) => c.status === "rejected" && !isIntegrationFailed(c) && !isReworkFailed(c),
   );
   if (rejected.length > 0) {
     throw new GoalTransitionError(
@@ -2371,6 +2506,26 @@ function endAppliedRecovery(goal: Goal): Partial<Goal> {
 }
 
 /**
+ * New work from a recovery must not complete on evidence that never saw it. A decision that adds
+ * or replaces a task, applied after verification started or recorded a result, clears every
+ * criterion and starts the next verification round; its criterion.verified events carry the round
+ * in their ids. A retry or a revise that only removes keeps the results.
+ */
+function withVerificationReset(goal: Goal, decision: RecoveryDecision): Goal {
+  const addsWork = decision.ops?.some((op) => op.op !== "remove") === true;
+  // A criterion verified without verifyStartedAt (a manual record, or a log from before stage
+  // times) counts as started too: the new work must not complete on that evidence either.
+  const started = goal.verifyStartedAt !== undefined || goal.criteria.some((c) => c.verifiedAt);
+  if (!addsWork || !started) return goal;
+  const { verifyStartedAt: _started, verifiedAt: _verified, ...rest } = goal;
+  return {
+    ...rest,
+    criteria: goal.criteria.map((c) => ({ ...c, verifiedAt: null, evidence: null })),
+    verificationRound: (goal.verificationRound ?? 0) + 1,
+  };
+}
+
+/**
  * The recovery ends. "applied" reopens the goal; "rejected" (a person turned down the Lead's
  * revise), "needs_person" and "cancelled" leave it failed. A person cannot cancel while the
  * Manager applies a decision.
@@ -2390,6 +2545,9 @@ function resolveRecovery(
   }
   if (event.timeMode !== undefined || event.activeMs !== undefined) {
     throw new GoalTransitionError(event.type, "only an applied recovery restarts the time limit");
+  }
+  if (event.reworkChangeSetIds !== undefined) {
+    throw new GoalTransitionError(event.type, "only an applied recovery reworks change sets again");
   }
   switch (event.outcome) {
     case "rejected":
@@ -2423,9 +2581,10 @@ function resolveRecovery(
 /**
  * Applies the recovery's decision in one step, checked against the goal as it is now: the
  * revise's ops (recorded as an applied plan revision), every failed and cancelled task back to
- * pending with its failures forgiven, merges that failed approved again, the time limit
+ * pending with its failures forgiven, merges that failed approved again, change sets whose rework
+ * failed back to waiting for it (every one, listed on the event), the time limit
  * restarted with the recovery's time mode from this event, the Lead's advice for the workers,
- * and the goal reopened. Refused when the goal cannot run; the Manager then ends the recovery.
+ * verification started over when the revise adds work, and the goal reopened. Refused when the goal cannot run; the Manager then ends the recovery.
  */
 function applyRecovery(
   goal: Goal,
@@ -2462,6 +2621,8 @@ function applyRecovery(
     : goal.planRevisions;
   const revised: Goal = { ...goal, tasks, ...(planRevisions ? { planRevisions } : {}) };
   refuseRejectedByReview(revised, event);
+  const reworked = event.reworkChangeSetIds ?? [];
+  checkReworkReopen(revised, event, reworked, true);
   const timeBase = assertRoomToRun(revised, event);
   const failedRuns = (taskId: string) =>
     goal.runs.filter((r) => r.taskId === taskId && r.status === "failed").length;
@@ -2477,19 +2638,20 @@ function applyRecovery(
     ...(Object.keys(hints).length > 0 ? { lead: { recoveryId: recovery.id, tasks: hints } } : {}),
   };
   const counted = recovery.counted === true;
+  const reworkedGoal = withVerificationReset(reopenReworks(revised, reworked, event.at), decision);
   const reopened: Goal = {
-    ...revised,
+    ...reworkedGoal,
     ...timeBase,
     status: "executing",
     failureReason: null,
     reopens: (goal.reopens ?? 0) + 1,
     ...(goal.acknowledgedAt ? { acknowledgedAt: null } : {}),
-    tasks: revised.tasks.map((t) =>
+    tasks: reworkedGoal.tasks.map((t) =>
       t.status === "failed" || t.status === "cancelled"
         ? { ...t, status: "pending", error: null, forgivenFailures: failedRuns(t.id) }
         : t,
     ),
-    changeSets: revised.changeSets.map((c) =>
+    changeSets: reworkedGoal.changeSets.map((c) =>
       isIntegrationFailed(c) ? reapprove(c, event.at) : c,
     ),
     ...(counted ? { recoveries: (goal.recoveries ?? 0) + 1 } : {}),
