@@ -9,6 +9,9 @@ export const LAST_ATTEMPT_TRIGGER = "attempts_exhausted";
 /** Triggers of a wake-up after a failed run, in the order the Manager checks them. */
 export const FAILURE_TRIGGERS = [
   LAST_ATTEMPT_TRIGGER,
+  // The worker ended with `TASK_STATUS: blocked`. An older daemon does not know it and sets
+  // aside a log that holds one.
+  "worker_blocked",
   "lead_stopped",
   "timeout",
   "repeated_failure",
