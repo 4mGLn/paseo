@@ -1,5 +1,11 @@
 import { GOAL_DAEMON_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
 import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
+import {
+  absoluteDeadlineMs,
+  goalDeadlineMs,
+  goalTimeoutMs,
+  timeLimitEndMs,
+} from "@getpaseo/protocol/goal/time-limit";
 import { summarizeGoalProgress } from "@getpaseo/protocol/goal/progress";
 import type {
   AgentRun,
@@ -11,7 +17,6 @@ import type {
   GoalSummary,
   Task,
 } from "@getpaseo/protocol/goal/types";
-import { DAEMON_GOAL_SETTINGS } from "./goal-settings";
 
 type ProgressGoal = Pick<
   Goal,
@@ -22,6 +27,7 @@ type ProgressGoal = Pick<
   | "criteria"
   | "createdAt"
   | "timeBaseAt"
+  | "waits"
   | "updatedAt"
   | "config"
   | "pausedAt"
@@ -350,11 +356,11 @@ export function retryNeedsTimeMode(goal: DeadlineGoal, now: number): boolean {
   if (!goal.config || start === null) {
     return false;
   }
-  const explicitEnd = parseTime(goal.config.limits?.deadlineAt);
+  const explicitEnd = absoluteDeadlineMs(goal);
   if (explicitEnd !== null && explicitEnd <= now) {
     return false;
   }
-  return timeLimitEnd(goal, start) <= now;
+  return timeLimitEndMs(goal, now) <= now;
 }
 
 /**
@@ -369,7 +375,8 @@ export function goalRemainingRunMs(
   if (!goal.config) {
     return null;
   }
-  return timeLimitEnd(goal, 0) - goalActiveMs(events, now);
+  // The active time already leaves out the time spent waiting for a person.
+  return goalTimeoutMs(goal) - goalActiveMs(events, now);
 }
 
 /** US dollars, cents under a hundred. */
@@ -382,17 +389,11 @@ export type GoalDeadline =
   | { kind: "running"; remainingMs: number; totalMs: number; usedFraction: number }
   | { kind: "overdue"; overdueMs: number };
 
-type DeadlineGoal = Pick<Goal, "createdAt" | "timeBaseAt" | "config">;
+type DeadlineGoal = Pick<Goal, "createdAt" | "timeBaseAt" | "config" | "waits">;
 
 /** When the time limit counts from: where a retry restarted it, else creation. */
 function timeLimitStart(goal: DeadlineGoal): number | null {
   return parseTime(goal.timeBaseAt ?? goal.createdAt);
-}
-
-function timeLimitEnd(goal: DeadlineGoal, start: number): number {
-  const minutes =
-    goal.config?.limits?.goalTimeoutMinutes ?? DAEMON_GOAL_SETTINGS.goalTimeoutMinutes;
-  return start + minutes * 60_000;
 }
 
 /** Time left before the goal timeout fails the goal. */
@@ -401,10 +402,9 @@ export function goalDeadline(goal: ProgressGoal, now: number): GoalDeadline {
   if (ENDED.has(goal.status) || !goal.config || start === null) {
     return { kind: "none" };
   }
-  const timeoutEnd = timeLimitEnd(goal, start);
-  // The earlier of the timeout and an explicit deadline wins.
-  const explicitEnd = parseTime(goal.config.limits?.deadlineAt);
-  const end = explicitEnd === null ? timeoutEnd : Math.min(timeoutEnd, explicitEnd);
+  // The earlier of the timeout and an explicit deadline wins. The timeout moves out while an
+  // agent waits for a person; the explicit deadline never does.
+  const end = goalDeadlineMs(goal, now);
   const totalMs = Math.max(1, end - start);
   const elapsed = Math.max(0, now - start);
   const remainingMs = end - Math.max(now, start);

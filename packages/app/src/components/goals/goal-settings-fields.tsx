@@ -42,7 +42,11 @@ function describeSetting(
   setting: GoalNumberSetting,
   value: number,
 ): string {
-  if (setting === "runTimeoutMinutes" || setting === "goalTimeoutMinutes") {
+  if (
+    setting === "runTimeoutMinutes" ||
+    setting === "goalTimeoutMinutes" ||
+    setting === "userWaitMinutes"
+  ) {
     return durationLabel(t, minutesToDuration(value));
   }
   if (setting === "retryBackoffSeconds") {

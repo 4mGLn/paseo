@@ -36,6 +36,8 @@ export interface GoalSettings {
   runTimeoutMinutes: number;
   goalTimeoutMinutes: number;
   retryBackoffSeconds: number;
+  /** Needs a host with `goalUserWait`; without it the value is neither shown nor sent. */
+  userWaitMinutes: number;
   autoApprovePlan: boolean;
   requireHumanApproval: boolean;
   onPermissionRequest: GoalPermissionPolicy;
@@ -67,6 +69,7 @@ export const GOAL_SETTING_RANGES: Record<GoalNumberSetting, GoalSettingRange> = 
   runTimeoutMinutes: rangeOf(BOUNDS.limits.runTimeoutMinutes),
   goalTimeoutMinutes: rangeOf(BOUNDS.limits.goalTimeoutMinutes),
   retryBackoffSeconds: rangeOf(BOUNDS.limits.retryBackoffSeconds),
+  userWaitMinutes: rangeOf(BOUNDS.limits.userWaitMinutes),
 };
 
 /** What the daemon uses when a field is left out. */
@@ -79,6 +82,7 @@ export const DAEMON_GOAL_SETTINGS: GoalSettings = {
   runTimeoutMinutes: BOUNDS.limits.runTimeoutMinutes.default,
   goalTimeoutMinutes: BOUNDS.limits.goalTimeoutMinutes.default,
   retryBackoffSeconds: BOUNDS.limits.retryBackoffSeconds.default,
+  userWaitMinutes: BOUNDS.limits.userWaitMinutes.default,
   autoApprovePlan: false,
   requireHumanApproval: false,
   onPermissionRequest: DEFAULT_GOAL_PERMISSION_POLICY,
@@ -204,7 +208,11 @@ const BACKOFF_STEPS_SECONDS = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3
 export function goalSettingSteps(setting: GoalNumberSetting): number[] | null {
   const range = GOAL_SETTING_RANGES[setting];
   const within = (value: number) => value >= range.min && value <= range.max;
-  if (setting === "runTimeoutMinutes" || setting === "goalTimeoutMinutes") {
+  if (
+    setting === "runTimeoutMinutes" ||
+    setting === "goalTimeoutMinutes" ||
+    setting === "userWaitMinutes"
+  ) {
     return DURATION_STEPS_MINUTES.filter(within);
   }
   if (setting === "retryBackoffSeconds") {
@@ -319,12 +327,22 @@ export type GoalSettingsConfig = Pick<
  * out, so the daemon keeps owning its defaults. The permission policy is the exception: a daemon
  * from before `wait` became the default runs a goal without one as `fail`.
  */
-export function goalSettingsToConfig(settings: GoalSettings): GoalSettingsConfig {
+export function goalSettingsToConfig(
+  settings: GoalSettings,
+  options: { userWaitSupported?: boolean } = {},
+): GoalSettingsConfig {
   const limits: NonNullable<GoalConfig["limits"]> = {};
   for (const key of LIMIT_SETTINGS) {
     if (settings[key] !== DAEMON_GOAL_SETTINGS[key]) {
       limits[key] = settings[key];
     }
+  }
+  // A host without `goalUserWait` would refuse the field, so it is sent only to one that has it.
+  if (
+    options.userWaitSupported &&
+    settings.userWaitMinutes !== DAEMON_GOAL_SETTINGS.userWaitMinutes
+  ) {
+    limits.userWaitMinutes = settings.userWaitMinutes;
   }
   const hasLimits = Object.keys(limits).length > 0;
   const changedRework = settings.maxReworkRounds !== DAEMON_GOAL_SETTINGS.maxReworkRounds;

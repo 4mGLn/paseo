@@ -330,6 +330,42 @@ describe("goalDeadline", () => {
     expect(goalDeadline(goal, START + 110 * MIN)).toEqual({ kind: "overdue", overdueMs: 10 * MIN });
   });
 
+  it("pushes the end back by the time spent waiting for a person, an open wait included", () => {
+    const config = { ...makeGoal().config!, limits: { goalTimeoutMinutes: 100 } };
+    const closed = makeGoal({
+      status: "executing",
+      createdAt: iso(0),
+      config,
+      waits: { open: {}, excludedMs: 30 * MIN, since: null },
+    });
+    expect(goalDeadline(closed, START + 25 * MIN)).toMatchObject({
+      kind: "running",
+      remainingMs: 105 * MIN,
+    });
+    const open = makeGoal({
+      status: "executing",
+      createdAt: iso(0),
+      config,
+      waits: { open: { a: { since: iso(20) } }, excludedMs: 30 * MIN, since: iso(20) },
+    });
+    // The end keeps moving while the wait is open: the remaining time does not shrink.
+    expect(goalDeadline(open, START + 25 * MIN)).toMatchObject({ remainingMs: 110 * MIN });
+    expect(goalDeadline(open, START + 50 * MIN)).toMatchObject({ remainingMs: 110 * MIN });
+  });
+
+  it("never pushes back an absolute deadline", () => {
+    const goal = makeGoal({
+      status: "executing",
+      createdAt: iso(0),
+      config: {
+        ...makeGoal().config!,
+        limits: { goalTimeoutMinutes: 100, deadlineAt: iso(60) },
+      },
+      waits: { open: {}, excludedMs: 30 * MIN, since: null },
+    });
+    expect(goalDeadline(goal, START + 25 * MIN)).toMatchObject({ remainingMs: 35 * MIN });
+  });
+
   it("uses the daemon default and has none for ended or manual goals", () => {
     const goal = makeGoal({ status: "executing", createdAt: iso(0) });
     expect(goalDeadline(goal, START)).toMatchObject({ totalMs: 1440 * MIN });
@@ -376,6 +412,19 @@ describe("goalRemainingRunMs", () => {
     const events = [event("goal.created", 0), event("goal.failed", 100)];
     expect(goalRemainingRunMs(goal, events, START + 500 * MIN)).toBe(0);
     expect(goalRemainingRunMs(makeGoal({ config: null }), events, START)).toBeNull();
+  });
+});
+
+describe("retryNeedsTimeMode with waits", () => {
+  it("is not needed while waiting time keeps the limit from passing", () => {
+    const goal = makeGoal({
+      status: "failed",
+      createdAt: iso(0),
+      config: { ...makeGoal().config!, limits: { goalTimeoutMinutes: 100 } },
+      waits: { open: {}, excludedMs: 50 * MIN, since: null },
+    });
+    expect(retryNeedsTimeMode(goal, START + 120 * MIN)).toBe(false);
+    expect(retryNeedsTimeMode({ ...goal, waits: undefined }, START + 120 * MIN)).toBe(true);
   });
 });
 
