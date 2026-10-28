@@ -2,7 +2,13 @@ import { describe, expect, test } from "vitest";
 import { SessionInboundMessageSchema, SessionOutboundMessageSchema } from "../messages.js";
 import { DEFAULT_GOAL_PERMISSION_POLICY, goalPermissionPolicy } from "./config-bounds.js";
 import { summarizeGoalProgress, toGoalSummary } from "./progress.js";
-import { type Goal, GoalConfigSchema, GoalEventSchema } from "./types.js";
+import {
+  GOAL_TIME_MODES,
+  type Goal,
+  GoalConfigSchema,
+  GoalEventSchema,
+  GoalSchema,
+} from "./types.js";
 
 const config = {
   cwd: "/repo",
@@ -433,5 +439,143 @@ describe("integration retry", () => {
         payload: { requestId: "r", goal: null, events: [retried], error: null },
       }).type,
     ).toBe("goal.inspect.response");
+  });
+});
+
+describe("retry time mode", () => {
+  const envelope = { id: "e", goalId: "g", seq: 2, at: "x" };
+  const goalWithoutControls = {
+    id: "g",
+    title: "T",
+    objective: "",
+    status: "executing",
+    config,
+    leadAgentId: null,
+    leadWorkspaceId: null,
+    criteria: [],
+    tasks: [],
+    runs: [],
+    changeSets: [],
+    integration: null,
+    lastSeq: 3,
+    failureReason: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  test("goal.retry takes an optional time mode as a string, so the set can grow", () => {
+    for (const timeMode of [undefined, "fresh", "remaining", "later"]) {
+      const message = {
+        type: "goal.retry.request",
+        requestId: "r",
+        goalId: "g",
+        ...(timeMode ? { timeMode } : {}),
+      };
+      expect(SessionInboundMessageSchema.parse(message)).toMatchObject(message);
+    }
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "goal.retry.request",
+        requestId: "r",
+        goalId: "g",
+        timeMode: "x".repeat(33),
+      }).success,
+    ).toBe(false);
+  });
+
+  test("the reopening events carry the mode and running time; a goal its time base", () => {
+    for (const event of [
+      { type: "goal.retried", taskIds: ["a"], reopen: true },
+      { type: "goal.reopened" },
+      { type: "changeset.integration_retried", changeSetIds: ["cs1"], taskIds: [] },
+    ]) {
+      const parsed = GoalEventSchema.parse({
+        ...envelope,
+        ...event,
+        timeMode: "remaining",
+        activeMs: 1000,
+      });
+      expect(parsed).toMatchObject({ timeMode: "remaining", activeMs: 1000 });
+      expect(GoalEventSchema.safeParse({ ...envelope, ...event, activeMs: -1 }).success).toBe(
+        false,
+      );
+    }
+    expect(
+      GoalSchema.parse({ ...goalWithoutControls, timeBaseAt: "2026-01-01T00:00:00.000Z" })
+        .timeBaseAt,
+    ).toBe("2026-01-01T00:00:00.000Z");
+    expect(GoalSchema.parse(goalWithoutControls).timeBaseAt).toBeUndefined();
+    expect(GOAL_TIME_MODES).toEqual(["fresh", "remaining"]);
+  });
+});
+
+describe("plan revision", () => {
+  const spec = { id: "t7a", title: "A", description: "", kind: "implement", dependsOn: [] };
+
+  test("the three requests parse, with ops or with a desired plan", () => {
+    const withOps = {
+      type: "goal.plan.revise.request",
+      requestId: "r1",
+      goalId: "g1",
+      ops: [
+        { op: "add", task: spec },
+        { op: "remove", taskId: "t7" },
+      ],
+      reason: "split t7",
+    };
+    expect(SessionInboundMessageSchema.parse(withOps).type).toBe("goal.plan.revise.request");
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "goal.plan.revise.request",
+        requestId: "r2",
+        goalId: "g1",
+        tasks: [spec],
+        remove: ["t7"],
+        reason: "split t7",
+        agentId: "lead-agent",
+        eventId: "e1",
+      }).type,
+    ).toBe("goal.plan.revise.request");
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        ...withOps,
+        ops: [{ op: "rename", taskId: "t7" }],
+      }).success,
+    ).toBe(false);
+    for (const reason of ["  ", "x".repeat(2001)]) {
+      expect(SessionInboundMessageSchema.safeParse({ ...withOps, reason }).success).toBe(false);
+    }
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "goal.plan.approve_revision.request",
+        requestId: "r3",
+        goalId: "g1",
+        revisionId: "rev-1",
+      }).type,
+    ).toBe("goal.plan.approve_revision.request");
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "goal.plan.reject_revision.request",
+        requestId: "r4",
+        goalId: "g1",
+        revisionId: "rev-1",
+        feedback: "keep t7",
+      }).type,
+    ).toBe("goal.plan.reject_revision.request");
+  });
+
+  test("the responses parse through the session union", () => {
+    for (const type of [
+      "goal.plan.revise.response",
+      "goal.plan.approve_revision.response",
+      "goal.plan.reject_revision.response",
+    ]) {
+      expect(
+        SessionOutboundMessageSchema.parse({
+          type,
+          payload: { requestId: "r", goal: null, error: "nope" },
+        }).type,
+      ).toBe(type);
+    }
   });
 });

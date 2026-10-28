@@ -372,6 +372,17 @@ export const PASEO_TOOL_CATALOG = {
     detail: { inputOrder: ["id"] },
   },
 
+  // Goals
+  goal_revise_plan: {
+    label: "Revise goal plan",
+    context: field("reason"),
+    detail: {
+      promptField: "reason",
+      inputOrder: ["ops", "tasks", "remove"],
+      outputFields: ["goalId", "revisionId", "status", "decisionReason"],
+    },
+  },
+
   // Providers
   list_providers: { label: "List providers", completedLabel: "Listed providers" },
   list_models: {

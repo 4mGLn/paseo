@@ -79,6 +79,19 @@ export const CLIENT_CAPS = {
   // changeset.integration_retried from goal.inspect events for older clients whose strict
   // event union rejects it. Remove after 2027-04-27.
   goalIntegrationRetry: "goal_integration_retry",
+  // COMPAT(goalPlanRevision): added in v0.13.13. The daemon omits plan.revision_proposed,
+  // plan.revision_approved and plan.revision_rejected from goal.inspect events for older
+  // clients whose strict event union rejects them. Remove after 2027-04-28.
+  goalPlanRevision: "goal_plan_revision",
+  // COMPAT(goalLeadInterventions): added in v0.13.13. The daemon omits intervention.requested
+  // and intervention.resolved from goal.inspect events for older clients whose strict event
+  // union rejects them. Remove after 2027-04-28.
+  goalLeadInterventions: "goal_lead_interventions",
+  // COMPAT(goalRecovery): added in v0.13.13. The daemon omits recovery.started,
+  // recovery.decided and recovery.resolved from goal.inspect events, and recovery and guidance
+  // from goal payloads, for older clients whose strict event union rejects them. Remove after
+  // 2027-04-28.
+  goalRecovery: "goal_recovery",
   browserHost: "browser_host",
 } as const;
 

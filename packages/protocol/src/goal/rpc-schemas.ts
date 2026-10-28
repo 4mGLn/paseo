@@ -7,6 +7,8 @@ import {
   GoalSchema,
   GoalStatusSchema,
   GoalSummarySchema,
+  GuidanceChangesSchema,
+  PlanRevisionOpSchema,
   TaskSpecSchema,
 } from "./types.js";
 
@@ -116,6 +118,16 @@ export const GoalRetryRequestSchema = z.object({
   // server_info.features.goalIntegrationRetry, a failed goal's change sets whose merge
   // failed are merged again too, even when no task failed.
   taskId: z.string().trim().min(1).optional(),
+  // With server_info.features.goalTimeBase: how the time limit restarts, one of
+  // GOAL_TIME_MODES. Required once the goal's time limit has passed; omit it to keep the
+  // time limit counting as before.
+  timeMode: z.string().max(32).optional(),
+  // With server_info.features.goalRecovery: the person's instruction for the goal's workers,
+  // merged into the goal's guidance (a string sets an entry, null clears it). Only a retry that
+  // retries failed tasks takes it.
+  guidance: GuidanceChangesSchema.optional(),
+  // The calling agent's id, when an agent asks. Guidance from an agent is refused.
+  agentId: z.string().trim().min(1).optional(),
   eventId,
 });
 
@@ -184,6 +196,81 @@ export const GoalUpdateConfigRequestSchema = z.object({
   requestId: z.string(),
   goalId: z.string(),
   changes: GoalConfigChangesSchema,
+  eventId,
+});
+
+// Plan revision, gated on server_info.features.goalPlanRevision. Changes an executing goal's
+// tasks that have not started or did not succeed. Send `ops`, or the desired plan as `tasks`
+// with `remove` naming each pending, failed or cancelled task left out. Without `agentId` the
+// revision is a person's and applies at once; with the goal's Lead agent id it is the Lead's
+// and waits for approval unless the goal auto-approves plans. Any other agent id is refused.
+export const GoalPlanReviseRequestSchema = z.object({
+  type: z.literal("goal.plan.revise.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  ops: z.array(PlanRevisionOpSchema).optional(),
+  tasks: z.array(TaskSpecSchema).optional(),
+  remove: z.array(z.string().trim().min(1)).optional(),
+  reason: z.string().trim().min(1).max(2000),
+  agentId: z.string().trim().min(1).optional(),
+  eventId,
+});
+
+// Approves a pending revision held for a person.
+export const GoalPlanApproveRevisionRequestSchema = z.object({
+  type: z.literal("goal.plan.approve_revision.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  revisionId: z.string(),
+  eventId,
+});
+
+// Rejects a pending revision held for a person; the plan stays as it was.
+export const GoalPlanRejectRevisionRequestSchema = z.object({
+  type: z.literal("goal.plan.reject_revision.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  revisionId: z.string(),
+  feedback: z.string().optional(),
+  eventId,
+});
+
+// Recovery, gated on server_info.features.goalRecovery. A person asks a fresh Lead to decide
+// how a failed goal continues; the goal stays failed until the decision applies. `timeMode`
+// is required once the time limit has passed and restarts it when the recovery applies, as on
+// goal.retry. `guidance` is the person's instruction, as on goal.retry. A request carrying
+// `agentId` is refused: only a person starts, decides or cancels a recovery.
+export const GoalRecoveryStartRequestSchema = z.object({
+  type: z.literal("goal.recovery.start.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  timeMode: z.string().max(32).optional(),
+  guidance: GuidanceChangesSchema.optional(),
+  agentId: z.string().trim().min(1).optional(),
+  eventId,
+});
+
+// Approves or rejects the Lead's revise while the recovery waits for approval. An approval
+// checks the integration worktree again before it applies.
+export const GoalRecoveryDecideRequestSchema = z.object({
+  type: z.literal("goal.recovery.decide.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  recoveryId: z.string(),
+  approve: z.boolean(),
+  // Why the person rejected it.
+  message: z.string().optional(),
+  agentId: z.string().trim().min(1).optional(),
+  eventId,
+});
+
+// Stops a recovery that is deciding or waiting for approval; refused while it is applied.
+export const GoalRecoveryCancelRequestSchema = z.object({
+  type: z.literal("goal.recovery.cancel.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  recoveryId: z.string(),
+  agentId: z.string().trim().min(1).optional(),
   eventId,
 });
 
@@ -307,6 +394,36 @@ export const GoalUnarchiveResponseSchema = z.object({
 
 export const GoalUpdateConfigResponseSchema = z.object({
   type: z.literal("goal.update_config.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalPlanReviseResponseSchema = z.object({
+  type: z.literal("goal.plan.revise.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalPlanApproveRevisionResponseSchema = z.object({
+  type: z.literal("goal.plan.approve_revision.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalPlanRejectRevisionResponseSchema = z.object({
+  type: z.literal("goal.plan.reject_revision.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalRecoveryStartResponseSchema = z.object({
+  type: z.literal("goal.recovery.start.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalRecoveryDecideResponseSchema = z.object({
+  type: z.literal("goal.recovery.decide.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalRecoveryCancelResponseSchema = z.object({
+  type: z.literal("goal.recovery.cancel.response"),
   payload: GoalMutationPayloadSchema,
 });
 

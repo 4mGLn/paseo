@@ -58,6 +58,57 @@ describe("describeGoalWaitingOn", () => {
         changeSets: [changeSet("cs1", "awaiting_human")],
       })?.label,
     ).toBe("change set approval: cs1");
+    expect(
+      describeGoalWaitingOn({
+        ...base,
+        tasks: [task("a", "running"), task("b", "failed")],
+        planRevisions: [
+          {
+            id: "rev-1",
+            source: "lead",
+            reason: "split b",
+            ops: [{ op: "remove", taskId: "b" }],
+            status: "pending",
+            proposedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    ).toEqual({
+      kind: "plan_revision_approval",
+      label: "approval of a plan change",
+      key: "goals.waitingOn.planRevisionApproval",
+      params: {},
+    });
+    const intervention = (trigger: string, status: string) => ({
+      id: "x",
+      taskId: trigger === "watch" ? "a" : "b",
+      runId: trigger === "watch" ? "a-a1" : "b-a1",
+      trigger,
+      error: "",
+      status,
+      requestedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(
+      describeGoalWaitingOn({
+        ...base,
+        tasks: [task("a", "running"), task("b", "failed")],
+        interventions: [intervention("timeout", "open")],
+      }),
+    ).toEqual({
+      kind: "lead_decision",
+      label: "the Lead's decision about b",
+      key: "goals.waitingOn.leadDecision",
+      params: { count: 1, ids: "b", title: "Task b" },
+    });
+    // A check-in on a running task, or a decided wake-up, holds nothing.
+    for (const interventions of [
+      [intervention("watch", "open")],
+      [intervention("timeout", "resolved")],
+    ]) {
+      expect(
+        describeGoalWaitingOn({ ...base, tasks: [task("a", "running")], interventions })?.kind,
+      ).toBe("running");
+    }
     expect(describeGoalWaitingOn({ ...base, tasks: [task("a", "running")] })?.label).toBe(
       "running task a (Task a)",
     );
