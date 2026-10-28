@@ -47,6 +47,7 @@ describe("GoalSession", () => {
     leadInterventions?: boolean,
     recovery?: boolean,
     accept?: boolean,
+    userWait?: boolean,
   ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
@@ -65,6 +66,7 @@ describe("GoalSession", () => {
           supportsGoalLeadInterventions: leadInterventions,
           supportsGoalRecovery: recovery,
           supportsGoalAccept: accept,
+          supportsGoalUserWait: userWait,
         }),
       },
       goalService: service,
@@ -1220,6 +1222,59 @@ describe("GoalSession", () => {
       `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
     );
   }
+
+  test.each([
+    [true, "show to clients with"],
+    [false, "are hidden from clients without"],
+  ] as const)("waits for an answer %s the goal_user_wait capability", async (capable, _shown) => {
+    const at = new Date().toISOString();
+    const events = [
+      {
+        type: "goal.created",
+        title: "T",
+        objective: "o",
+        criteria: [{ id: "c1", text: "works" }],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "codex",
+          maxParallel: 2,
+          maxAttempts: 2,
+          autoApprovePlan: false,
+          notifyLead: false,
+          limits: { userWaitMinutes: 30 },
+        },
+      },
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+      { type: "wait.started", agentId: "agent-a", role: "worker", runId: "a-a1" },
+      { type: "wait.ended", agentId: "agent-a", outcome: "answered" },
+    ];
+    await writeFile(
+      join(dir, "g1.jsonl"),
+      `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+    );
+    const session = await openSession(
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      capable,
+    );
+    await send(session, { type: "goal.inspect.request", requestId: "i1", goalId: "g1" });
+    const { goal, events: shown } = lastOf("goal.inspect.response").payload;
+    expect(shown.filter((e) => e.type.startsWith("wait.")).length).toBe(capable ? 2 : 0);
+    expect(shown).toHaveLength(capable ? 7 : 5);
+    expect(goal?.config?.limits?.userWaitMinutes).toBe(30);
+  });
 
   test("goal.outcome.accept completes a failed goal with its unmet criteria waived, and refuses an agent", async () => {
     await writeUnmetLog();

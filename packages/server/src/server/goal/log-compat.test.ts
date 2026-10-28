@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { goalPermissionPolicy } from "@getpaseo/protocol/goal/config-bounds";
 import { GoalSchema } from "@getpaseo/protocol/goal/types";
+import { excludedWaitMs } from "@getpaseo/protocol/goal/time-limit";
 import { GoalEventLog } from "./event-log.js";
 import { GoalManager } from "./goal-manager.js";
 import { reworkWorktreeProblem } from "./goal-recovery.js";
@@ -838,6 +839,61 @@ describe("goal logs written by earlier phases", () => {
       expect(goal.changeSets.filter((c) => c.rejectionReason !== undefined)).toEqual([]);
       expect(GoalSchema.safeParse(goal).success).toBe(true);
     }
+  });
+
+  test("real goal logs from before waits replay with no waits, so their time limits are unchanged", async () => {
+    const names = ["4fe24f94.jsonl", "aff07ea6.jsonl", "b195cf6f.jsonl", "b195cf6f-verify.jsonl"];
+    for (const [i, name] of names.entries()) {
+      const text = await readFile(join(import.meta.dirname, "test-fixtures", name), "utf8");
+      const sub = join(dir, `f${i}`);
+      await mkdir(sub);
+      await writeFile(
+        join(sub, `${JSON.parse(text.slice(0, text.indexOf("\n"))).goalId}.jsonl`),
+        text,
+      );
+      const store = new GoalStore(new GoalEventLog({ dir: sub }));
+      await store.recover();
+      const [goal] = store.list();
+      expect(goal?.waits).toBeUndefined();
+      if (goal) expect(excludedWaitMs(goal, Date.now())).toBe(0);
+    }
+  });
+
+  test("a log with waits round-trips through the store", async () => {
+    const waitConfig = {
+      cwd: "/repo",
+      leadProvider: "claude",
+      defaultProvider: "codex",
+      maxParallel: 1,
+      maxAttempts: 2,
+      autoApprovePlan: true,
+      notifyLead: false,
+      limits: { userWaitMinutes: 30 },
+    };
+    const events = [
+      { type: "goal.created", title: "T", objective: "o", criteria: [], config: waitConfig },
+      { type: "plan.proposed", tasks: [spec("a")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+      {
+        type: "wait.started",
+        agentId: "agent-a",
+        role: "worker",
+        runId: "a-a1",
+        request: { kind: "permission", tool: "Bash", text: "git commit" },
+      },
+      { type: "wait.started", agentId: "lead-1", role: "lead" },
+      { type: "wait.ended", agentId: "agent-a", outcome: "answered" },
+    ];
+    await writeFile(join(dir, "w1.jsonl"), jsonl("w1", events));
+    const goal = (await load()).get("w1");
+    expect(GoalSchema.safeParse(goal).success).toBe(true);
+    expect(goal?.waits).toEqual({
+      open: { "lead-1": { since: AT } },
+      excludedMs: 0,
+      since: AT,
+    });
   });
 
   test("goal b195cf6f accepted as is after its last recovery round-trips through the log", async () => {

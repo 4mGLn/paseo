@@ -153,6 +153,12 @@ describe("dueWakeUp", () => {
     expect(due(failedB("Answer: Blocked by a full disk (ENOSPC)."))).toBeNull();
   });
 
+  test("a request nobody answered in time stays the person's, even on the last attempt", () => {
+    const noAnswer = "No answer within 720 minutes: Agent is waiting for permission to use Bash";
+    expect(due(failedB(noAnswer))).toBeNull();
+    expect(due(failedB(noAnswer, { maxAttempts: 1 }))).toBeNull();
+  });
+
   test("aff07ea6 with interrupted runs: wake-ups at a2, a4 and the last attempt a5", () => {
     let goal = apply(null, [
       {

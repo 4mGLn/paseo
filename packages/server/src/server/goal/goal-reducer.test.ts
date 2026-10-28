@@ -2083,6 +2083,23 @@ describe("recovery", () => {
     ops: [{ op: "remove", taskId: "c" }],
   };
 
+  test("the recovery Lead may wait for an answer while it decides; a plain failed goal takes no wait", () => {
+    const more = (goal: Goal, events: Record<string, unknown>[]) =>
+      events.reduce((g, partial) => applyGoalEvent(g, ev(g, partial)), goal);
+    const leadWait = { type: "wait.started", agentId: "lead-r1", role: "lead", at: at(21) };
+    expect(() => more(failed(), [leadWait])).toThrow(/goal is failed/);
+    const leadDeciding = more(failed(), [start(), attach, ask, leadWait]);
+    expect(leadDeciding.waits).toEqual({
+      open: { "lead-r1": { since: at(21) } },
+      excludedMs: 0,
+      since: at(21),
+    });
+    const answered = more(leadDeciding, [
+      { type: "wait.ended", agentId: "lead-r1", outcome: "answered", at: at(24) },
+    ]);
+    expect(answered.waits).toEqual({ open: {}, excludedMs: 3 * 60_000, since: null });
+  });
+
   test("goal.failed records when the goal failed", () => {
     expect(failed().failedAt).toBe(at(10));
   });
@@ -3330,5 +3347,130 @@ describe("accepting a failed goal as is", () => {
     expect(accepted.pausedAt).toBeNull();
     expect(accepted).not.toHaveProperty("verifyStartedAt");
     expect(accepted).not.toHaveProperty("verifiedAt");
+  });
+});
+
+describe("waits for a person's answer", () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
+  /** Applies `[minute, event]` pairs and returns every state. */
+  function timed(events: [number, Record<string, unknown>][]): Goal[] {
+    const states: Goal[] = [];
+    let goal: Goal | null = null;
+    for (const [minute, partial] of events) {
+      goal = applyGoalEvent(goal, { ...ev(goal, partial), at: at(minute) });
+      states.push(goal);
+    }
+    return states;
+  }
+  const config = {
+    cwd: "/repo",
+    leadProvider: "claude",
+    defaultProvider: "codex",
+    maxParallel: 2,
+    maxAttempts: 2,
+    autoApprovePlan: true,
+    notifyLead: false,
+    limits: { goalTimeoutMinutes: 60, deadlineAt: at(500) },
+  };
+  const running: [number, Record<string, unknown>][] = [
+    [0, { ...created, config }],
+    [0, { type: "plan.proposed", tasks: [task("a"), task("b")] }],
+    [0, { type: "plan.approved" }],
+    [0, { type: "task.started", taskId: "a" }],
+    [0, { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" }],
+    [0, { type: "task.started", taskId: "b" }],
+    [0, { type: "run.started", runId: "b-a1", taskId: "b", provider: "codex" }],
+  ];
+  const waitA = { type: "wait.started", agentId: "agent-a", role: "worker", runId: "a-a1" };
+  const waitB = { type: "wait.started", agentId: "agent-b", role: "worker", runId: "b-a1" };
+  const last = (events: [number, Record<string, unknown>][]) => timed(events).at(-1) as Goal;
+
+  test("overlapping waits are counted once", () => {
+    const goal = last([
+      ...running,
+      [10, waitA],
+      [15, waitB],
+      [20, { type: "wait.ended", agentId: "agent-a", outcome: "answered" }],
+      [30, { type: "wait.ended", agentId: "agent-b", outcome: "answered" }],
+    ]);
+    expect(goal.waits).toEqual({ open: {}, excludedMs: 20 * 60_000, since: null });
+  });
+
+  test("an open wait records when the stretch began", () => {
+    const goal = last([...running, [10, waitA], [15, waitB]]);
+    expect(goal.waits?.since).toBe(at(10));
+    expect(goal.waits?.open["agent-b"]).toEqual({ since: at(15), runId: "b-a1" });
+  });
+
+  test("run.finished closes the wait of its run", () => {
+    const goal = last([
+      ...running,
+      [10, waitA],
+      [25, { type: "run.finished", runId: "a-a1", outcome: "interrupted" }],
+    ]);
+    expect(goal.waits).toEqual({ open: {}, excludedMs: 15 * 60_000, since: null });
+  });
+
+  test("a goal that ends closes every wait", () => {
+    const goal = last([...running, [10, waitA], [12, waitB], [40, { type: "goal.cancelled" }]]);
+    expect(goal.waits).toEqual({ open: {}, excludedMs: 30 * 60_000, since: null });
+  });
+
+  test("a new time base while a wait is open clears the count and restarts it", () => {
+    const goal = last([
+      ...running,
+      [5, waitA],
+      [6, { type: "wait.ended", agentId: "agent-a", outcome: "answered" }],
+      [7, { type: "run.finished", runId: "a-a1", outcome: "failed", error: "boom" }],
+      [7, { type: "task.failed", taskId: "a", error: "boom" }],
+      [10, waitB],
+      [20, { type: "goal.retried", taskIds: ["a"], reopen: false, timeMode: "fresh" }],
+    ]);
+    expect(goal.timeBaseAt).toBe(at(20));
+    expect(goal.waits).toEqual({
+      open: { "agent-b": { since: at(10), runId: "b-a1" } },
+      excludedMs: 0,
+      since: at(20),
+    });
+  });
+
+  test("refuses a second wait for the same agent, a wait in a finished run, and an end without a wait", () => {
+    expect(() => last([...running, [10, waitA], [11, waitA]])).toThrow(/already waiting/);
+    expect(() =>
+      last([
+        ...running,
+        [5, { type: "run.finished", runId: "a-a1", outcome: "failed", error: "x" }],
+        [10, waitA],
+      ]),
+    ).toThrow(/not running/);
+    expect(() =>
+      last([...running, [10, { type: "wait.ended", agentId: "agent-a", outcome: "answered" }]]),
+    ).toThrow(/not waiting/);
+  });
+
+  test("the absolute deadline is not moved by waiting", () => {
+    const goal = last([
+      ...running,
+      [10, waitA],
+      [400, { type: "wait.ended", agentId: "agent-a", outcome: "answered" }],
+    ]);
+    expect(goal.config?.limits?.deadlineAt).toBe(at(500));
+    expect(goal.waits?.excludedMs).toBe(390 * 60_000);
+  });
+
+  test("replay gives the same state, and a log without waits has none", () => {
+    const events = timed([...running, [10, waitA], [12, waitB]]);
+    const log: GoalEvent[] = [];
+    let goal: Goal | null = null;
+    for (const [minute, partial] of [...running, [10, waitA], [12, waitB]] as [
+      number,
+      Record<string, unknown>,
+    ][]) {
+      const event = { ...ev(goal, partial), at: at(minute) };
+      log.push(event);
+      goal = applyGoalEvent(goal, event);
+    }
+    expect(replayGoal(log)).toEqual(events.at(-1));
+    expect(last(running).waits).toBeUndefined();
   });
 });

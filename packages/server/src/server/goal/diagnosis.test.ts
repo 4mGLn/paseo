@@ -290,6 +290,74 @@ describe("diagnosis kinds", () => {
     expect(diagnoseGoalFailure(goal, { now: NOW }).kind).toBe("planning");
   });
 
+  test("4fe24f94 with a rework nobody answered in time: answer sooner or raise userWaitMinutes", () => {
+    const noAnswer =
+      "No answer within 720 minutes: Agent is waiting for permission to use Bash (git commit).";
+    const events = fixtureEvents("4fe24f94.jsonl");
+    for (const event of events) {
+      const e = event as GoalEvent & { taskId?: string; runId?: string; error?: string };
+      const ofRework = e.taskId === "t7-rw1" || e.runId?.startsWith("t7-rw1");
+      if (ofRework && typeof e.error === "string") e.error = noAnswer;
+    }
+    const goal = replayGoal(events);
+    if (!goal) throw new Error("empty fixture");
+    const diagnosis = diagnoseGoalFailure(goal, { now: Date.parse("2026-10-28T07:00:00.000Z") });
+    expect(diagnosis.findings[0]).toEqual({
+      kind: "rework_failed",
+      remedy:
+        "A rework waited longer than userWaitMinutes for a person's answer. Answer sooner or raise userWaitMinutes, then retry or recover; the rework runs again in its worktree.",
+      personNeeded: "yes",
+    });
+    expect(diagnosis.tasks).toEqual([
+      expect.objectContaining({ taskId: "t7-rw1", cause: "no_answer", lastError: noAnswer }),
+    ]);
+  });
+
+  test("a reviewer, verifier or planning Lead nobody answered: answer sooner or raise userWaitMinutes", () => {
+    const noAnswer = "No answer within 720 minutes: Agent is waiting for permission to use Bash";
+    const base = failedOn("boom");
+    const reviewed = {
+      ...base,
+      changeSets: [
+        {
+          id: "cs-a",
+          taskId: "a",
+          status: "rejected",
+          error: `Review failed: Reviewer did not finish (failed: ${noAnswer})`,
+        },
+      ],
+    } as unknown as Goal;
+    expect(diagnoseGoalFailure(reviewed, { now: NOW }).findings[0]).toMatchObject({
+      kind: "review_rejected",
+      remedy: expect.stringContaining("Answer sooner, or raise userWaitMinutes."),
+      personNeeded: "yes",
+    });
+    const planning = {
+      ...base,
+      tasks: [],
+      failureReason: `Lead agent did not finish planning (failed). ${noAnswer}`,
+    } as unknown as Goal;
+    expect(diagnoseGoalFailure(planning, { now: NOW }).findings[0]).toMatchObject({
+      kind: "planning",
+      remedy: expect.stringContaining("The planning Lead waited longer than userWaitMinutes"),
+      personNeeded: "yes",
+    });
+    const succeeded = structuredClone(base.tasks);
+    for (const t of succeeded) t.status = "succeeded";
+    const verifying = {
+      ...base,
+      tasks: succeeded,
+      failureReason: `Verification failed: Verifier did not finish (failed: ${noAnswer})`,
+    } as unknown as Goal;
+    expect(diagnoseGoalFailure(verifying, { now: NOW }).findings).toContainEqual(
+      expect.objectContaining({
+        kind: "verification",
+        remedy: expect.stringContaining("the verifier waited longer than userWaitMinutes"),
+        personNeeded: "yes",
+      }),
+    );
+  });
+
   test("each task cause is read from its last failed run", () => {
     const causes = [
       ["Turn timed out after 60 minutes", "timeout"],
@@ -301,6 +369,7 @@ describe("diagnosis kinds", () => {
       ],
       ["Stopped by the Lead: stuck", "lead_stopped"],
       ["Worker reported it was blocked: disk full", "worker_blocked"],
+      ["No answer within 720 minutes: Agent is waiting for permission to use Bash", "no_answer"],
       ["Agent run was canceled", "canceled"],
       ["exit 1", "worker_error"],
     ] as const;

@@ -344,7 +344,7 @@ describe("retry time modes in the reducer", () => {
     const goal = retryAt(failedGoal(tenMinutes), {}, 5 * MIN);
     expect(goal.status).toBe("executing");
     expect(goal).not.toHaveProperty("timeBaseAt");
-    expect(goalDeadlineMs(goal)).toBe(Date.parse(after(10 * MIN)));
+    expect(goalDeadlineMs(goal, Date.now())).toBe(Date.parse(after(10 * MIN)));
   });
 
   test("past the time limit, a retry must choose fresh or remaining", () => {
@@ -354,10 +354,10 @@ describe("retry time modes in the reducer", () => {
     );
     const fresh = retryAt(failed, { timeMode: "fresh" }, 20 * MIN);
     expect(fresh.timeBaseAt).toBe(after(20 * MIN));
-    expect(goalDeadlineMs(fresh)).toBe(Date.parse(after(30 * MIN)));
+    expect(goalDeadlineMs(fresh, Date.now())).toBe(Date.parse(after(30 * MIN)));
     const remaining = retryAt(failed, { timeMode: "remaining", activeMs: 4 * MIN }, 20 * MIN);
     expect(remaining.timeBaseAt).toBe(after(16 * MIN));
-    expect(goalDeadlineMs(remaining)).toBe(Date.parse(after(26 * MIN)));
+    expect(goalDeadlineMs(remaining, Date.now())).toBe(Date.parse(after(26 * MIN)));
     // Raising the limit later moves the deadline from the same base.
     const raised = applyGoalEvent(
       remaining,
@@ -367,7 +367,7 @@ describe("retry time modes in the reducer", () => {
         after(21 * MIN),
       ),
     );
-    expect(goalDeadlineMs(raised)).toBe(Date.parse(after(36 * MIN)));
+    expect(goalDeadlineMs(raised, Date.now())).toBe(Date.parse(after(36 * MIN)));
   });
 
   test("a mode is honoured even before the time limit passes", () => {
@@ -399,7 +399,7 @@ describe("retry time modes in the reducer", () => {
     }
     // Before it, fresh restarts the limit but the deadline still caps it.
     const fresh = retryAt(failed, { timeMode: "fresh" }, 12 * MIN);
-    expect(goalDeadlineMs(fresh)).toBe(Date.parse(deadlineAt));
+    expect(goalDeadlineMs(fresh, Date.now())).toBe(Date.parse(deadlineAt));
   });
 
   test("reopening a planning failure takes the same modes", () => {
