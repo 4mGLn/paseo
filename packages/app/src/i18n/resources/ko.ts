@@ -648,6 +648,8 @@ export const ko: TranslationResources = {
       noEvents: "아직 활동이 없습니다",
       verified: "확인됨",
       unverified: "확인 안 됨",
+      verificationRoundPending: "수정 작업이 끝나면 확인을 다시 시작합니다({{round}}회차).",
+      verificationRoundStarted: "{{round}}회차 확인에서 모든 수락 기준을 다시 확인합니다.",
       dependsOn: "{{ids}}에 의존",
       loadFailed: "목표를 불러올 수 없습니다",
       notFound: "목표를 찾을 수 없습니다",
@@ -705,6 +707,7 @@ export const ko: TranslationResources = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "전체 내용을 펼치거나 접습니다",
       goalCreated: "목표를 만들었습니다",
       leadStarted: "Lead를 시작했습니다",
       planProposed: "Lead가 작업 {{subject}}개로 된 계획을 제안했습니다",
@@ -720,6 +723,7 @@ export const ko: TranslationResources = {
       reworkAdded_conflict: "병합 충돌 후 {{subject}}을(를) 재작업 중",
       reworkAdded_tests: "테스트 실패 후 {{subject}}을(를) 재작업 중",
       criterionVerified: "확인됨: {{subject}}",
+      criterionVerifiedRound: "{{round}}회차 확인됨: {{subject}}",
       integrationPrepared: "브랜치를 만들었습니다: {{subject}}",
       changeSetCaptured: "{{subject}}의 변경을 수집했습니다",
       captureSkipped: "{{subject}}에서 변경 없음",
@@ -814,6 +818,28 @@ export const ko: TranslationResources = {
       rejectPlaceholder: "Lead에게 줄 메시지 (선택)",
       rejectSend: "변경 거부",
     },
+    failure: {
+      needsYouTitle: "복구에 사람의 조치가 필요합니다",
+      showDetails: "세부 정보 보기",
+      hideDetails: "세부 정보 숨기기",
+      leadSaid: "Lead의 답변: {{text}}",
+      originalFailure: "처음 실패 원인: {{text}}",
+      unmetCriteria: "확인되지 않은 수락 기준",
+      listItem: "• {{text}}",
+      more: "더 보기",
+      less: "접기",
+      recoverAgain: "다시 복구",
+      recoveriesLeft: "남은 복구 횟수: {{max}}회 중 {{left}}회",
+      noRecoveriesLeft: "남은 복구 횟수가 없습니다({{max}}회 중 {{used}}회 사용).",
+      noRecoveriesLeftFollowUp:
+        "남은 복구 횟수가 없습니다({{max}}회 중 {{used}}회 사용). 대신 후속 목표를 시작하세요.",
+      followUp: "후속 목표 시작",
+      followUpTitle: "{{title}} — 후속",
+      followUpObjective: "실패한 목표 “{{title}}”의 후속 작업입니다.",
+      followUpUnmet: "확인되지 않은 수락 기준:",
+      verificationFix:
+        "복구하면 Lead가 충족되지 않은 수락 기준을 위한 수정 작업을 추가할 수 있습니다. 수정 작업이 병합되면 모든 수락 기준을 다시 확인합니다.",
+    },
     recovery: {
       sheetExplain:
         "새 Lead가 목표가 실패한 이유와 내 지시를 읽고, 실패한 작업을 다시 시도하거나 계획을 바꾸거나 사람이 할 일을 알려 줍니다.",
@@ -878,6 +904,7 @@ export const ko: TranslationResources = {
         budget: "예산을 다 썼습니다",
         run_limit: "실행 횟수 제한을 다 썼습니다",
         integration_failed: "병합에 실패했습니다",
+        rework_failed: "재작업이 실패했습니다",
         verification: "확인되지 않은 수락 기준이 있습니다",
         stuck: "작업이 최종 실패했습니다",
         capture: "작업의 변경을 수집하지 못했습니다",
@@ -893,7 +920,15 @@ export const ko: TranslationResources = {
         run_limit: "설정에서 실행 횟수 제한을 늘린 뒤 복구하세요.",
         integration_failed:
           "복구하면 다시 병합합니다. 먼저 오류가 가리키는 통합 워크트리의 커밋되지 않은 추적 파일을 정리하세요.",
+        rework_failed:
+          "재시도하거나 복구하면 재작업이 같은 워크트리에서 다시 실행됩니다. 아래에서 재작업 작업의 원인을 확인하세요. 요청에서 멈췄다면 먼저 설정에서 권한 정책을 바꾸세요.",
         verification:
+          "모든 작업이 성공했지만 충족되지 않은 수락 기준이 있습니다. 복구하면 Lead가 수정 작업을 추가할 수 있고, 수정 작업이 병합되면 모든 수락 기준을 다시 확인합니다.",
+        verification_last:
+          "모든 작업이 성공했지만 충족되지 않은 수락 기준이 있습니다. 복구하면 Lead가 수정 작업을 추가할 수 있고, 수정 작업이 병합되면 모든 수락 기준을 다시 확인합니다. 이번이 마지막 복구입니다.",
+        verification_none_left:
+          "모든 작업이 성공했지만 충족되지 않은 수락 기준이 있고, 복구 횟수를 모두 사용했습니다. 통합 브랜치에서 후속 목표를 시작하세요.",
+        verification_legacy:
           "모든 작업이 성공했습니다. 복구하면 다시 확인하며, 이제 계획에서는 작업을 빼는 것만 가능합니다.",
         stuck:
           "아래에서 각 작업의 원인을 보세요. 지시와 함께 복구하거나 Lead가 계획을 바꾸게 하세요.",
@@ -979,6 +1014,9 @@ export const ko: TranslationResources = {
       create: "목표 만들기",
       managedLabel: "에이전트로 실행",
       postsBack: "결과는 이 채팅에 다시 게시됩니다.",
+      buildsOn: "“{{title}}”의 커밋 {{commit}}에서 시작합니다",
+      buildsOnBranch: "“{{title}}”의 {{branch}} 브랜치, 커밋 {{commit}}에서 시작합니다",
+      startFromHead: "대신 프로젝트의 HEAD에서 시작",
       cwdLabel: "작업 디렉터리",
       hostLabel: "호스트",
       projectLabel: "프로젝트",

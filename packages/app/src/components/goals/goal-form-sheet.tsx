@@ -14,13 +14,15 @@ import { Switch } from "@/components/ui/switch";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { deriveGoalTitle } from "@/goals/goal-chat-prefill";
 import { goalFormMemoryFromConfig } from "@/goals/goal-form-memory";
-import type {
-  GoalFormField,
-  GoalFormIssue,
-  GoalFormModel,
-  GoalFormPrefill,
-  GoalFormSnapshot,
-  GoalFormState,
+import {
+  shortCommit,
+  type GoalFormBaseCommit,
+  type GoalFormField,
+  type GoalFormIssue,
+  type GoalFormModel,
+  type GoalFormPrefill,
+  type GoalFormSnapshot,
+  type GoalFormState,
 } from "@/goals/goal-form-model";
 import { settingsSummaryText } from "@/goals/goal-labels";
 import { basename } from "@/goals/goal-projects";
@@ -329,6 +331,7 @@ function ManagedGoalFields({
   return (
     <>
       {state.originAgentId ? <Text style={styles.note}>{t("goals.form.postsBack")}</Text> : null}
+      {state.baseCommit ? <BuildsOnNote model={model} baseCommit={state.baseCommit} /> : null}
       <ProviderSelect
         label={t("goals.form.leadProviderLabel")}
         value={values.leadProvider}
@@ -388,6 +391,37 @@ function ManagedGoalFields({
         <Text style={styles.summaryText}>{settingsSummaryText(t, state.summary)}</Text>
       </View>
     </>
+  );
+}
+
+/** Which goal and commit the new goal builds on, with a way back to the project's HEAD. */
+function BuildsOnNote({
+  model,
+  baseCommit,
+}: {
+  model: GoalFormModel;
+  baseCommit: GoalFormBaseCommit;
+}): ReactElement {
+  const { t } = useTranslation();
+  const clear = useCallback(() => model.clearBaseCommit(), [model]);
+  const params = {
+    title: baseCommit.goalTitle,
+    commit: shortCommit(baseCommit.commit),
+    branch: baseCommit.branch ?? "",
+  };
+  return (
+    <View style={styles.buildsOn} testID="goal-form-builds-on">
+      <Text style={styles.note}>
+        {baseCommit.branch
+          ? t("goals.form.buildsOnBranch", params)
+          : t("goals.form.buildsOn", params)}
+      </Text>
+      <View style={styles.disclosure}>
+        <Button variant="ghost" size="xs" onPress={clear} testID="goal-form-builds-on-clear">
+          {t("goals.form.startFromHead")}
+        </Button>
+      </View>
+    </View>
   );
 }
 
@@ -467,6 +501,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   disclosure: {
     alignItems: "flex-start",
+  },
+  buildsOn: {
+    gap: theme.spacing[1],
   },
   summary: {
     gap: theme.spacing[1],

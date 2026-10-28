@@ -1,7 +1,8 @@
 import type { GoalEvent } from "@getpaseo/protocol/goal/types";
 import { describe, expect, it } from "vitest";
 import { en } from "@/i18n/resources/en";
-import { buildGoalEventFeed, describeGoalEvent } from "./goal-event-feed";
+import { buildGoalEventFeed, describeGoalEvent, verifiedRound } from "./goal-event-feed";
+import { reasonPreview } from "./goal-recovery";
 import { FIXTURE_AT, makeChangeSet, makeGoal, makeRun, makeTask } from "./test-utils/goal-fixture";
 
 const goal = makeGoal({
@@ -381,5 +382,92 @@ describe("buildGoalEventFeed", () => {
       goal,
     );
     expect(feed).toHaveLength(2);
+  });
+});
+
+describe("verification rounds", () => {
+  const roundGoal = makeGoal({
+    criteria: [
+      { id: "c2", text: "UV-02 is fixed", verifiedAt: null, evidence: null },
+      { id: "c3", text: "Tests pass", verifiedAt: null, evidence: null },
+    ],
+  });
+  const verified = (criterionId: string, suffix = "") =>
+    event({
+      type: "criterion.verified",
+      criterionId,
+      id: `goal-1:verified:${criterionId}${suffix}`,
+    });
+
+  it("reads the round from the event id: round 0 has no suffix", () => {
+    const roundOf = (suffix: string) =>
+      verifiedRound(verified("c2", suffix) as Extract<GoalEvent, { type: "criterion.verified" }>);
+    expect(roundOf("")).toBe(0);
+    expect(roundOf(":v1")).toBe(1);
+    expect(roundOf(":v12")).toBe(12);
+    expect(roundOf(":vx")).toBe(0);
+  });
+
+  it("keeps both lines for a criterion verified in two rounds, naming the later round", () => {
+    const feed = buildGoalEventFeed(
+      [
+        verified("c2"),
+        verified("c3"),
+        event({ type: "goal.failed", reason: "Acceptance criteria not met" }),
+        event({ type: "recovery.resolved", recoveryId: "r1", outcome: "applied" }),
+        verified("c2", ":v1"),
+        verified("c3", ":v1"),
+      ],
+      roundGoal,
+    );
+    const lines = feed.filter((entry) => entry.key.startsWith("criterionVerified"));
+    expect(lines.map((entry) => [entry.key, entry.round, entry.subjects, entry.count])).toEqual([
+      ["criterionVerifiedRound", 1, ["UV-02 is fixed", "Tests pass"], 2],
+      ["criterionVerified", null, ["UV-02 is fixed", "Tests pass"], 2],
+    ]);
+    // Every line keeps its own id, so a list keyed on it never collides across rounds.
+    expect(new Set(feed.map((entry) => entry.id)).size).toBe(feed.length);
+  });
+
+  it("does not fold two rounds of the same criterion into one line", () => {
+    const feed = buildGoalEventFeed(
+      [verified("c2", ":v1"), verified("c2", ":v2"), verified("c2")],
+      roundGoal,
+    );
+    expect(feed.map((entry) => [entry.key, entry.round, entry.count])).toEqual([
+      ["criterionVerified", null, 1],
+      ["criterionVerifiedRound", 2, 1],
+      ["criterionVerifiedRound", 1, 1],
+    ]);
+  });
+
+  it("has a sentence for a later round", () => {
+    expect(en.goals.events.criterionVerifiedRound).toContain("{{round}}");
+  });
+});
+
+describe("one-line details", () => {
+  it("keeps a recovery's full reason on the entry, shown as its first sentence until opened", () => {
+    const reason = "UV-02 fails in updater_module.c:1301-1310. A person must choose the schema.";
+    const [entry] = buildGoalEventFeed(
+      [
+        event({
+          type: "recovery.decided",
+          recoveryId: "r1",
+          decision: { decision: "needs_person", reason },
+        }),
+      ],
+      goal,
+    );
+    expect(entry?.detail).toBe(reason);
+    expect(reasonPreview(entry?.detail ?? "")).toEqual({
+      full: reason,
+      summary: "UV-02 fails in updater_module.c:1301-1310.",
+      canExpand: true,
+    });
+  });
+
+  it("has the hint the expandable lines read out", () => {
+    expect(en.goals.events.expandHint).toBeTruthy();
   });
 });

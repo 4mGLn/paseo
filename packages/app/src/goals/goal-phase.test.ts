@@ -218,6 +218,33 @@ describe("retrying a failed merge", () => {
   });
 });
 
+describe("retrying a failed rework", () => {
+  const tasks = [makeTask("t1", { status: "succeeded" }), makeTask("t1-rw1", { status: "failed" })];
+  const reworkFailed = makeChangeSet("c1", "t1", {
+    status: "rejected",
+    rejectionReason: "rework_failed",
+  });
+  const failedRework = makeGoal({ status: "failed", tasks, changeSets: [reworkFailed] });
+
+  it("is offered only by a host that reworks it again, labelled as a task retry", () => {
+    expect(goalControlsAvailable(failedRework, true).canRetry).toBe(false);
+    expect(goalControlsAvailable(failedRework, true, { integrationRetry: true }).canRetry).toBe(
+      false,
+    );
+    const controls = goalControlsAvailable(failedRework, true, { reworkRetry: true });
+    expect(controls).toMatchObject({ canRetry: true, canRetryMerge: false });
+    expect(goalRetryLabelKey(controls)).toBe("goals.detail.retryGoal");
+  });
+
+  it("is not offered when another change set was rejected by review or hit the rework limit", () => {
+    for (const rejectionReason of [undefined, "rework_limit"]) {
+      const final = makeChangeSet("c2", "t1", { status: "rejected", rejectionReason });
+      const both = { ...failedRework, changeSets: [reworkFailed, final] };
+      expect(goalControlsAvailable(both, true, { reworkRetry: true }).canRetry).toBe(false);
+    }
+  });
+});
+
 describe("retrying a goal that failed while planning", () => {
   const failedPlanning = makeGoal({ status: "failed", tasks: [] });
 

@@ -668,6 +668,8 @@ export const ar: TranslationResources = {
       noEvents: "لا يوجد نشاط بعد",
       verified: "تم التحقق",
       unverified: "لم يتم التحقق",
+      verificationRoundPending: "يبدأ التحقق من جديد بعد مهام الإصلاح (الجولة {{round}}).",
+      verificationRoundStarted: "تتحقق الجولة {{round}} من كل المعايير من جديد.",
       dependsOn: "يعتمد على {{ids}}",
       loadFailed: "تعذر تحميل الهدف",
       notFound: "الهدف غير موجود",
@@ -725,6 +727,7 @@ export const ar: TranslationResources = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "يعرض النص الكامل أو يخفيه",
       goalCreated: "تم إنشاء الهدف",
       leadStarted: "بدأ Lead",
       planProposed: "اقترح Lead خطة من {{subject}} مهام",
@@ -740,6 +743,7 @@ export const ar: TranslationResources = {
       reworkAdded_conflict: "تعديل {{subject}} بعد تعارض في الدمج",
       reworkAdded_tests: "تعديل {{subject}} بعد فشل الاختبارات",
       criterionVerified: "تم التحقق: {{subject}}",
+      criterionVerifiedRound: "تم التحقق في الجولة {{round}}: {{subject}}",
       integrationPrepared: "تم إنشاء الفرع {{subject}}",
       changeSetCaptured: "تم التقاط تغييرات {{subject}}",
       captureSkipped: "لا تغييرات من {{subject}}",
@@ -833,6 +837,28 @@ export const ar: TranslationResources = {
       rejectPlaceholder: "رسالة اختيارية إلى Lead",
       rejectSend: "رفض التغيير",
     },
+    failure: {
+      needsYouTitle: "الاسترداد يحتاج إليك",
+      showDetails: "عرض التفاصيل",
+      hideDetails: "إخفاء التفاصيل",
+      leadSaid: "قال Lead: {{text}}",
+      originalFailure: "الفشل الأصلي: {{text}}",
+      unmetCriteria: "معايير لم يتم التحقق منها",
+      listItem: "• {{text}}",
+      more: "المزيد",
+      less: "أقل",
+      recoverAgain: "استرداد مرة أخرى",
+      recoveriesLeft: "مرات الاسترداد المتبقية: {{left}} من {{max}}",
+      noRecoveriesLeft: "لم تتبقَّ مرات استرداد (استُخدمت {{used}} من {{max}}).",
+      noRecoveriesLeftFollowUp:
+        "لم تتبقَّ مرات استرداد (استُخدمت {{used}} من {{max}}). ابدأ هدفًا لاحقًا بدلًا من ذلك.",
+      followUp: "بدء هدف لاحق",
+      followUpTitle: "{{title}} — متابعة",
+      followUpObjective: "متابعة للهدف «{{title}}» الذي فشل.",
+      followUpUnmet: "معايير القبول هذه لم يتم التحقق منها:",
+      verificationFix:
+        "يتيح الاسترداد لـ Lead إضافة مهام إصلاح للمعايير التي لم تتحقق. ويُتحقق من كل المعايير من جديد بعد دمجها.",
+    },
     recovery: {
       sheetExplain:
         "يقرأ Lead جديد سبب فشل الهدف وتعليماتك، ثم يعيد محاولة المهام الفاشلة أو يغيّر الخطة أو يخبرك بما يجب أن يفعله شخص.",
@@ -904,6 +930,7 @@ export const ar: TranslationResources = {
         budget: "نفدت الميزانية",
         run_limit: "استُنفد حد التشغيلات",
         integration_failed: "فشل دمج",
+        rework_failed: "فشل تعديل",
         verification: "لم يُتحقق من أحد معايير القبول",
         stuck: "فشلت مهمة نهائيًا",
         capture: "تعذّر التقاط عمل مهمة",
@@ -918,7 +945,16 @@ export const ar: TranslationResources = {
         run_limit: "ارفع حد التشغيلات في الإعدادات، ثم استرد.",
         integration_failed:
           "الاسترداد يدمجه من جديد. نظّف أولًا الملفات المتتبَّعة غير الملتزمة التي يذكرها الخطأ في شجرة عمل الدمج.",
-        verification: "نجحت كل المهام. الاسترداد يتحقق من جديد؛ لا يمكن للخطة الآن إلا أن تفقد مهام.",
+        rework_failed:
+          "إعادة المحاولة أو الاسترداد يشغّل التعديل من جديد في شجرة العمل الخاصة به. اطّلع أدناه على سبب مهمة التعديل؛ وإن توقفت عند طلب، فغيّر سياسة الأذونات في الإعدادات أولًا.",
+        verification:
+          "نجحت كل المهام، لكن أحد معايير القبول لم يتحقق. عند الاسترداد يمكن لـ Lead إضافة مهام إصلاح، ثم يُتحقق من كل المعايير من جديد بعد دمجها.",
+        verification_last:
+          "نجحت كل المهام، لكن أحد معايير القبول لم يتحقق. عند الاسترداد يمكن لـ Lead إضافة مهام إصلاح، ثم يُتحقق من كل المعايير من جديد بعد دمجها. هذا آخر استرداد.",
+        verification_none_left:
+          "نجحت كل المهام، لكن أحد معايير القبول لم يتحقق، واستُخدمت كل مرات الاسترداد. ابدأ هدفًا لاحقًا من فرع الدمج الخاص به.",
+        verification_legacy:
+          "نجحت كل المهام. الاسترداد يتحقق من جديد؛ لا يمكن للخطة الآن إلا أن تفقد مهام.",
         stuck: "اطّلع على سبب كل مهمة أدناه. استرد مع تعليمات لها، أو دع Lead يغيّر الخطة.",
         capture:
           "استرد لإعادة المحاولة. إن اختفت شجرة عمل المهمة، يجب إضافة عملها من جديد كمهمة جديدة.",
@@ -1002,6 +1038,9 @@ export const ar: TranslationResources = {
       create: "إنشاء الهدف",
       managedLabel: "التشغيل باستخدام الوكلاء",
       postsBack: "تُنشر النتيجة في هذه المحادثة.",
+      buildsOn: "يبني على «{{title}}» عند الإيداع {{commit}}",
+      buildsOnBranch: "يبني على «{{title}}» عند الإيداع {{commit}} في {{branch}}",
+      startFromHead: "البدء من HEAD المشروع بدلًا من ذلك",
       cwdLabel: "دليل العمل",
       hostLabel: "المضيف",
       projectLabel: "المشروع",

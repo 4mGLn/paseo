@@ -653,6 +653,9 @@ export const ja: TranslationResources = {
       noEvents: "アクティビティはまだありません",
       verified: "検証済み",
       unverified: "未検証",
+      verificationRoundPending: "修正タスクの完了後に検証をやり直します(ラウンド {{round}})。",
+      verificationRoundStarted:
+        "検証ラウンド {{round}} で、すべての受け入れ基準を改めて検証します。",
       dependsOn: "{{ids}} に依存",
       loadFailed: "ゴールを読み込めません",
       notFound: "ゴールが見つかりません",
@@ -710,6 +713,7 @@ export const ja: TranslationResources = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "全文の表示と非表示を切り替えます",
       goalCreated: "ゴールを作成しました",
       leadStarted: "Lead を開始しました",
       planProposed: "Lead が {{subject}} 件のタスクの計画を提案しました",
@@ -725,6 +729,7 @@ export const ja: TranslationResources = {
       reworkAdded_conflict: "マージ競合のため {{subject}} を手直し中",
       reworkAdded_tests: "テスト失敗のため {{subject}} を手直し中",
       criterionVerified: "検証済み: {{subject}}",
+      criterionVerifiedRound: "ラウンド {{round}} で検証済み: {{subject}}",
       integrationPrepared: "ブランチを作成しました: {{subject}}",
       changeSetCaptured: "{{subject}} の変更を取得しました",
       captureSkipped: "{{subject}} に変更はありません",
@@ -821,6 +826,28 @@ export const ja: TranslationResources = {
       rejectPlaceholder: "Lead へのメッセージ（任意）",
       rejectSend: "変更を却下",
     },
+    failure: {
+      needsYouTitle: "リカバリーにはあなたの対応が必要です",
+      showDetails: "詳細を表示",
+      hideDetails: "詳細を隠す",
+      leadSaid: "Lead の回答: {{text}}",
+      originalFailure: "最初の失敗: {{text}}",
+      unmetCriteria: "検証されなかった受け入れ基準",
+      listItem: "• {{text}}",
+      more: "もっと見る",
+      less: "閉じる",
+      recoverAgain: "もう一度リカバリー",
+      recoveriesLeft: "残りのリカバリー: {{max}} 回中 {{left}} 回",
+      noRecoveriesLeft: "リカバリーは残っていません({{max}} 回中 {{used}} 回使用)。",
+      noRecoveriesLeftFollowUp:
+        "リカバリーは残っていません({{max}} 回中 {{used}} 回使用)。代わりに後続の目標を開始してください。",
+      followUp: "後続の目標を開始",
+      followUpTitle: "{{title}} — 後続",
+      followUpObjective: "失敗した目標「{{title}}」の後続です。",
+      followUpUnmet: "検証されなかった受け入れ基準:",
+      verificationFix:
+        "リカバリーすると、満たされていない受け入れ基準のために Lead が修正タスクを追加できます。修正タスクがマージされた後、すべての受け入れ基準を再検証します。",
+    },
     recovery: {
       sheetExplain:
         "新しい Lead が失敗の理由とあなたの指示を読み、失敗したタスクの再試行、計画の変更、または人がすべきことの提示を行います。",
@@ -885,6 +912,7 @@ export const ja: TranslationResources = {
         budget: "予算を使い切りました",
         run_limit: "実行回数の上限に達しました",
         integration_failed: "マージに失敗しました",
+        rework_failed: "手直しに失敗しました",
         verification: "確認されていない受け入れ基準があります",
         stuck: "タスクが最終的に失敗しました",
         capture: "タスクの作業を取り込めませんでした",
@@ -900,7 +928,15 @@ export const ja: TranslationResources = {
         run_limit: "設定で実行回数の上限を引き上げてからリカバリーしてください。",
         integration_failed:
           "リカバリーすると再びマージします。先に、エラーが示す統合ワークツリー内の未コミットの追跡ファイルを片付けてください。",
+        rework_failed:
+          "再試行またはリカバリーすると、手直しが同じワークツリーで再び実行されます。下の手直しタスクの原因を確認してください。リクエストで止まった場合は、先に設定で権限ポリシーを変更してください。",
         verification:
+          "すべてのタスクが成功しましたが、満たされていない受け入れ基準があります。リカバリーすると Lead が修正タスクを追加でき、それがマージされた後にすべての受け入れ基準を再検証します。",
+        verification_last:
+          "すべてのタスクが成功しましたが、満たされていない受け入れ基準があります。リカバリーすると Lead が修正タスクを追加でき、それがマージされた後にすべての受け入れ基準を再検証します。これが最後のリカバリーです。",
+        verification_none_left:
+          "すべてのタスクが成功しましたが、満たされていない受け入れ基準があり、リカバリーもすべて使用済みです。統合ブランチから後続の目標を始めてください。",
+        verification_legacy:
           "すべてのタスクが成功しました。リカバリーすると再確認します。今は計画からタスクを外すことしかできません。",
         stuck:
           "下の各タスクの原因を見てください。指示を添えてリカバリーするか、Lead に計画を変えてもらいます。",
@@ -986,6 +1022,9 @@ export const ja: TranslationResources = {
       create: "ゴールを作成",
       managedLabel: "エージェントで実行",
       postsBack: "結果はこのチャットに投稿されます。",
+      buildsOn: "「{{title}}」のコミット {{commit}} から始めます",
+      buildsOnBranch: "「{{title}}」の {{branch}} にあるコミット {{commit}} から始めます",
+      startFromHead: "代わりにプロジェクトの HEAD から始める",
       cwdLabel: "作業ディレクトリ",
       hostLabel: "ホスト",
       projectLabel: "プロジェクト",

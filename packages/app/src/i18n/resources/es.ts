@@ -652,6 +652,10 @@ export const es: TranslationResources = {
       noEvents: "Aún no hay actividad",
       verified: "Verificado",
       unverified: "Sin verificar",
+      verificationRoundPending:
+        "La verificación vuelve a empezar después de las tareas de corrección (ronda {{round}}).",
+      verificationRoundStarted:
+        "La ronda de verificación {{round}} vuelve a comprobar todos los criterios.",
       dependsOn: "Depende de {{ids}}",
       loadFailed: "No se puede cargar el objetivo",
       notFound: "Objetivo no encontrado",
@@ -709,6 +713,7 @@ export const es: TranslationResources = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "Muestra u oculta el texto completo",
       goalCreated: "Objetivo creado",
       leadStarted: "El Lead empezó",
       planProposed: "El Lead propuso un plan con {{subject}} tareas",
@@ -724,6 +729,7 @@ export const es: TranslationResources = {
       reworkAdded_conflict: "Corrigiendo {{subject}} tras un conflicto de fusión",
       reworkAdded_tests: "Corrigiendo {{subject}} tras pruebas fallidas",
       criterionVerified: "Verificado: {{subject}}",
+      criterionVerifiedRound: "Verificado en la ronda {{round}}: {{subject}}",
       integrationPrepared: "Rama creada {{subject}}",
       changeSetCaptured: "Cambios capturados de {{subject}}",
       captureSkipped: "Sin cambios de {{subject}}",
@@ -824,6 +830,28 @@ export const es: TranslationResources = {
       rejectPlaceholder: "Mensaje opcional para el Lead",
       rejectSend: "Rechazar cambio",
     },
+    failure: {
+      needsYouTitle: "La recuperación te necesita",
+      showDetails: "Mostrar detalles",
+      hideDetails: "Ocultar detalles",
+      leadSaid: "El Lead dijo: {{text}}",
+      originalFailure: "Fallo original: {{text}}",
+      unmetCriteria: "Criterios sin verificar",
+      listItem: "• {{text}}",
+      more: "Más",
+      less: "Menos",
+      recoverAgain: "Recuperar de nuevo",
+      recoveriesLeft: "Recuperaciones restantes: {{left}} de {{max}}",
+      noRecoveriesLeft: "No quedan recuperaciones (usadas {{used}} de {{max}}).",
+      noRecoveriesLeftFollowUp:
+        "No quedan recuperaciones (usadas {{used}} de {{max}}). Inicia un objetivo de seguimiento en su lugar.",
+      followUp: "Iniciar un objetivo de seguimiento",
+      followUpTitle: "{{title}} — seguimiento",
+      followUpObjective: "Seguimiento del objetivo «{{title}}», que falló.",
+      followUpUnmet: "Estos criterios de aceptación no se verificaron:",
+      verificationFix:
+        "Recuperar permite que el Lead añada tareas de corrección para los criterios no cumplidos. Todos los criterios se verifican de nuevo cuando se fusionan.",
+    },
     recovery: {
       sheetExplain:
         "Un Lead nuevo lee por qué falló el objetivo y tus instrucciones, y reintenta las tareas fallidas, cambia el plan o dice qué debe hacer una persona.",
@@ -889,6 +917,7 @@ export const es: TranslationResources = {
         budget: "Se agotó el presupuesto",
         run_limit: "Se agotó el límite de ejecuciones",
         integration_failed: "Falló una fusión",
+        rework_failed: "Falló una corrección",
         verification: "Un criterio no se verificó",
         stuck: "Una tarea falló definitivamente",
         capture: "No se pudo capturar el trabajo de una tarea",
@@ -905,7 +934,15 @@ export const es: TranslationResources = {
         run_limit: "Sube el límite de ejecuciones en los ajustes y recupera.",
         integration_failed:
           "Recuperar vuelve a fusionarlo. Antes, limpia los archivos rastreados sin confirmar que nombra el error en el worktree de integración.",
+        rework_failed:
+          "Reintentar o recuperar vuelve a ejecutar la corrección en su worktree. Revisa abajo la causa de la tarea de corrección; si se detuvo en una solicitud, cambia antes la política de permisos en los ajustes.",
         verification:
+          "Todas las tareas tuvieron éxito, pero un criterio no se cumplió. Al recuperar, el Lead puede añadir tareas de corrección, y todos los criterios se verifican de nuevo cuando se fusionan.",
+        verification_last:
+          "Todas las tareas tuvieron éxito, pero un criterio no se cumplió. Al recuperar, el Lead puede añadir tareas de corrección, y todos los criterios se verifican de nuevo cuando se fusionan. Esta es la última recuperación.",
+        verification_none_left:
+          "Todas las tareas tuvieron éxito, pero un criterio no se cumplió y ya se usaron todas las recuperaciones. Empieza un objetivo de seguimiento desde su rama de integración.",
+        verification_legacy:
           "Todas las tareas tuvieron éxito. Recuperar vuelve a verificar; ahora el plan solo puede perder tareas.",
         stuck:
           "Revisa abajo la causa de cada tarea. Recupera con una instrucción para ella o deja que el Lead cambie el plan.",
@@ -994,6 +1031,9 @@ export const es: TranslationResources = {
       create: "Crear objetivo",
       managedLabel: "Ejecutar con agentes",
       postsBack: "El resultado se publica de vuelta en este chat.",
+      buildsOn: "Parte de «{{title}}» en el commit {{commit}}",
+      buildsOnBranch: "Parte de «{{title}}» en el commit {{commit}} de {{branch}}",
+      startFromHead: "Empezar desde el HEAD del proyecto",
       cwdLabel: "Directorio de trabajo",
       hostLabel: "Host",
       projectLabel: "Proyecto",

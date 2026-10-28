@@ -119,6 +119,8 @@ export interface GoalActionFeatures {
   configEdit: boolean;
   /** `goalIntegrationRetry`: retry merges again change sets whose merge failed. */
   integrationRetry: boolean;
+  /** `goalReworkRetry`: retry reworks again change sets whose rework failed. */
+  reworkRetry: boolean;
 }
 
 export interface GoalActions {
@@ -150,6 +152,7 @@ export function goalAvailableActions(goal: Goal, features: GoalActionFeatures): 
   const controls = goalControlsAvailable(goal, features.controls, {
     configEdit: features.configEdit,
     integrationRetry: features.integrationRetry,
+    reworkRetry: features.reworkRetry,
   });
   const ended = isGoalTerminal(goal.status);
   const archived = isGoalArchived(goal);

@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { ChevronLeft, Copy, Pause, Play } from "lucide-react-native";
+import { ChevronDown, ChevronLeft, ChevronRight, Copy, Pause, Play } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { Goal, GoalConfig, GoalEvent } from "@getpaseo/protocol/goal/types";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
@@ -26,7 +26,15 @@ import {
   goalSteps,
 } from "@/goals/goal-phase";
 import { goalDeadline } from "@/goals/goal-progress";
-import { guidanceTextCut } from "@/goals/goal-recovery";
+import { buildFollowUpPrefill, canStartFollowUp } from "@/goals/goal-follow-up";
+import {
+  canAddFixTasks,
+  goalFailureView,
+  guidanceTextCut,
+  recoverAgainView,
+  verificationRoundView,
+  type GoalFailureView,
+} from "@/goals/goal-recovery";
 import { goalTeam } from "@/goals/goal-settings";
 import { goalWaitingOnDetail } from "@/goals/goal-waiting-on";
 import { useGoalProjectOptions } from "@/goals/use-goal-form-model";
@@ -34,6 +42,7 @@ import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { useGoalDetail } from "@/hooks/use-goals";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { useHostFeature } from "@/runtime/host-features";
+import { useGoalLaunchStore } from "@/stores/goal-launch-store";
 import { useRelativeTimeTick } from "@/usage/use-relative-time-tick";
 import { settingsStyles } from "@/styles/settings";
 import { confirmDialog } from "@/utils/confirm-dialog";
@@ -133,7 +142,7 @@ function GoalDetailContent({
           <GoalStepper steps={steps} />
         </View>
       ) : null}
-      <GoalGuidanceBanner serverId={serverId} goal={goal} />
+      <GoalGuidanceBanner serverId={serverId} goal={goal} events={events} />
       <GoalRecoverySection serverId={serverId} goal={goal} events={events} />
       {goal.config ? <GoalProgressPanel goal={goal} /> : null}
       {goal.config ? <GoalUsageSection serverId={serverId} goal={goal} /> : null}
@@ -184,7 +193,12 @@ function GoalSummary({
   const canAcknowledge = useHostFeature(serverId, "goalAcknowledge");
   const configEdit = useHostFeature(serverId, "goalConfigEdit");
   const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
-  const controls = goalControlsAvailable(goal, hasControls, { configEdit, integrationRetry });
+  const reworkRetry = useHostFeature(serverId, "goalReworkRetry");
+  const controls = goalControlsAvailable(goal, hasControls, {
+    configEdit,
+    integrationRetry,
+    reworkRetry,
+  });
   const showDismiss = canAcknowledge && canAcknowledgeGoal(goal);
   const showApprove = canApproveGoalPlan(goal.status);
   const showCancel = !isGoalTerminal(goal.status);
@@ -331,7 +345,6 @@ function GoalSummary({
             {t(goalRetryLabelKey(controls))}
           </Button>
         ) : null}
-        <GoalRecoverButton serverId={serverId} goal={goal} events={events} />
         {showDismiss ? (
           <Button
             size="sm"
@@ -434,9 +447,64 @@ function GoalInstructionLine({ goal }: { goal: Goal }): ReactElement | null {
   );
 }
 
-function GoalGuidanceBanner({ serverId, goal }: { serverId: string; goal: Goal }): ReactElement {
+function GoalGuidanceBanner({
+  serverId,
+  goal,
+  events,
+}: {
+  serverId: string;
+  goal: Goal;
+  events: readonly GoalEvent[];
+}): ReactElement {
+  const { t } = useTranslation();
+  const guidance = goalGuidance(goal);
+  const failure = useMemo(() => goalFailureView(goal), [goal]);
+  const description = [t(`goals.guidance.${guidance.phase}.description`, guidance.params)];
+  // The reason once, as one line; "Show details" holds the rest.
+  if (failure?.summary) {
+    description.unshift(failure.summary);
+  }
+  // The phase explains the stage; the waiting line names the tasks or changes it is on.
+  const waiting = goalWaitingOnDetail(t, goal);
+  if (waiting) {
+    description.push(waiting);
+  }
+  // Hints, Recover and the follow-up need a managed goal; the details need more than the summary.
+  const hasBody = failure !== null && (failure.hasDetails || goal.config !== null);
+  return (
+    <View style={styles.banner} testID={`goal-guidance-${guidance.phase}`}>
+      <Alert
+        variant={guidance.tone}
+        title={
+          failure?.recoveryNeedsYou
+            ? t("goals.failure.needsYouTitle")
+            : t(`goals.guidance.${guidance.phase}.title`)
+        }
+        description={description.join("\n")}
+      >
+        {failure && hasBody ? (
+          <View style={styles.bannerBody}>
+            {failure.hasDetails ? <GoalFailureDetails failure={failure} /> : null}
+            <GoalFailureHints serverId={serverId} goal={goal} />
+            <GoalFailureActions serverId={serverId} goal={goal} events={events} />
+          </View>
+        ) : null}
+      </Alert>
+    </View>
+  );
+}
+
+/** What to fix before trying again, for a run that stopped on a request or a merge that failed. */
+function GoalFailureHints({
+  serverId,
+  goal,
+}: {
+  serverId: string;
+  goal: Goal;
+}): ReactElement | null {
   const { t } = useTranslation();
   const configEdit = useHostFeature(serverId, "goalConfigEdit");
+  const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
   const [isEditingSettings, setIsEditingSettings] = useState(false);
   const openSettings = useCallback(() => setIsEditingSettings(true), []);
   const closeSettings = useCallback(() => setIsEditingSettings(false), []);
@@ -444,58 +512,44 @@ function GoalGuidanceBanner({ serverId, goal }: { serverId: string; goal: Goal }
   const showPermissionHint =
     configEdit && goal.config !== null && !goal.archivedAt && goalFailedOnPermission(goal);
   // A failed merge is fixed in the integration worktree, then merged again by the retry.
-  const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
   const showMergeHint =
     integrationRetry &&
     goal.status === "failed" &&
     !goal.archivedAt &&
     goal.changeSets.some(isIntegrationFailedChangeSet);
-  const guidance = goalGuidance(goal);
-  const description = [t(`goals.guidance.${guidance.phase}.description`, guidance.params)];
-  if (guidance.phase === "failed" && goal.failureReason) {
-    description.unshift(goal.failureReason);
-  }
-  // The phase explains the stage; the waiting line names the tasks or changes it is on.
-  const waiting = goalWaitingOnDetail(t, goal);
-  if (waiting) {
-    description.push(waiting);
+  if (!showPermissionHint && !showMergeHint) {
+    return null;
   }
   return (
-    <View style={styles.banner} testID={`goal-guidance-${guidance.phase}`}>
-      <Alert
-        variant={guidance.tone}
-        title={t(`goals.guidance.${guidance.phase}.title`)}
-        description={description.join("\n")}
-      >
-        {showPermissionHint ? (
-          <View style={styles.bannerHint} testID="goal-permission-failure-hint">
-            <Text style={styles.meta}>
-              {goalFailedOnQuestion(goal)
-                ? t("goals.detail.questionFailureHint")
-                : t("goals.detail.permissionFailureHint")}
-            </Text>
-            <View style={styles.bannerActions}>
-              <Button
-                size="sm"
-                variant="outline"
-                onPress={openSettings}
-                testID="goal-permission-failure-edit-settings"
-              >
-                {t("goals.actions.editSettings")}
-              </Button>
-            </View>
+    <>
+      {showPermissionHint ? (
+        <View style={styles.bannerHint} testID="goal-permission-failure-hint">
+          <Text style={styles.meta}>
+            {goalFailedOnQuestion(goal)
+              ? t("goals.detail.questionFailureHint")
+              : t("goals.detail.permissionFailureHint")}
+          </Text>
+          <View style={styles.bannerActions}>
+            <Button
+              size="sm"
+              variant="outline"
+              onPress={openSettings}
+              testID="goal-permission-failure-edit-settings"
+            >
+              {t("goals.actions.editSettings")}
+            </Button>
           </View>
-        ) : null}
-        {showMergeHint ? (
-          <View style={styles.bannerHint} testID="goal-merge-failure-hint">
-            <Text style={styles.meta}>
-              {t("goals.detail.mergeFailureHint", {
-                path: goal.integration?.cwd ?? goal.integration?.branch ?? "",
-              })}
-            </Text>
-          </View>
-        ) : null}
-      </Alert>
+        </View>
+      ) : null}
+      {showMergeHint ? (
+        <View style={styles.bannerHint} testID="goal-merge-failure-hint">
+          <Text style={styles.meta}>
+            {t("goals.detail.mergeFailureHint", {
+              path: goal.integration?.cwd ?? goal.integration?.branch ?? "",
+            })}
+          </Text>
+        </View>
+      ) : null}
       {isEditingSettings && goal.config ? (
         <GoalSettingsSheet
           serverId={serverId}
@@ -503,6 +557,120 @@ function GoalGuidanceBanner({ serverId, goal }: { serverId: string; goal: Goal }
           config={goal.config}
           onClose={closeSettings}
         />
+      ) : null}
+    </>
+  );
+}
+
+/** "Show details" under a failed goal's one-line reason: the full reason, what failed first, the unmet criteria. */
+function GoalFailureDetails({ failure }: { failure: GoalFailureView }): ReactElement {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useCallback(() => setExpanded((value) => !value), []);
+  const expandedState = useMemo(() => ({ expanded }), [expanded]);
+  return (
+    <View style={styles.failureDetails}>
+      <View style={styles.bannerActions}>
+        <Button
+          variant="ghost"
+          size="xs"
+          leftIcon={expanded ? ChevronDown : ChevronRight}
+          onPress={toggle}
+          accessibilityState={expandedState}
+          testID="goal-failure-details-toggle"
+        >
+          {expanded ? t("goals.failure.hideDetails") : t("goals.failure.showDetails")}
+        </Button>
+      </View>
+      {expanded ? (
+        <View style={styles.failureDetails} testID="goal-failure-details">
+          {failure.fullReason ? (
+            <Text style={styles.detailText} selectable>
+              {failure.fullReasonIsLead
+                ? t("goals.failure.leadSaid", { text: failure.fullReason })
+                : failure.fullReason}
+            </Text>
+          ) : null}
+          {failure.originalFailure ? (
+            <Text style={styles.detailText} selectable>
+              {t("goals.failure.originalFailure", { text: failure.originalFailure })}
+            </Text>
+          ) : null}
+          {failure.unmet.length > 0 ? (
+            <View style={styles.failureList}>
+              <Text style={styles.detailLabel}>{t("goals.failure.unmetCriteria")}</Text>
+              {failure.unmet.map((criterion) => (
+                <Text key={criterion.id} style={styles.detailText}>
+                  {t("goals.failure.listItem", { text: criterion.text })}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * What you can do about a failed goal: recover again with your own instructions, or start a
+ * follow-up goal from what it merged. Retry stays with the goal's other controls above.
+ */
+function GoalFailureActions({
+  serverId,
+  goal,
+  events,
+}: {
+  serverId: string;
+  goal: Goal;
+  events: readonly GoalEvent[];
+}): ReactElement | null {
+  const { t } = useTranslation();
+  const hasRecovery = useHostFeature(serverId, "goalRecovery");
+  const reworkRetry = useHostFeature(serverId, "goalReworkRetry");
+  const verificationRecovery = useHostFeature(serverId, "goalVerificationRecovery");
+  const recover = recoverAgainView(goal, hasRecovery, reworkRetry);
+  // COMPAT(goalVerificationRecovery): added in v0.13.14, remove gate after 2027-10-28.
+  const showFixTasks = verificationRecovery && recover.kind === "available" && canAddFixTasks(goal);
+  const openLaunch = useGoalLaunchStore((state) => state.open);
+  const showFollowUp = canStartFollowUp(goal);
+  const handleFollowUp = useCallback(() => {
+    const prefill = buildFollowUpPrefill(goal, {
+      title: (title: string) => t("goals.failure.followUpTitle", { title }),
+      objectiveIntro: t("goals.failure.followUpObjective", { title: goal.title }),
+      unmetIntro: t("goals.failure.followUpUnmet"),
+    });
+    if (prefill) {
+      openLaunch({ serverId, prefill });
+    }
+  }, [goal, openLaunch, serverId, t]);
+  if (recover.kind === "hidden" && !showFollowUp) {
+    return null;
+  }
+  return (
+    <View style={styles.failureDetails} testID="goal-failure-actions">
+      <View style={styles.failureActions}>
+        <GoalRecoverButton serverId={serverId} goal={goal} events={events} />
+        {showFollowUp ? (
+          <Button size="sm" variant="outline" onPress={handleFollowUp} testID="goal-follow-up">
+            {t("goals.failure.followUp")}
+          </Button>
+        ) : null}
+      </View>
+      {showFixTasks ? (
+        <Text style={styles.meta} testID="goal-recover-verification-fix">
+          {t("goals.failure.verificationFix")}
+        </Text>
+      ) : null}
+      {recover.kind === "exhausted" ? (
+        <Text style={styles.meta} testID="goal-recover-exhausted">
+          {t(
+            showFollowUp
+              ? "goals.failure.noRecoveriesLeftFollowUp"
+              : "goals.failure.noRecoveriesLeft",
+            { used: recover.used, max: recover.max },
+          )}
+        </Text>
       ) : null}
     </View>
   );
@@ -539,9 +707,23 @@ function GoalTeamSection({ config }: { config: GoalConfig }): ReactElement {
 
 function GoalCriteria({ goal }: { goal: Goal }): ReactElement {
   const { t } = useTranslation();
+  // A recovery that added work cleared every criterion; each badge is about the current round.
+  const round = verificationRoundView(goal);
   return (
     <SettingsSection title={t("goals.detail.criteria")}>
       <SettingsCard>
+        {round ? (
+          <View style={settingsStyles.row} testID="goal-verification-round">
+            <Text style={styles.meta}>
+              {t(
+                round.started
+                  ? "goals.detail.verificationRoundStarted"
+                  : "goals.detail.verificationRoundPending",
+                { round: round.round },
+              )}
+            </Text>
+          </View>
+        ) : null}
         {goal.criteria.length === 0 ? (
           <View style={settingsStyles.row}>
             <Text style={styles.meta}>{t("goals.detail.noCriteria")}</Text>
@@ -621,6 +803,31 @@ const styles = StyleSheet.create((theme) => ({
   },
   bannerActions: {
     flexDirection: "row",
+  },
+  bannerBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: theme.spacing[3],
+  },
+  failureDetails: {
+    gap: theme.spacing[2],
+  },
+  failureList: {
+    gap: theme.spacing[1],
+  },
+  failureActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing[2],
+  },
+  detailLabel: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+  },
+  detailText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
   },
   error: {
     color: theme.colors.palette.red[300],

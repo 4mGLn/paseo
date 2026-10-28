@@ -653,6 +653,10 @@ export const fr: TranslationResources = {
       noEvents: "Aucune activité pour l'instant",
       verified: "Vérifié",
       unverified: "Non vérifié",
+      verificationRoundPending:
+        "La vérification reprend après les tâches de correction (tour {{round}}).",
+      verificationRoundStarted:
+        "Le tour de vérification {{round}} vérifie à nouveau tous les critères.",
       dependsOn: "Dépend de {{ids}}",
       loadFailed: "Impossible de charger l'objectif",
       notFound: "Objectif introuvable",
@@ -710,6 +714,7 @@ export const fr: TranslationResources = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "Affiche ou masque le texte complet",
       goalCreated: "Objectif créé",
       leadStarted: "Le Lead a démarré",
       planProposed: "Le Lead a proposé un plan de {{subject}} tâches",
@@ -725,6 +730,7 @@ export const fr: TranslationResources = {
       reworkAdded_conflict: "Correction de {{subject}} après un conflit de fusion",
       reworkAdded_tests: "Correction de {{subject}} après l'échec des tests",
       criterionVerified: "Vérifié : {{subject}}",
+      criterionVerifiedRound: "Vérifié au tour {{round}} : {{subject}}",
       integrationPrepared: "Branche créée : {{subject}}",
       changeSetCaptured: "Changements capturés pour {{subject}}",
       captureSkipped: "Aucun changement pour {{subject}}",
@@ -823,6 +829,28 @@ export const fr: TranslationResources = {
       rejectPlaceholder: "Message facultatif pour le Lead",
       rejectSend: "Refuser la modification",
     },
+    failure: {
+      needsYouTitle: "La reprise a besoin de vous",
+      showDetails: "Afficher les détails",
+      hideDetails: "Masquer les détails",
+      leadSaid: "Le Lead a dit : {{text}}",
+      originalFailure: "Échec d'origine : {{text}}",
+      unmetCriteria: "Critères non vérifiés",
+      listItem: "• {{text}}",
+      more: "Plus",
+      less: "Moins",
+      recoverAgain: "Reprendre à nouveau",
+      recoveriesLeft: "Reprises restantes : {{left}} sur {{max}}",
+      noRecoveriesLeft: "Plus aucune reprise possible ({{used}} sur {{max}} utilisées).",
+      noRecoveriesLeftFollowUp:
+        "Plus aucune reprise possible ({{used}} sur {{max}} utilisées). Lancez plutôt un objectif de suite.",
+      followUp: "Lancer un objectif de suite",
+      followUpTitle: "{{title}} — suite",
+      followUpObjective: "Suite de l'objectif « {{title}} », qui a échoué.",
+      followUpUnmet: "Ces critères d'acceptation n'ont pas été vérifiés :",
+      verificationFix:
+        "La reprise permet au Lead d'ajouter des tâches de correction pour les critères non remplis. Tous les critères sont vérifiés à nouveau une fois celles-ci fusionnées.",
+    },
     recovery: {
       sheetExplain:
         "Un nouveau Lead lit pourquoi l'objectif a échoué et vos consignes, puis relance les tâches en échec, modifie le plan ou indique ce qu'une personne doit faire.",
@@ -888,6 +916,7 @@ export const fr: TranslationResources = {
         budget: "Le budget est épuisé",
         run_limit: "La limite d'exécutions est atteinte",
         integration_failed: "Une fusion a échoué",
+        rework_failed: "Une correction a échoué",
         verification: "Un critère n'a pas été vérifié",
         stuck: "Une tâche a échoué définitivement",
         capture: "Le travail d'une tâche n'a pas pu être capturé",
@@ -904,7 +933,15 @@ export const fr: TranslationResources = {
         run_limit: "Augmentez la limite d'exécutions dans les réglages, puis reprenez.",
         integration_failed:
           "La reprise refait la fusion. Nettoyez d'abord les fichiers suivis non validés que l'erreur nomme dans le worktree d'intégration.",
+        rework_failed:
+          "Réessayer ou reprendre relance la correction dans son worktree. Consultez ci-dessous la cause de la tâche de correction ; si elle s'est arrêtée sur une demande, changez d'abord la politique d'autorisation dans les réglages.",
         verification:
+          "Toutes les tâches ont réussi, mais un critère n'est pas rempli. À la reprise, le Lead peut ajouter des tâches de correction, et tous les critères sont vérifiés à nouveau une fois celles-ci fusionnées.",
+        verification_last:
+          "Toutes les tâches ont réussi, mais un critère n'est pas rempli. À la reprise, le Lead peut ajouter des tâches de correction, et tous les critères sont vérifiés à nouveau une fois celles-ci fusionnées. C'est la dernière reprise.",
+        verification_none_left:
+          "Toutes les tâches ont réussi, mais un critère n'est pas rempli et toutes les reprises sont utilisées. Lancez un objectif de suite depuis sa branche d'intégration.",
+        verification_legacy:
           "Toutes les tâches ont réussi. La reprise vérifie à nouveau ; le plan ne peut plus que perdre des tâches.",
         stuck:
           "Consultez la cause de chaque tâche ci-dessous. Reprenez avec une consigne pour elle, ou laissez le Lead modifier le plan.",
@@ -996,6 +1033,9 @@ export const fr: TranslationResources = {
       create: "Créer l'objectif",
       managedLabel: "Exécuter avec des agents",
       postsBack: "Le résultat est publié dans ce chat.",
+      buildsOn: "Part de « {{title}} » au commit {{commit}}",
+      buildsOnBranch: "Part de « {{title}} » au commit {{commit}} sur {{branch}}",
+      startFromHead: "Partir plutôt du HEAD du projet",
       cwdLabel: "Répertoire de travail",
       hostLabel: "Hôte",
       projectLabel: "Projet",

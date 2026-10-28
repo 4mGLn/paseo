@@ -643,6 +643,8 @@ export const en = {
       noEvents: "No activity yet",
       verified: "Verified",
       unverified: "Not verified",
+      verificationRoundPending: "Verification restarts after the fix tasks (round {{round}}).",
+      verificationRoundStarted: "Verification round {{round}} checks every criterion again.",
       dependsOn: "Depends on {{ids}}",
       loadFailed: "Unable to load goal",
       notFound: "Goal not found",
@@ -700,6 +702,7 @@ export const en = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "Shows or hides the full text",
       goalCreated: "Goal created",
       leadStarted: "Lead started",
       planProposed: "The Lead proposed a plan with {{subject}} tasks",
@@ -715,6 +718,7 @@ export const en = {
       reworkAdded_conflict: "Reworking {{subject}} after a merge conflict",
       reworkAdded_tests: "Reworking {{subject}} after failing tests",
       criterionVerified: "Verified: {{subject}}",
+      criterionVerifiedRound: "Verified in round {{round}}: {{subject}}",
       integrationPrepared: "Created branch {{subject}}",
       changeSetCaptured: "Captured the changes of {{subject}}",
       captureSkipped: "No changes from {{subject}}",
@@ -812,6 +816,28 @@ export const en = {
       rejectPlaceholder: "Optional message for the Lead",
       rejectSend: "Reject change",
     },
+    failure: {
+      needsYouTitle: "Recovery needs you",
+      showDetails: "Show details",
+      hideDetails: "Hide details",
+      leadSaid: "The Lead said: {{text}}",
+      originalFailure: "Original failure: {{text}}",
+      unmetCriteria: "Criteria not verified",
+      listItem: "• {{text}}",
+      more: "More",
+      less: "Less",
+      recoverAgain: "Recover again",
+      recoveriesLeft: "Recoveries left: {{left}} of {{max}}",
+      noRecoveriesLeft: "No recoveries left ({{used}} of {{max}} used).",
+      noRecoveriesLeftFollowUp:
+        "No recoveries left ({{used}} of {{max}} used). Start a follow-up goal instead.",
+      followUp: "Start a follow-up goal",
+      followUpTitle: "{{title}} — follow-up",
+      followUpObjective: "Follow-up to the goal “{{title}}”, which failed.",
+      followUpUnmet: "These acceptance criteria were not verified:",
+      verificationFix:
+        "Recover lets the Lead add fix tasks for the criteria not met. Every criterion is verified again once they are merged.",
+    },
     recovery: {
       sheetExplain:
         "A fresh Lead reads why the goal failed and your instructions, then retries the failed tasks, changes the plan or says what a person must do.",
@@ -877,6 +903,7 @@ export const en = {
         budget: "The budget is used up",
         run_limit: "The run limit is used up",
         integration_failed: "A merge failed",
+        rework_failed: "A rework failed",
         verification: "A criterion was not verified",
         stuck: "A task failed for good",
         capture: "A task's work could not be captured",
@@ -893,7 +920,15 @@ export const en = {
         run_limit: "Raise the run limit in the settings, then recover.",
         integration_failed:
           "Recovering merges it again. First clean any uncommitted tracked files the error names in the integration worktree.",
+        rework_failed:
+          "Retrying or recovering runs the rework again in its worktree. See the rework task's cause below; if it stopped on a request, change the permission policy in the settings first.",
         verification:
+          "Every task succeeded, but a criterion was not met. Recover: the Lead can add fix tasks, and every criterion is verified again once they are merged.",
+        verification_last:
+          "Every task succeeded, but a criterion was not met. Recover: the Lead can add fix tasks, and every criterion is verified again once they are merged. This is the last recovery.",
+        verification_none_left:
+          "Every task succeeded, but a criterion was not met, and every recovery is used. Start a follow-up goal from its integration branch.",
+        verification_legacy:
           "Every task succeeded. Recovering verifies again; the plan can only lose tasks now.",
         stuck:
           "See each task's cause below. Recover with an instruction for it, or let the Lead change the plan.",
@@ -980,6 +1015,9 @@ export const en = {
       create: "Create goal",
       managedLabel: "Run with agents",
       postsBack: "The result is posted back to this chat.",
+      buildsOn: "Builds on “{{title}}” at commit {{commit}}",
+      buildsOnBranch: "Builds on “{{title}}” at commit {{commit}} on {{branch}}",
+      startFromHead: "Start from the project's HEAD instead",
       cwdLabel: "Working directory",
       hostLabel: "Host",
       projectLabel: "Project",

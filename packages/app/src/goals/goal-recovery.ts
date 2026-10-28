@@ -7,7 +7,11 @@ import {
   type PersonNeeded,
   type TaskFailureCause,
 } from "@getpaseo/protocol/goal/diagnosis";
-import { MAX_GUIDANCE_CHARS, RECOVERY_DECISION_MS } from "@getpaseo/protocol/goal/interventions";
+import {
+  MAX_GUIDANCE_CHARS,
+  MAX_RECOVERIES,
+  RECOVERY_DECISION_MS,
+} from "@getpaseo/protocol/goal/interventions";
 import {
   GOAL_TIME_LIMIT_PASSED,
   type Goal,
@@ -19,9 +23,6 @@ import {
 } from "@getpaseo/protocol/goal/types";
 import { toErrorMessage } from "@/utils/error-messages";
 import { retryNeedsTimeMode } from "./goal-progress";
-
-/** The daemon counts at most this many recoveries per goal (docs/goals.md "Recover a failed goal"). */
-export const MAX_RECOVERIES = 3;
 
 const LIVE_RECOVERY_STATUSES: ReadonlySet<string> = new Set([
   "deciding",
@@ -130,15 +131,23 @@ export interface GoalRecoveryControls {
 /**
  * What the recovery offers, from the goal and `goalRecovery`. A goal with a change set rejected
  * by review cannot be recovered in place, and one that used its recoveries cannot start another.
+ * A change set whose merge failed does not block it, nor one whose rework failed on a host with
+ * `goalReworkRetry`.
  */
-export function goalRecoveryControls(goal: Goal, hostHasRecovery: boolean): GoalRecoveryControls {
+export function goalRecoveryControls(
+  goal: Goal,
+  hostHasRecovery: boolean,
+  hostHasReworkRetry = false,
+): GoalRecoveryControls {
   const live = liveRecovery(goal);
   if (!hostHasRecovery || !goal.config) {
     return { canRecover: false, canCancel: false, canDecide: false };
   }
   const rejectedByReview = goal.changeSets.some(
     (changeSet) =>
-      changeSet.status === "rejected" && changeSet.rejectionReason !== "integration_failed",
+      changeSet.status === "rejected" &&
+      changeSet.rejectionReason !== "integration_failed" &&
+      !(hostHasReworkRetry && changeSet.rejectionReason === "rework_failed"),
   );
   return {
     canRecover:
@@ -213,6 +222,59 @@ export function diagnosisView(diagnosis: GoalDiagnosis, goal: Pick<Goal, "tasks"
     merged: diagnosis.merged.length,
     recoverable: diagnosis.recoverable,
   };
+}
+
+/**
+ * The sentence key for a finding's remedy. A failed verification has its own wording: with no
+ * recovery left only a person can go on; a host with `goalVerificationRecovery` lets the Lead add
+ * fix tasks and verifies every criterion again; an older host only lets the plan lose tasks.
+ */
+export function diagnosisRemedyKey(
+  finding: DiagnosisFindingView,
+  goal: Pick<Goal, "recoveries">,
+  hostHasVerificationRecovery: boolean,
+): string {
+  if (finding.kind !== "verification") {
+    return `goals.diagnosis.remedy.${finding.kind}`;
+  }
+  if (finding.personNeeded === "yes") {
+    return "goals.diagnosis.remedy.verification_none_left";
+  }
+  // COMPAT(goalVerificationRecovery): added in v0.13.14, remove gate after 2027-10-28.
+  if (!hostHasVerificationRecovery) {
+    return "goals.diagnosis.remedy.verification_legacy";
+  }
+  return MAX_RECOVERIES - (goal.recoveries ?? 0) === 1
+    ? "goals.diagnosis.remedy.verification_last"
+    : "goals.diagnosis.remedy.verification";
+}
+
+/**
+ * Every task of a failed goal succeeded and a criterion is not verified: a recovery's Lead can add
+ * fix tasks (on a host with `goalVerificationRecovery`), after which every criterion is verified
+ * again. Also true when a deadline cut verification short.
+ */
+export function canAddFixTasks(goal: Pick<Goal, "status" | "tasks" | "criteria">): boolean {
+  return (
+    goal.status === "failed" &&
+    goal.tasks.length > 0 &&
+    goal.tasks.every((task) => task.status === "succeeded") &&
+    goal.criteria.some((criterion) => !criterion.verifiedAt)
+  );
+}
+
+/**
+ * The verification round a recovery started, for the criteria section: absent in round 0. Until
+ * the fix tasks are merged verification waits; once it starts again it checks every criterion.
+ */
+export function verificationRoundView(
+  goal: Pick<Goal, "verificationRound" | "verifyStartedAt">,
+): { round: number; started: boolean } | null {
+  const round = goal.verificationRound ?? 0;
+  if (round < 1) {
+    return null;
+  }
+  return { round, started: Boolean(goal.verifyStartedAt) };
 }
 
 /** What the Recover sheet holds while you fill it. */
@@ -320,4 +382,160 @@ export function taskGuidance(goal: Pick<Goal, "guidance">, taskId: string): Task
     return null;
   }
   return { person, personCut: person ? guidanceTextCut(goal, person) : false, lead };
+}
+
+/** How long a summary line may run before it is cut. */
+export const REASON_SUMMARY_CHARS = 160;
+
+/**
+ * The first sentence of a reason, for one line in the banner, the recovery card or the feed: its
+ * first non-empty line, up to the first ". ", cut at `max` characters. A "." without a space never
+ * ends it, so paths such as `updater_module.c:1301-1310` stay whole.
+ */
+export function summarizeReason(text: string, max = REASON_SUMMARY_CHARS): string {
+  const line =
+    text
+      .split(/\r?\n/)
+      .map((part) => part.trim())
+      .find((part) => part.length > 0) ?? "";
+  const stop = line.indexOf(". ");
+  const sentence = stop >= 0 ? line.slice(0, stop + 1) : line;
+  if (sentence.length <= max) {
+    return sentence;
+  }
+  return `${sentence.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** The goal's acceptance criteria no verifier has confirmed. */
+export function unmetCriteria(goal: Pick<Goal, "criteria">): Goal["criteria"] {
+  return goal.criteria.filter((criterion) => !criterion.verifiedAt);
+}
+
+/** What the failure banner says, once, and what "Show details" adds. */
+export interface GoalFailureView {
+  /** The latest recovery ended with the Lead saying a person must act. */
+  recoveryNeedsYou: boolean;
+  /** One line: the first sentence of the reason. */
+  summary: string | null;
+  /** The reason in full; null when the summary already is all of it. */
+  fullReason: string | null;
+  /** `fullReason` is the Lead's own words. */
+  fullReasonIsLead: boolean;
+  /** What the goal failed with before the recovery that ended. */
+  originalFailure: string | null;
+  /** Criteria not verified, for a goal that got as far as having a plan. */
+  unmet: Goal["criteria"];
+  hasDetails: boolean;
+}
+
+/**
+ * The reason the banner leads with: after a recovery that needs you, the Lead's own words
+ * rather than the goal's "Recovery needs a person: …"; otherwise the goal's reason.
+ */
+function leadingReason(
+  goal: Pick<Goal, "failureReason">,
+  ended: Recovery | null,
+): { text: string | null; isLead: boolean } {
+  if (ended?.outcome === "needs_person") {
+    const lead = ended.decision?.reason?.trim();
+    if (lead) {
+      return { text: lead, isLead: true };
+    }
+    if (ended.reason) {
+      return { text: ended.reason, isLead: false };
+    }
+  }
+  return { text: goal.failureReason ?? null, isLead: false };
+}
+
+/**
+ * The failure of a failed goal, said once. After a recovery that ended without applying, the
+ * goal's reason is "<how it ended>: <the Lead's reason>"; the banner shows the Lead's reason and
+ * keeps the failure the recovery started from under the details.
+ */
+export function goalFailureView(goal: Goal): GoalFailureView | null {
+  if (goal.status !== "failed") {
+    return null;
+  }
+  const ended = endedRecovery(goal);
+  const reason = leadingReason(goal, ended);
+  const full = reason.text?.trim() ?? "";
+  const summary = full ? summarizeReason(full) : null;
+  const fullReason = full && full !== summary ? full : null;
+  const originalFailure = ended?.failureReason.trim() || null;
+  const unmet = goal.tasks.length > 0 ? unmetCriteria(goal) : [];
+  return {
+    recoveryNeedsYou: ended?.outcome === "needs_person",
+    summary,
+    fullReason,
+    fullReasonIsLead: reason.isLead,
+    originalFailure,
+    unmet,
+    hasDetails: fullReason !== null || originalFailure !== null || unmet.length > 0,
+  };
+}
+
+/** What the failure banner offers for starting another recovery. */
+export type RecoverAgainView =
+  | { kind: "hidden" }
+  | { kind: "available"; again: boolean; left: number; max: number }
+  /** Recover would be offered, but the goal used every recovery it has. */
+  | { kind: "exhausted"; used: number; max: number };
+
+export function recoverAgainView(
+  goal: Goal,
+  hostHasRecovery: boolean,
+  hostHasReworkRetry = false,
+): RecoverAgainView {
+  const used = goal.recoveries ?? 0;
+  if (goalRecoveryControls(goal, hostHasRecovery, hostHasReworkRetry).canRecover) {
+    // A recovery that ended without counting (cancelled, fell back) still makes the next one "again".
+    const again = used > 0 || goal.recovery != null;
+    return { kind: "available", again, left: MAX_RECOVERIES - used, max: MAX_RECOVERIES };
+  }
+  const withoutLimit = goalRecoveryControls(
+    { ...goal, recoveries: 0 },
+    hostHasRecovery,
+    hostHasReworkRetry,
+  );
+  return withoutLimit.canRecover && used >= MAX_RECOVERIES
+    ? { kind: "exhausted", used, max: MAX_RECOVERIES }
+    : { kind: "hidden" };
+}
+
+/** Time left at or above this keeps the goal's own clock when a recovery restarts it. */
+export const REMAINING_TIME_MIN_MS = 30 * 60_000;
+
+/**
+ * The time mode the Recover sheet starts on when it must ask: the time left when that is at
+ * least 30 minutes, otherwise a fresh limit. You can still pick the other.
+ */
+export function defaultRecoverTimeMode(remainingMs: number | null): GoalTimeMode {
+  return remainingMs !== null && remainingMs >= REMAINING_TIME_MIN_MS ? "remaining" : "fresh";
+}
+
+/**
+ * The Lead's reason from the recovery that ended on the goal's current failure, shown read-only
+ * above the Recover sheet's fields. Never copied into them: your guidance stays your own words.
+ */
+export function previousLeadReason(goal: Goal): string | null {
+  const ended = endedRecovery(goal);
+  return ended?.decision?.reason?.trim() || null;
+}
+
+/** A collapsed reason holds two lines, about this many characters on a narrow phone. */
+const COLLAPSED_REASON_CHARS = 80;
+
+/**
+ * A reason as a collapsed line shows it, and whether expanding shows more: the full text differs
+ * from its summary, or the summary may be cut at two lines.
+ */
+export function reasonPreview(text: string): { full: string; summary: string; canExpand: boolean } {
+  const full = text.trim();
+  const summary = summarizeReason(full);
+  return {
+    full,
+    summary,
+    canExpand: summary !== full || summary.length > COLLAPSED_REASON_CHARS,
+  };
 }

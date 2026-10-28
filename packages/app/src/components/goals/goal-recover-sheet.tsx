@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
+import { MAX_RECOVERIES } from "@getpaseo/protocol/goal/interventions";
 import type { Goal, GoalEvent, GoalTimeMode } from "@getpaseo/protocol/goal/types";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
@@ -11,8 +12,11 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { goalRemainingRunMs } from "@/goals/goal-progress";
 import {
   buildRecoverRequest,
-  goalRecoveryControls,
+  canAddFixTasks,
+  defaultRecoverTimeMode,
   isTimeLimitRefusal,
+  previousLeadReason,
+  recoverAgainView,
   recoverBlockingLimits,
   recoverNeedsTimeMode,
   type RecoverRules,
@@ -21,6 +25,7 @@ import { useGoalDecisionMutations } from "@/hooks/use-goal-decision-mutations";
 import { useHostFeature } from "@/runtime/host-features";
 import { toErrorMessage } from "@/utils/error-messages";
 import { formatDuration } from "@/utils/time";
+import { GoalReasonText } from "./goal-reason-text";
 
 const MINUTE_MS = 60_000;
 
@@ -39,8 +44,10 @@ function recoverSheetKey(goal: Goal): string {
 }
 
 /**
- * Recover, for a failed goal on a host with `goalRecovery`, with the sheet it opens. Renders
- * nothing when the goal cannot start a recovery. Distinct from Retry, which reopens blindly.
+ * Recover, or Recover again after an earlier recovery, for a failed goal on a host with
+ * `goalRecovery`, with the sheet it opens. Disabled once the goal used every recovery; renders
+ * nothing when the goal cannot start one for another reason. Distinct from Retry, which reopens
+ * blindly.
  */
 export function GoalRecoverButton({
   serverId,
@@ -53,19 +60,28 @@ export function GoalRecoverButton({
 }): ReactElement | null {
   const { t } = useTranslation();
   const hasRecovery = useHostFeature(serverId, "goalRecovery");
+  const reworkRetry = useHostFeature(serverId, "goalReworkRetry");
   const key = recoverSheetKey(goal);
   const [openFor, setOpenFor] = useState<string | null>(null);
   const open = useCallback(() => setOpenFor(key), [key]);
   const close = useCallback(() => setOpenFor(null), []);
-  if (!goalRecoveryControls(goal, hasRecovery).canRecover) {
+  const view = recoverAgainView(goal, hasRecovery, reworkRetry);
+  if (view.kind === "hidden") {
     return null;
   }
+  const again = view.kind === "exhausted" || view.again;
   return (
     <>
-      <Button size="sm" variant="secondary" onPress={open} testID="goal-recover">
-        {t("goals.recovery.recover")}
+      <Button
+        size="sm"
+        variant="outline"
+        onPress={open}
+        disabled={view.kind === "exhausted"}
+        testID="goal-recover"
+      >
+        {again ? t("goals.failure.recoverAgain") : t("goals.recovery.recover")}
       </Button>
-      {openFor === key ? (
+      {view.kind === "available" && openFor === key ? (
         <GoalRecoverSheet serverId={serverId} goal={goal} events={events} onClose={close} />
       ) : null}
     </>
@@ -84,6 +100,12 @@ interface RecoverSeed {
   remainingMs: number | null;
   needsTimeMode: boolean;
   limits: ReturnType<typeof recoverBlockingLimits>;
+  /** The Lead's reason from the recovery that ended; context only, never a field's value. */
+  leadSaid: string | null;
+  /** Recoveries this goal may still start, this one included. */
+  left: number;
+  /** Every task succeeded and a criterion is not verified: the Lead can add fix tasks. */
+  canAddFixTasks: boolean;
 }
 
 /**
@@ -105,16 +127,21 @@ function GoalRecoverSheet({
   const { t } = useTranslation();
   const size = useIsCompactFormFactor() ? "md" : "sm";
   const timeBase = useHostFeature(serverId, "goalTimeBase");
+  const verificationRecovery = useHostFeature(serverId, "goalVerificationRecovery");
   const { startRecovery, isStartingRecovery } = useGoalDecisionMutations({ serverId });
   const [seed] = useState<RecoverSeed>(() => {
     const openedAt = Date.now();
+    const remainingMs = goalRemainingRunMs(goal, events, openedAt);
     return {
       openedAt,
       guidance: goal.guidance,
       tasks: failedTasks(goal),
-      remainingMs: goalRemainingRunMs(goal, events, openedAt),
+      remainingMs,
       needsTimeMode: recoverNeedsTimeMode(goal, openedAt),
       limits: recoverBlockingLimits(goal, events, openedAt),
+      leadSaid: previousLeadReason(goal),
+      left: Math.max(0, MAX_RECOVERIES - (goal.recoveries ?? 0)),
+      canAddFixTasks: canAddFixTasks(goal),
     };
   });
   const [refusedForTime, setRefusedForTime] = useState(false);
@@ -122,7 +149,10 @@ function GoalRecoverSheet({
   const [taskTexts, setTaskTexts] = useState<Record<string, string>>(() =>
     Object.fromEntries(seed.tasks.map((task) => [task.id, seed.guidance?.tasks?.[task.id] ?? ""])),
   );
-  const [timeChoice, setTimeChoice] = useState<TimeChoice>("unset");
+  // When the limit has passed, start on the time left if it is enough to work with.
+  const [timeChoice, setTimeChoice] = useState<TimeChoice>(() =>
+    timeBase && seed.needsTimeMode ? defaultRecoverTimeMode(seed.remainingMs) : "unset",
+  );
   const [error, setError] = useState<string | null>(null);
 
   // The host refuses a recovery whose time limit passes while the Lead decides.
@@ -162,10 +192,14 @@ function GoalRecoverSheet({
         // This device's clock can be behind the host's.
         if (timeBase && isTimeLimitRefusal(cause) && !needsTimeMode) {
           setRefusedForTime(true);
+          // The time field appears now; it starts on the same default as when it shows at open.
+          setTimeChoice((current) =>
+            current === "unset" ? defaultRecoverTimeMode(seed.remainingMs) : current,
+          );
         }
         setError(toErrorMessage(cause));
       });
-  }, [goal.id, needsTimeMode, onClose, request, startRecovery, timeBase]);
+  }, [goal.id, needsTimeMode, onClose, request, seed.remainingMs, startRecovery, timeBase]);
 
   const header = useMemo<SheetHeader>(
     () => ({
@@ -212,6 +246,22 @@ function GoalRecoverSheet({
     >
       <View style={styles.body}>
         <Text style={styles.message}>{t("goals.recovery.sheetExplain")}</Text>
+        {/* COMPAT(goalVerificationRecovery): added in v0.13.14, remove gate after 2027-10-28. */}
+        {verificationRecovery && seed.canAddFixTasks ? (
+          <Text style={styles.message} testID="goal-recover-verification-fix">
+            {t("goals.failure.verificationFix")}
+          </Text>
+        ) : null}
+        <Text style={styles.meta} testID="goal-recover-left">
+          {t("goals.failure.recoveriesLeft", { left: seed.left, max: MAX_RECOVERIES })}
+        </Text>
+        {/* Read-only: the Lead's words are context for your instruction, never part of it. */}
+        {seed.leadSaid ? (
+          <GoalReasonText
+            text={t("goals.failure.leadSaid", { text: seed.leadSaid })}
+            testID="goal-recover-lead-said"
+          />
+        ) : null}
         {/* Read once at open, so it never moves the fields below. */}
         {seed.limits.length > 0 ? (
           <Text style={styles.warning} testID="goal-recover-limits">
@@ -362,6 +412,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
   },
   subtitle: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  meta: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },

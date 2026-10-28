@@ -662,6 +662,9 @@ export const ru: TranslationResources = {
       noEvents: "Активности пока нет",
       verified: "Проверено",
       unverified: "Не проверено",
+      verificationRoundPending:
+        "Проверка начнётся заново после задач исправления (раунд {{round}}).",
+      verificationRoundStarted: "Раунд проверки {{round}} заново проверяет все критерии.",
       dependsOn: "Зависит от {{ids}}",
       loadFailed: "Не удалось загрузить цель",
       notFound: "Цель не найдена",
@@ -719,6 +722,7 @@ export const ru: TranslationResources = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "Показывает или скрывает полный текст",
       goalCreated: "Цель создана",
       leadStarted: "Lead начал работу",
       planProposed: "Lead предложил план, задач: {{subject}}",
@@ -734,6 +738,7 @@ export const ru: TranslationResources = {
       reworkAdded_conflict: "Доработка после конфликта слияния: {{subject}}",
       reworkAdded_tests: "Доработка после упавших тестов: {{subject}}",
       criterionVerified: "Проверено: {{subject}}",
+      criterionVerifiedRound: "Проверено в раунде {{round}}: {{subject}}",
       integrationPrepared: "Создана ветка {{subject}}",
       changeSetCaptured: "Изменения зафиксированы: {{subject}}",
       captureSkipped: "Нет изменений: {{subject}}",
@@ -828,6 +833,28 @@ export const ru: TranslationResources = {
       rejectPlaceholder: "Необязательное сообщение для Lead",
       rejectSend: "Отклонить изменение",
     },
+    failure: {
+      needsYouTitle: "Для восстановления нужно ваше участие",
+      showDetails: "Показать подробности",
+      hideDetails: "Скрыть подробности",
+      leadSaid: "Ответ Lead: {{text}}",
+      originalFailure: "Исходная причина сбоя: {{text}}",
+      unmetCriteria: "Непроверенные критерии приёмки",
+      listItem: "• {{text}}",
+      more: "Ещё",
+      less: "Свернуть",
+      recoverAgain: "Восстановить снова",
+      recoveriesLeft: "Осталось восстановлений: {{left}} из {{max}}",
+      noRecoveriesLeft: "Восстановлений не осталось (использовано {{used}} из {{max}}).",
+      noRecoveriesLeftFollowUp:
+        "Восстановлений не осталось (использовано {{used}} из {{max}}). Вместо этого начните последующую цель.",
+      followUp: "Начать последующую цель",
+      followUpTitle: "{{title}} — продолжение",
+      followUpObjective: "Продолжение цели «{{title}}», которая завершилась сбоем.",
+      followUpUnmet: "Эти критерии приёмки не проверены:",
+      verificationFix:
+        "Восстановление позволяет Lead добавить задачи исправления для невыполненных критериев. После их слияния все критерии проверяются заново.",
+    },
     recovery: {
       sheetExplain:
         "Новый Lead читает, почему цель завершилась сбоем, и ваши указания, затем повторяет неудачные задачи, меняет план или говорит, что должен сделать человек.",
@@ -897,6 +924,7 @@ export const ru: TranslationResources = {
         budget: "Бюджет израсходован",
         run_limit: "Лимит запусков исчерпан",
         integration_failed: "Слияние не удалось",
+        rework_failed: "Доработка не удалась",
         verification: "Критерий не подтверждён",
         stuck: "Задача окончательно не выполнена",
         capture: "Не удалось сохранить работу задачи",
@@ -913,7 +941,15 @@ export const ru: TranslationResources = {
         run_limit: "Увеличьте лимит запусков в настройках, затем восстановите.",
         integration_failed:
           "Восстановление выполнит слияние снова. Сначала уберите незакоммиченные отслеживаемые файлы, которые называет ошибка, в интеграционном рабочем дереве.",
+        rework_failed:
+          "Повтор или восстановление снова запускает доработку в её рабочем дереве. Причина задачи доработки указана ниже; если она остановилась на запросе, сначала смените политику разрешений в настройках.",
         verification:
+          "Все задачи выполнены, но критерий не выполнен. При восстановлении Lead может добавить задачи исправления, а после их слияния все критерии проверяются заново.",
+        verification_last:
+          "Все задачи выполнены, но критерий не выполнен. При восстановлении Lead может добавить задачи исправления, а после их слияния все критерии проверяются заново. Это последнее восстановление.",
+        verification_none_left:
+          "Все задачи выполнены, но критерий не выполнен, и все восстановления использованы. Начните последующую цель от её интеграционной ветки.",
+        verification_legacy:
           "Все задачи выполнены. Восстановление проверит снова; теперь план может только терять задачи.",
         stuck:
           "Посмотрите причину каждой задачи ниже. Восстановите с указанием для неё или позвольте Lead изменить план.",
@@ -1003,6 +1039,9 @@ export const ru: TranslationResources = {
       create: "Создать цель",
       managedLabel: "Выполнять агентами",
       postsBack: "Результат будет отправлен в этот чат.",
+      buildsOn: "Строится на «{{title}}» с коммита {{commit}}",
+      buildsOnBranch: "Строится на «{{title}}» с коммита {{commit}} в {{branch}}",
+      startFromHead: "Начать с HEAD проекта",
       cwdLabel: "Рабочий каталог",
       hostLabel: "Хост",
       projectLabel: "Проект",
