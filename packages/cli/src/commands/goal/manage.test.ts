@@ -2,12 +2,13 @@ import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { runChangesCommand } from "./changes.js";
 import { buildConfigChanges } from "./config.js";
 import { createGoalCommand } from "./index.js";
 import { parseGoalListFilter } from "./ls.js";
 import { confirmGoalDelete, describeRetained } from "./manage.js";
 import type { Goal } from "@getpaseo/protocol/goal/types";
-import { goalRevisionRows } from "./inspect.js";
+import { goalRevisionRows, verificationRoundLine } from "./inspect.js";
 import { describeBlockingLimits, runDiagnoseCommand, runRecoverCommand } from "./recover.js";
 import { connectGoalClient } from "./shared.js";
 import {
@@ -16,6 +17,7 @@ import {
   parseGuidance,
   parseRevisionFile,
   parseTimeMode,
+  reopenedReworks,
   revisionToDecide,
   runRetryCommand,
   runReviseCommand,
@@ -181,7 +183,71 @@ describe("goal retry help", () => {
     const retry = createGoalCommand().commands.find((command) => command.name() === "retry");
     const help = retry?.description() ?? "";
     expect(help).toContain("merges again change sets whose merge failed");
+    expect(help).toContain("reworks again change sets whose rework failed");
     expect(help).toContain("A change set rejected by review is not retried");
+  });
+});
+
+describe("a failed rework in the CLI", () => {
+  const AT = "2026-10-28T06:00:00.000Z";
+  const changeSet = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    taskId: "t7",
+    runId: "t7-a1",
+    round: 0,
+    supersedes: null,
+    workspaceId: "ws",
+    cwd: "/w",
+    branch: "b",
+    baseCommit: "base000",
+    headCommit: "head000",
+    files: [],
+    status,
+    findings: null,
+    testSummary: null,
+    integratedCommit: null,
+    error: null,
+    createdAt: AT,
+    updatedAt: AT,
+    ...extra,
+  });
+
+  test("goal changes labels a change set whose rework failed", async () => {
+    const changeSets = [
+      changeSet("cs-a", "rejected", { rejectionReason: "rework_failed" }),
+      changeSet("cs-b", "rejected", { rejectionReason: "rework_limit" }),
+      changeSet("cs-c", "rejected"),
+    ];
+    vi.mocked(connectGoalClient).mockResolvedValue({
+      goalInspect: async () => ({ goal: { changeSets, integration: null }, error: null }),
+      close: async () => {},
+    } as never);
+    const result = await runChangesCommand("g1", {} as never, {} as never);
+    expect(result.data.map((row) => row.status)).toEqual([
+      "rejected (rework failed)",
+      "rejected",
+      "rejected",
+    ]);
+  });
+
+  test("retry names the change sets whose rework it reopened", () => {
+    const later = "2026-10-28T07:00:00.000Z";
+    const goal = {
+      updatedAt: later,
+      changeSets: [
+        changeSet("cs-t7-a1", "changes_requested", { updatedAt: later }),
+        // Waiting for rework since before the retry, and approved again by it: not named.
+        changeSet("cs-t8-a1", "conflicted"),
+        changeSet("cs-t9-a1", "approved", { updatedAt: later }),
+      ],
+      tasks: [
+        {
+          id: "t7-rw1",
+          rework: { changeSetId: "cs-t7-a1", reason: "review", round: 1 },
+        },
+      ],
+    } as unknown as Goal;
+    expect(reopenedReworks(goal)).toEqual(["Reopens the rework of cs-t7-a1 (task t7-rw1)"]);
   });
 });
 
@@ -398,6 +464,13 @@ describe("goal revise outcome", () => {
     ).toEqual([
       { id: "rev-1", source: "lead", status: "applied", decidedAt: "y", reason: "split t7" },
     ]);
+  });
+
+  test("inspect names the verification round once a recovery added work", () => {
+    expect(verificationRoundLine({})).toBeNull();
+    expect(verificationRoundLine({ verificationRound: 1 })).toBe(
+      "Verification round 1: a recovery added work, so every criterion is verified again.",
+    );
   });
 });
 

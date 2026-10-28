@@ -255,6 +255,25 @@ export function refuseInAgentShell(what: string): void {
   } satisfies CommandError;
 }
 
+const REWORK_WAITING_STATUSES: ReadonlySet<string> = new Set([
+  "changes_requested",
+  "conflicted",
+  "test_failed",
+]);
+
+/**
+ * What a retry reworked again, one line per change set. The retry's own event is the goal's
+ * latest, so a change set it moved back to waiting for rework carries the goal's `updatedAt`.
+ */
+export function reopenedReworks(goal: Pick<Goal, "updatedAt" | "changeSets" | "tasks">): string[] {
+  return goal.changeSets
+    .filter((c) => REWORK_WAITING_STATUSES.has(c.status) && c.updatedAt === goal.updatedAt)
+    .map((c) => {
+      const task = goal.tasks.findLast((t) => t.rework?.changeSetId === c.id);
+      return `Reopens the rework of ${c.id}${task ? ` (task ${task.id})` : ""}`;
+    });
+}
+
 export async function runRetryCommand(
   id: string,
   options: GoalRetryOptions,
@@ -268,15 +287,20 @@ export async function runRetryCommand(
     throw toGoalCommandError("GOAL_RETRY_FAILED", "retry goal", error);
   }
   const client = await connectGoalClient(options.daemonTarget);
-  const retry = async (timeMode: GoalTimeMode | undefined) =>
-    toResult(
-      await client.goalRetry({
-        goalId: id,
-        ...(options.task ? { taskId: options.task } : {}),
-        ...(timeMode ? { timeMode } : {}),
-        ...(guidance ? { guidance } : {}),
-      }),
-    );
+  const question = terminalQuestion(options);
+  const retry = async (timeMode: GoalTimeMode | undefined) => {
+    const payload = await client.goalRetry({
+      goalId: id,
+      ...(options.task ? { taskId: options.task } : {}),
+      ...(timeMode ? { timeMode } : {}),
+      ...(guidance ? { guidance } : {}),
+    });
+    const result = toResult(payload);
+    if (payload.goal && !question.structured) {
+      for (const line of reopenedReworks(payload.goal)) process.stderr.write(`${line}\n`);
+    }
+    return result;
+  };
   try {
     const timeMode = parseTimeMode(options.time);
     try {
@@ -289,7 +313,7 @@ export async function runRetryCommand(
           { cause: error },
         );
       }
-      const chosen = await askTimeMode(error, terminalQuestion(options));
+      const chosen = await askTimeMode(error, question);
       if (!chosen)
         throw new Error(`${errorText(error)}; rerun with --time fresh or --time remaining`, {
           cause: error,
