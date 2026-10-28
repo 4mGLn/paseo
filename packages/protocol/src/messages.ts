@@ -106,6 +106,18 @@ import {
   GoalDeleteResponseSchema,
   GoalUpdateConfigRequestSchema,
   GoalUpdateConfigResponseSchema,
+  GoalPlanReviseRequestSchema,
+  GoalPlanReviseResponseSchema,
+  GoalPlanApproveRevisionRequestSchema,
+  GoalPlanApproveRevisionResponseSchema,
+  GoalPlanRejectRevisionRequestSchema,
+  GoalPlanRejectRevisionResponseSchema,
+  GoalRecoveryStartRequestSchema,
+  GoalRecoveryStartResponseSchema,
+  GoalRecoveryDecideRequestSchema,
+  GoalRecoveryDecideResponseSchema,
+  GoalRecoveryCancelRequestSchema,
+  GoalRecoveryCancelResponseSchema,
   GoalUpdateMessageSchema,
   GoalCreateResponseSchema,
   GoalListResponseSchema,
@@ -3830,6 +3842,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   GoalUnarchiveRequestSchema,
   GoalDeleteRequestSchema,
   GoalUpdateConfigRequestSchema,
+  GoalPlanReviseRequestSchema,
+  GoalPlanApproveRevisionRequestSchema,
+  GoalPlanRejectRevisionRequestSchema,
+  GoalRecoveryStartRequestSchema,
+  GoalRecoveryDecideRequestSchema,
+  GoalRecoveryCancelRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -4235,6 +4253,27 @@ export const ServerInfoStatusPayloadSchema = z
         // goal.retry also merges again a failed goal's change sets whose integration failed
         // (ChangeSet.rejectionReason "integration_failed"), reopening the goal.
         goalIntegrationRetry: z.boolean().optional(),
+        // COMPAT(goalPlanRevision): added in v0.13.13, remove gate after 2027-10-28.
+        // goal.plan.revise, goal.plan.approve_revision and goal.plan.reject_revision
+        // (plan.revision_* events), and a task's runTimeoutMinutes. An older daemon refuses
+        // the RPCs and drops runTimeoutMinutes silently.
+        goalPlanRevision: z.boolean().optional(),
+        // COMPAT(goalLeadInterventions): added in v0.13.13, remove gate after 2027-10-28.
+        // The goal setting leadInterventions: the Manager wakes the Lead to decide about
+        // failed, stalled or nearly timed-out tasks (intervention.* events). An older daemon
+        // drops the setting silently.
+        goalLeadInterventions: z.boolean().optional(),
+        // COMPAT(goalRecovery): added in v0.13.13, remove gate after 2027-10-28.
+        // Recovering a failed goal through its Lead (recovery.* events) and guidance for the
+        // goal's workers on goal.retry. An older daemon refuses the recovery RPCs and drops
+        // guidance silently.
+        goalRecovery: z.boolean().optional(),
+        // COMPAT(goalTimeBase): added in v0.13.13, remove gate after 2027-10-28.
+        // goal.retry takes `timeMode` (fresh or remaining) to restart a goal's time limit,
+        // and goals carry `timeBaseAt`. An older daemon drops the field and refuses the retry
+        // once the time limit has passed. An older app ignores `timeBaseAt`, so it shows a goal
+        // retried past its time limit as overdue.
+        goalTimeBase: z.boolean().optional(),
         // COMPAT(goalConcurrencyConfig): added in v0.13.9, remove gate after 2027-10-27.
         // `goals.maxConcurrentRuns` in the daemon config get/patch path, applied live. An
         // older daemon drops it from a patch silently, so the client hides the setting.
@@ -7806,6 +7845,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   GoalUnarchiveResponseSchema,
   GoalDeleteResponseSchema,
   GoalUpdateConfigResponseSchema,
+  GoalPlanReviseResponseSchema,
+  GoalPlanApproveRevisionResponseSchema,
+  GoalPlanRejectRevisionResponseSchema,
+  GoalRecoveryStartResponseSchema,
+  GoalRecoveryDecideResponseSchema,
+  GoalRecoveryCancelResponseSchema,
   GoalUpdateMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
@@ -8333,6 +8378,9 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.goalConfigEdit]: z.boolean().optional(),
       [CLIENT_CAPS.goalUsageBreakdown]: z.boolean().optional(),
       [CLIENT_CAPS.goalIntegrationRetry]: z.boolean().optional(),
+      [CLIENT_CAPS.goalPlanRevision]: z.boolean().optional(),
+      [CLIENT_CAPS.goalLeadInterventions]: z.boolean().optional(),
+      [CLIENT_CAPS.goalRecovery]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()
