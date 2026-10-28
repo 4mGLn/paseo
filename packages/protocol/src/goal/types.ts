@@ -288,8 +288,26 @@ export const AcceptanceCriterionSchema = z.object({
   verifiedAt: z.string().nullable(),
   // What the verifier observed.
   evidence: z.string().nullable(),
+  // Set when a person accepted the failed goal as is without this criterion being verified
+  // (goal.accepted), with their note. Absent otherwise, from daemons without
+  // server_info.features.goalAccept, and for clients without the goal_accept capability.
+  waived: z.object({ at: z.string(), note: z.string() }).optional(),
 });
 export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterionSchema>;
+
+/** Longest note a person may give when accepting a failed goal as is. */
+export const MAX_ACCEPT_NOTE_CHARS = 2000;
+
+// How a person accepted a failed goal as is (goal.accepted). `from` is the failure reason the
+// goal had at that moment; `client` is "app" or "cli", a string so a later value does not break
+// an older reader.
+export const GoalAcceptanceSchema = z.object({
+  at: z.string(),
+  note: z.string(),
+  from: z.string(),
+  client: z.string(),
+});
+export type GoalAcceptance = z.infer<typeof GoalAcceptanceSchema>;
 
 /** `ChangeSet.rejectionReason` and the transition's `reason` when the merge step failed. */
 export const CHANGE_SET_INTEGRATION_FAILED = "integration_failed";
@@ -581,6 +599,10 @@ export const GoalSchema = z.object({
   // clearing every criterion. Absent until the first time, and from daemons without
   // server_info.features.goalVerificationRecovery.
   verificationRound: z.number().int().positive().optional(),
+  // Set when a person accepted the failed goal as is, completing it with its unverified
+  // criteria waived. Absent otherwise, from daemons without server_info.features.goalAccept,
+  // and for clients without the goal_accept capability.
+  accepted: GoalAcceptanceSchema.optional(),
   // When a person dismissed an ended goal. Null again after a retry reopens it. It changes
   // nothing else. Absent from daemons without goal.acknowledge.
   acknowledgedAt: z.string().nullable().optional(),
@@ -805,6 +827,17 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventEnvelope, type: z.literal("goal.completed") }),
   z.object({ ...eventEnvelope, type: z.literal("goal.failed"), reason: z.string() }),
   z.object({ ...eventEnvelope, type: z.literal("goal.cancelled") }),
+  // A person accepted a failed goal as is: it completes with `criterionIds`, every criterion
+  // still unverified, waived. `acceptedFrom` is the failure reason at that moment; `client` is
+  // "app" or "cli". Absent from daemons without server_info.features.goalAccept.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("goal.accepted"),
+    criterionIds: z.array(IdSchema),
+    note: z.string(),
+    acceptedFrom: z.string(),
+    client: z.string(),
+  }),
   // One agent turn ended. `usage` is what the provider reported, absent when it reported
   // nothing. `runId` is set for a worker run's turn, `changeSetId` for a reviewer's.
   // `thinking` is the agent's thinking option; absent from daemons before v0.13.3.

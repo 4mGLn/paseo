@@ -10,6 +10,7 @@ import {
   WORK_NOT_RECOVERED_PREFIX,
   isCriteriaNotMetFailure,
   isPendingRequestFailure,
+  isWorkerBlocked,
 } from "./failure-wording.js";
 import { MAX_RECOVERIES, capText } from "./interventions.js";
 import {
@@ -59,6 +60,8 @@ export interface GoalFailureFinding {
 export type TaskFailureCause =
   | "timeout"
   | "pending_request"
+  /** The worker ended with `TASK_STATUS: blocked`: its own claim, quoted in lastError. */
+  | "worker_blocked"
   | "lead_stopped"
   | "canceled"
   | "worker_error"
@@ -111,6 +114,11 @@ export interface GoalDiagnosis {
   failureReason: string | null;
   tasks: TaskDiagnosis[];
   blocked: string[];
+  /**
+   * Implement tasks that succeeded without changing anything. Information only: a task may
+   * rightly find nothing to change, and nothing failed because of it.
+   */
+  unchanged: string[];
   /** Change sets not settled when the goal failed: neither merged, superseded nor rejected. */
   openChangeSets: { id: string; taskId: string; status: ChangeSet["status"] }[];
   merged: { changeSetId: string; taskId: string }[];
@@ -160,6 +168,7 @@ function isReworkFailed(cs: ChangeSet): boolean {
 function causeOf(error: string): TaskFailureCause {
   if (error.startsWith(TURN_TIMEOUT_PREFIX)) return "timeout";
   if (isPendingRequestFailure(error)) return "pending_request";
+  if (isWorkerBlocked(error)) return "worker_blocked";
   if (error.startsWith(LEAD_STOP_PREFIX)) return "lead_stopped";
   if (error.startsWith(RUN_CANCELED_TEXT)) return "canceled";
   return "worker_error";
@@ -432,11 +441,14 @@ function findingsOf(context: FindingContext): GoalFailureFinding[] {
     findings.push(verificationFinding(goal, reason));
   }
   if (tasks.some((t) => t.status === "failed") || blocked.length > 0) {
+    const workerBlocked = tasks.some((t) => t.cause === "worker_blocked");
     findings.push({
       kind: "stuck",
-      remedy:
-        "A task failed for good. See each task's cause; recover with advice for it or a revised plan.",
-      personNeeded: tasks.some((t) => t.cause === "pending_request") ? "yes" : "depends",
+      remedy: workerBlocked
+        ? "A worker reported it was blocked. Fix what it names, then retry; the claim is the worker's own."
+        : "A task failed for good. See each task's cause; recover with advice for it or a revised plan.",
+      personNeeded:
+        workerBlocked || tasks.some((t) => t.cause === "pending_request") ? "yes" : "depends",
     });
   }
   const byReason = reasonFinding(reason);
@@ -458,10 +470,10 @@ function verificationFinding(goal: Goal, reason: string | null): GoalFailureFind
   const left = MAX_RECOVERIES - (goal.recoveries ?? 0);
   if (left <= 0) {
     // A retry does not reopen a goal with nothing failed, so with no recovery left the next
-    // step is a person's: a follow-up goal for now.
+    // step is a person's: accept the goal as is, or start a follow-up goal.
     return {
       kind: "verification",
-      remedy: `${what}, and all ${MAX_RECOVERIES} recoveries are used. Start a follow-up goal from its integration branch.`,
+      remedy: `${what}, and all ${MAX_RECOVERIES} recoveries are used. Accept the goal as is or start a follow-up goal from its integration branch.`,
       personNeeded: "yes",
     };
   }
@@ -491,6 +503,14 @@ function reworkFinding(
       kind: "rework_failed",
       remedy:
         "A rework stopped on a request nobody could answer. Change the permission policy or resolve what asks, then retry or recover; the rework runs again in its worktree.",
+      personNeeded: "yes",
+    };
+  }
+  if (causes.has("worker_blocked")) {
+    return {
+      kind: "rework_failed",
+      remedy:
+        "The worker of a rework reported it could not do the task. Fix the cause it names, then retry or recover; the rework runs again in its worktree.",
       personNeeded: "yes",
     };
   }
@@ -593,6 +613,16 @@ export function diagnoseGoalFailure(goal: Goal, options: DiagnoseOptions): GoalD
     failureReason: reason,
     tasks,
     blocked: blocked.map((t) => t.id),
+    unchanged: goal.tasks
+      .filter(
+        (t) =>
+          t.kind === "implement" &&
+          t.status === "succeeded" &&
+          t.captured === true &&
+          !t.rework &&
+          !goal.changeSets.some((c) => c.taskId === t.id),
+      )
+      .map((t) => t.id),
     openChangeSets: goal.changeSets
       .filter((c) => !["integrated", "superseded", "rejected"].includes(c.status))
       .map((c) => ({ id: c.id, taskId: c.taskId, status: c.status })),

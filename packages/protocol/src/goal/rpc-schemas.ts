@@ -276,6 +276,21 @@ export const GoalRecoveryCancelRequestSchema = z.object({
   eventId,
 });
 
+// Accepts a failed goal as is, gated on server_info.features.goalAccept: the goal completes with
+// `criterionIds`, which must name every criterion still unverified, waived. `note` (why) is
+// required. `client` is "app" or "cli". A request carrying `agentId` is refused: only a person
+// accepts a goal.
+export const GoalOutcomeAcceptRequestSchema = z.object({
+  type: z.literal("goal.outcome.accept.request"),
+  requestId: z.string(),
+  goalId: z.string(),
+  criterionIds: z.array(z.string()),
+  note: z.string(),
+  client: z.string().max(32).optional(),
+  agentId: z.string().trim().min(1).optional(),
+  eventId,
+});
+
 // Removes an ended goal for good: its event log and the worktrees it created. Branches are
 // kept. Deleting a goal that is already gone succeeds with deleted: false.
 export const GoalDeleteRequestSchema = z.object({
@@ -426,6 +441,11 @@ export const GoalRecoveryDecideResponseSchema = z.object({
 
 export const GoalRecoveryCancelResponseSchema = z.object({
   type: z.literal("goal.recovery.cancel.response"),
+  payload: GoalMutationPayloadSchema,
+});
+
+export const GoalOutcomeAcceptResponseSchema = z.object({
+  type: z.literal("goal.outcome.accept.response"),
   payload: GoalMutationPayloadSchema,
 });
 
