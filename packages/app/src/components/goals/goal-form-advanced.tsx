@@ -46,6 +46,9 @@ export function GoalFormAdvanced(props: AdvancedProps): ReactElement {
         <NumberSetting {...props} setting="runTimeoutMinutes" />
         <NumberSetting {...props} setting="goalTimeoutMinutes" />
         <NumberSetting {...props} setting="retryBackoffSeconds" />
+        {props.state.userWaitSupported ? (
+          <NumberSetting {...props} setting="userWaitMinutes" />
+        ) : null}
       </Group>
       {props.state.budgetSupported ? (
         <Group title={t("goals.form.sections.budget")}>

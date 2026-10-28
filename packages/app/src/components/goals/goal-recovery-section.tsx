@@ -440,9 +440,9 @@ function DiagnosisTaskRow({ task }: { task: DiagnosisTaskView }): ReactElement {
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle}>{task.title}</Text>
         <Text style={settingsStyles.rowHint}>{meta.join(" · ")}</Text>
-        {task.cause === "worker_blocked" ? (
+        {task.cause === "worker_blocked" || task.cause === "no_answer" ? (
           <Text style={settingsStyles.rowHint}>
-            {t("goals.diagnosis.causeRemedy.worker_blocked")}
+            {t(`goals.diagnosis.causeRemedy.${task.cause}`)}
           </Text>
         ) : null}
         {task.lastError ? (

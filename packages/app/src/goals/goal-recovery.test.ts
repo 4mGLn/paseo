@@ -226,6 +226,7 @@ describe("diagnosisView", () => {
       "timeout",
       "pending_request",
       "worker_blocked",
+      "no_answer",
       "lead_stopped",
       "canceled",
       "worker_error",
@@ -236,6 +237,7 @@ describe("diagnosisView", () => {
       expect(en.goals.diagnosis.cause[cause]).toBeTypeOf("string");
     }
     expect(en.goals.diagnosis.causeRemedy.worker_blocked).toBeTypeOf("string");
+    expect(en.goals.diagnosis.causeRemedy.no_answer).toBeTypeOf("string");
     expect(en.goals.diagnosis.unchanged).toBeTypeOf("string");
     const limits = [
       "goalTimeoutMinutes",
