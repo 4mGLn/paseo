@@ -4011,6 +4011,15 @@ export const ServerInfoStatusPayloadSchema = z
         // goal's workers on goal.retry. An older daemon refuses the recovery RPCs and drops
         // guidance silently.
         goalRecovery: z.boolean().optional(),
+        // COMPAT(goalReworkRetry): added in v0.13.14, remove gate after 2027-10-28.
+        // goal.retry and recoveries reopen a failed goal's change sets whose rework failed
+        // (ChangeSet.rejectionReason "rework_failed"). An older daemon refuses that reopen.
+        goalReworkRetry: z.boolean().optional(),
+        // COMPAT(goalVerificationRecovery): added in v0.13.14, remove gate after 2027-10-28.
+        // A recovery of a goal that failed verification can add fix tasks; applying it clears
+        // every criterion and starts verification round `Goal.verificationRound`. Gates wording
+        // only: an older daemon refuses such a revise, and its Lead is never offered one.
+        goalVerificationRecovery: z.boolean().optional(),
         // COMPAT(goalTimeBase): added in v0.13.13, remove gate after 2027-10-28.
         // goal.retry takes `timeMode` (fresh or remaining) to restart a goal's time limit,
         // and goals carry `timeBaseAt`. An older daemon drops the field and refuses the retry

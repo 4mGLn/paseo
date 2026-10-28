@@ -41,6 +41,9 @@ export const MAX_GUIDANCE_CHARS = 4000;
 /** Longest piece of the Lead's advice for one task's worker. Longer is refused. */
 export const MAX_LEAD_HINT_CHARS = 1000;
 
+/** Recoveries a goal may count over its life: those the Lead decided, applied or not. */
+export const MAX_RECOVERIES = 3;
+
 /** How long the Lead of a recovery has to decide before the Manager retries without it. */
 export const RECOVERY_DECISION_MS = 20 * 60_000;
 

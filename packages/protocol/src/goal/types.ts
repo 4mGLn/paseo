@@ -293,6 +293,13 @@ export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterionSchema>;
 
 /** `ChangeSet.rejectionReason` and the transition's `reason` when the merge step failed. */
 export const CHANGE_SET_INTEGRATION_FAILED = "integration_failed";
+/**
+ * The rejection reason when the change set's rework task failed for good. A retry or recovery
+ * that reopens the goal reopens the change set, and its rework runs again.
+ */
+export const CHANGE_SET_REWORK_FAILED = "rework_failed";
+/** The rejection reason when the change set still needed fixes after maxReworkRounds. Final. */
+export const CHANGE_SET_REWORK_LIMIT = "rework_limit";
 
 export const ChangeSetStatusSchema = z.enum([
   "captured",
@@ -333,7 +340,9 @@ export const ChangeSetSchema = z.object({
   error: z.string().nullable(),
   // Why a rejected change set was rejected, when it is known. CHANGE_SET_INTEGRATION_FAILED
   // marks a change set whose merge step failed after review and approval; with
-  // server_info.features.goalIntegrationRetry a retry merges it again. Absent otherwise.
+  // server_info.features.goalIntegrationRetry a retry merges it again. CHANGE_SET_REWORK_FAILED
+  // marks one whose rework task failed for good; with goalReworkRetry a retry or recovery
+  // reopens it. CHANGE_SET_REWORK_LIMIT is final. Absent otherwise.
   rejectionReason: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -568,6 +577,10 @@ export const GoalSchema = z.object({
   verifyStartedAt: z.string().optional(),
   // When the last acceptance criterion was verified.
   verifiedAt: z.string().optional(),
+  // How many times an applied recovery that added or replaced tasks started verification over,
+  // clearing every criterion. Absent until the first time, and from daemons without
+  // server_info.features.goalVerificationRecovery.
+  verificationRound: z.number().int().positive().optional(),
   // When a person dismissed an ended goal. Null again after a retry reopens it. It changes
   // nothing else. Absent from daemons without goal.acknowledge.
   acknowledgedAt: z.string().nullable().optional(),
@@ -720,6 +733,9 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     type: z.literal("criterion.verified"),
     criterionId: IdSchema,
     evidence: z.string().optional(),
+    // The goal's verificationRound when the verifier was asked (0 before any). A result for
+    // another round is refused. Absent from logs written before v0.13.14.
+    round: z.number().int().nonnegative().optional(),
   }),
   // The Manager adds a rework task to fix a change set.
   z.object({
@@ -782,6 +798,9 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     changeSetIds: z.array(IdSchema).min(1),
     taskIds: z.array(IdSchema),
     ...retryTimeFields,
+    // Change sets whose rework failed, reopened with it (see goal.retried). Absent from
+    // daemons before v0.13.14.
+    reworkChangeSetIds: z.array(IdSchema).optional(),
   }),
   z.object({ ...eventEnvelope, type: z.literal("goal.completed") }),
   z.object({ ...eventEnvelope, type: z.literal("goal.failed"), reason: z.string() }),
@@ -812,6 +831,10 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     ...retryTimeFields,
     // A person's change to the workers' guidance. Absent from daemons without goalRecovery.
     guidance: GuidanceChangesSchema.optional(),
+    // Change sets rejected because their rework failed (CHANGE_SET_REWORK_FAILED), reopened:
+    // each goes back to the status it was rejected from and its rework task runs again. A
+    // reopen lists every such change set. Absent from daemons before v0.13.14.
+    reworkChangeSetIds: z.array(IdSchema).optional(),
   }),
   // A person dismissed an ended goal. Accepted only after the goal has ended.
   z.object({ ...eventEnvelope, type: z.literal("goal.acknowledged") }),
@@ -906,6 +929,9 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     reason: z.string().optional(),
     ...retryTimeFields,
     uncounted: z.boolean().optional(),
+    // On "applied": change sets whose rework failed, reopened as on goal.retried. Absent from
+    // daemons before v0.13.14.
+    reworkChangeSetIds: z.array(IdSchema).optional(),
   }),
 ]);
 export type GoalEvent = z.infer<typeof GoalEventSchema>;
