@@ -1,3 +1,7 @@
+import {
+  FAILURE_TRIGGERS as FAILURE_TRIGGER_LIST,
+  interventionClass,
+} from "@getpaseo/protocol/goal/interventions";
 import type { ChangeSetStatus, Goal, GoalEvent } from "@getpaseo/protocol/goal/types";
 
 export type GoalFeedTone = "default" | "success" | "warning" | "error";
@@ -16,7 +20,7 @@ export interface GoalFeedEntry {
   events: GoalEvent[];
 }
 
-type FeedGoal = Pick<Goal, "tasks" | "runs" | "changeSets" | "criteria">;
+type FeedGoal = Pick<Goal, "tasks" | "runs" | "changeSets" | "criteria" | "interventions">;
 
 interface Described {
   key: string;
@@ -191,6 +195,176 @@ function describeGoalEndEvent(event: GoalEvent, goal: FeedGoal): Described | nul
       return { key: "goalConfigUpdated", tone: "default", subject: null };
     case "goal.reopened":
       return { key: "goalReopened", tone: "default", subject: null };
+    default:
+      return describeLeadEvent(event, goal);
+  }
+}
+
+const FAILURE_TRIGGERS: ReadonlySet<string> = new Set(FAILURE_TRIGGER_LIST);
+const FAILURE_OUTCOMES: ReadonlySet<string> = new Set([
+  "continue",
+  "give_up",
+  "expired",
+  "lead_unavailable",
+]);
+const CHECK_IN_OUTCOMES: ReadonlySet<string> = new Set([
+  "ok",
+  "nudged",
+  "stopped",
+  "expired",
+  "lead_unavailable",
+]);
+const RECOVERY_DECISIONS: ReadonlySet<string> = new Set(["retry", "revise", "needs_person"]);
+const RECOVERY_OUTCOMES: ReadonlySet<string> = new Set([
+  "applied",
+  "rejected",
+  "needs_person",
+  "cancelled",
+]);
+
+/** The first line of a text, for a detail that would otherwise run long. */
+function firstLine(text: string | undefined): string | null {
+  const line = text?.split("\n").find((part) => part.trim().length > 0);
+  return line ? line.trim() : null;
+}
+
+function optionalTaskTitle(goal: FeedGoal, taskId: string | undefined): string | null {
+  return taskId ? taskTitle(goal, taskId) : null;
+}
+
+/**
+ * Plan changes, the Lead's decisions about tasks and its check-ins on running ones, and
+ * recoveries. Old hosts never send these events to a client that cannot read them.
+ */
+function describeLeadEvent(event: GoalEvent, goal: FeedGoal): Described | null {
+  switch (event.type) {
+    case "plan.revision_proposed":
+      return {
+        key: event.source === "lead" ? "revisionProposed_lead" : "revisionProposed_person",
+        tone: "default",
+        subject: event.ops
+          .map((op) => (op.op === "remove" ? taskTitle(goal, op.taskId) : op.task.title))
+          .join(", "),
+        detail: event.reason || null,
+      };
+    case "plan.revision_approved":
+      return { key: "revisionApproved", tone: "success", subject: null };
+    case "plan.revision_rejected":
+      return {
+        key: "revisionRejected",
+        tone: "warning",
+        subject: null,
+        detail: event.reason || null,
+      };
+    case "intervention.requested":
+      return describeInterventionRequest(event, goal);
+    case "intervention.resolved":
+      return describeInterventionResolution(event, goal);
+    default:
+      return describeRecoveryEvent(event);
+  }
+}
+
+type InterventionRequested = Extract<GoalEvent, { type: "intervention.requested" }>;
+type InterventionResolved = Extract<GoalEvent, { type: "intervention.resolved" }>;
+
+function describeInterventionRequest(
+  event: InterventionRequested,
+  goal: FeedGoal,
+): Described | null {
+  const subject = optionalTaskTitle(goal, event.taskId);
+  if (!subject) {
+    // A recovery's decision has no task; recovery.started tells it.
+    return null;
+  }
+  if (interventionClass(event) === "check_in") {
+    const triggers = event.triggers ?? [];
+    let key = "checkInRequested";
+    if (triggers.includes("near_timeout")) key = "checkInRequested_near_timeout";
+    else if (triggers.includes("stall")) key = "checkInRequested_stall";
+    return { key, tone: "default", subject };
+  }
+  return {
+    key: FAILURE_TRIGGERS.has(event.trigger) ? `leadDeciding_${event.trigger}` : "leadDeciding",
+    tone: "warning",
+    subject,
+  };
+}
+
+function describeInterventionResolution(
+  event: InterventionResolved,
+  goal: FeedGoal,
+): Described | null {
+  const intervention = goal.interventions?.find(
+    (candidate) => candidate.id === event.interventionId,
+  );
+  const subject = optionalTaskTitle(goal, intervention?.taskId);
+  const kind = intervention ? interventionClass(intervention) : null;
+  if (kind === "recovery") {
+    // recovery.decided tells what the recovery's Lead chose.
+    return null;
+  }
+  if (!subject || kind === null) {
+    return {
+      key: "leadAnswered",
+      tone: "default",
+      subject: null,
+      detail: event.note ?? firstLine(event.message),
+    };
+  }
+  if (kind === "check_in") {
+    const known = CHECK_IN_OUTCOMES.has(event.outcome);
+    return {
+      key: known ? `checkIn_${event.outcome}` : "checkIn_unknown",
+      tone: event.outcome === "stopped" ? "warning" : "default",
+      subject,
+      detail: event.outcome === "nudged" ? firstLine(event.message) : (event.note ?? null),
+    };
+  }
+  let tone: GoalFeedTone = "default";
+  if (event.outcome === "give_up") tone = "error";
+  else if (event.outcome === "expired" || event.outcome === "lead_unavailable") tone = "warning";
+  return {
+    key: FAILURE_OUTCOMES.has(event.outcome)
+      ? `leadDecided_${event.outcome}`
+      : "leadDecided_unknown",
+    tone,
+    subject,
+    detail: event.note ?? null,
+  };
+}
+
+function describeRecoveryEvent(event: GoalEvent): Described | null {
+  switch (event.type) {
+    case "recovery.started":
+      return { key: "recoveryStarted", tone: "default", subject: null };
+    case "recovery.decided": {
+      const { decision } = event;
+      let key = "recoveryDecided_unknown";
+      if (decision.fallback) key = "recoveryDecided_fallback";
+      else if (RECOVERY_DECISIONS.has(decision.decision)) {
+        key = `recoveryDecided_${decision.decision}`;
+      }
+      return {
+        key,
+        tone: decision.decision === "needs_person" ? "warning" : "default",
+        subject: null,
+        detail: decision.reason || null,
+      };
+    }
+    case "recovery.resolved": {
+      let tone: GoalFeedTone = "default";
+      if (event.outcome === "applied") tone = "success";
+      else if (event.outcome === "rejected" || event.outcome === "needs_person") tone = "warning";
+      return {
+        key: RECOVERY_OUTCOMES.has(event.outcome)
+          ? `recoveryResolved_${event.outcome}`
+          : "recoveryResolved_unknown",
+        tone,
+        subject: null,
+        detail: event.reason ?? null,
+      };
+    }
     default:
       return null;
   }

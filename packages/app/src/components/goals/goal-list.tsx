@@ -21,6 +21,7 @@ import { goalBadge, priorityBadgeLabel, rowUsageLabel } from "@/goals/goal-label
 import { goalPriority, isGoalArchived } from "@/goals/goal-management";
 import { goalListProgress, goalPercent } from "@/goals/goal-progress";
 import { describeGoalProject, type GoalProjectOption } from "@/goals/goal-projects";
+import { liveRecovery } from "@/goals/goal-recovery";
 import { goalWaitingOnText } from "@/goals/goal-waiting-on";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { settingsStyles } from "@/styles/settings";
@@ -191,6 +192,24 @@ function GoalRowReason({ goal }: { goal: Goal }): ReactElement | null {
     return (
       <Text style={styles.attentionDanger} numberOfLines={1}>
         {t("goals.attention.failed")}
+      </Text>
+    );
+  }
+  // A failed goal has nothing to wait on, except the recovery a Lead is working on.
+  if (attention === "recovery_review") {
+    return (
+      <Text style={styles.attentionWarning} numberOfLines={1}>
+        {t("goals.attention.recovery_review")}
+      </Text>
+    );
+  }
+  const recovery = liveRecovery(goal);
+  if (recovery) {
+    return (
+      <Text style={styles.reasonMuted} numberOfLines={1}>
+        {recovery.status === "decided"
+          ? t("goals.recovery.state.decided")
+          : t("goals.recovery.state.deciding")}
       </Text>
     );
   }

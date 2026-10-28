@@ -119,4 +119,35 @@ describe("goalBadge", () => {
   it("keeps an ended goal's status even if it was paused before it ended", () => {
     expect(badge({ status: "failed", pausedAt: "2026-10-27T01:00:00.000Z" }).label).toBe("Failed");
   });
+
+  it("says a plan change waits for approval, on a running goal and in a recovery", () => {
+    const revision = {
+      id: "rev-1",
+      source: "lead",
+      reason: "Split t7",
+      ops: [],
+      status: "pending",
+      proposedAt: "2026-10-27T01:00:00.000Z",
+    };
+    expect(badge({ status: "executing", planRevisions: [revision] })).toEqual({
+      label: "Plan change to approve",
+      variant: "warning",
+    });
+    const recovery = {
+      id: "r1",
+      startedAt: "2026-10-27T01:00:00.000Z",
+      startedBy: "person",
+      failureReason: "Time limit of 60 minutes reached",
+    };
+    expect(
+      badge({ status: "failed", recovery: { ...recovery, status: "awaiting_approval" } }),
+    ).toEqual({ label: "Plan change to approve", variant: "warning" });
+    expect(badge({ status: "failed", recovery: { ...recovery, status: "deciding" } })).toEqual({
+      label: "Recovering",
+      variant: "running",
+    });
+    expect(badge({ status: "failed", recovery: { ...recovery, status: "ended" } }).label).toBe(
+      "Failed",
+    );
+  });
 });

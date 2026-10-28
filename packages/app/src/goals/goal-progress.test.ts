@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { GoalEvent } from "@getpaseo/protocol/goal/types";
 import {
   budgetStatus,
   buildTaskTimeline,
@@ -9,6 +10,8 @@ import {
   formatCompactCount,
   formatUsd,
   goalDeadline,
+  goalRemainingRunMs,
+  retryNeedsTimeMode,
   goalElapsedMs,
   goalListProgress,
   goalPercent,
@@ -332,6 +335,79 @@ describe("goalDeadline", () => {
     expect(goalDeadline(goal, START)).toMatchObject({ totalMs: 1440 * MIN });
     expect(goalDeadline(makeGoal({ status: "failed" }), START)).toEqual({ kind: "none" });
     expect(goalDeadline(makeGoal({ config: null }), START)).toEqual({ kind: "none" });
+  });
+
+  it("counts from where a retry restarted the time limit", () => {
+    const goal = makeGoal({
+      status: "executing",
+      createdAt: iso(0),
+      timeBaseAt: iso(200),
+      config: { ...makeGoal().config!, limits: { goalTimeoutMinutes: 100 } },
+    });
+    expect(goalDeadline(goal, START + 225 * MIN)).toEqual({
+      kind: "running",
+      remainingMs: 75 * MIN,
+      totalMs: 100 * MIN,
+      usedFraction: 0.25,
+    });
+  });
+});
+
+describe("goalRemainingRunMs", () => {
+  const event = (type: string, minutes: number, extra: Record<string, unknown> = {}) =>
+    ({ id: type, goalId: "g", seq: 1, at: iso(minutes), type, ...extra }) as GoalEvent;
+  const goal = makeGoal({
+    status: "failed",
+    createdAt: iso(0),
+    config: { ...makeGoal().config!, limits: { goalTimeoutMinutes: 100 } },
+  });
+
+  it("is the limit minus the time the goal ran, leaving out pauses", () => {
+    const events = [
+      event("goal.created", 0),
+      event("goal.paused", 30),
+      event("goal.resumed", 200),
+      event("goal.failed", 220),
+    ];
+    expect(goalRemainingRunMs(goal, events, START + 500 * MIN)).toBe(50 * MIN);
+  });
+
+  it("is used up when the goal ran the whole limit, and unknown for a manual goal", () => {
+    const events = [event("goal.created", 0), event("goal.failed", 100)];
+    expect(goalRemainingRunMs(goal, events, START + 500 * MIN)).toBe(0);
+    expect(goalRemainingRunMs(makeGoal({ config: null }), events, START)).toBeNull();
+  });
+});
+
+describe("retryNeedsTimeMode", () => {
+  const limited = (
+    limits: { goalTimeoutMinutes: number; deadlineAt?: string },
+    timeBaseAt?: string,
+  ) =>
+    makeGoal({
+      status: "failed",
+      createdAt: iso(0),
+      ...(timeBaseAt ? { timeBaseAt } : {}),
+      config: { ...makeGoal().config!, limits },
+    });
+
+  it("asks once the time limit has passed, from the time base when there is one", () => {
+    expect(retryNeedsTimeMode(limited({ goalTimeoutMinutes: 100 }), START + 99 * MIN)).toBe(false);
+    expect(retryNeedsTimeMode(limited({ goalTimeoutMinutes: 100 }), START + 100 * MIN)).toBe(true);
+    expect(
+      retryNeedsTimeMode(limited({ goalTimeoutMinutes: 100 }, iso(50)), START + 120 * MIN),
+    ).toBe(false);
+  });
+
+  it("does not ask when an absolute deadline has passed too, or for a manual goal", () => {
+    const deadlineAt = iso(150);
+    expect(
+      retryNeedsTimeMode(limited({ goalTimeoutMinutes: 100, deadlineAt }), START + 120 * MIN),
+    ).toBe(true);
+    expect(
+      retryNeedsTimeMode(limited({ goalTimeoutMinutes: 100, deadlineAt }), START + 160 * MIN),
+    ).toBe(false);
+    expect(retryNeedsTimeMode(makeGoal({ config: null }), START + 10_000 * MIN)).toBe(false);
   });
 });
 

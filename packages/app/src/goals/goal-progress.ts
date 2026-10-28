@@ -1,10 +1,12 @@
 import { GOAL_DAEMON_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
+import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
 import { summarizeGoalProgress } from "@getpaseo/protocol/goal/progress";
 import type {
   AgentRun,
   ChangeSet,
   ChangeSetStatus,
   Goal,
+  GoalEvent,
   GoalProgressSummary,
   GoalSummary,
   Task,
@@ -19,6 +21,7 @@ type ProgressGoal = Pick<
   | "changeSets"
   | "criteria"
   | "createdAt"
+  | "timeBaseAt"
   | "updatedAt"
   | "config"
   | "pausedAt"
@@ -338,6 +341,37 @@ export function formatCompactCount(value: number): string {
   return String(Math.round(value));
 }
 
+/**
+ * A retry must choose how the time limit restarts (`goalTimeBase`) once the limit has passed.
+ * Not when an absolute deadline has passed too: no mode moves it, so the host's refusal says so.
+ */
+export function retryNeedsTimeMode(goal: DeadlineGoal, now: number): boolean {
+  const start = timeLimitStart(goal);
+  if (!goal.config || start === null) {
+    return false;
+  }
+  const explicitEnd = parseTime(goal.config.limits?.deadlineAt);
+  if (explicitEnd !== null && explicitEnd <= now) {
+    return false;
+  }
+  return timeLimitEnd(goal, start) <= now;
+}
+
+/**
+ * Time a `remaining` retry would leave: the time limit minus the time the goal ran, from its
+ * event history, as the host computes it. Null for a manual goal.
+ */
+export function goalRemainingRunMs(
+  goal: DeadlineGoal,
+  events: readonly GoalEvent[],
+  now: number,
+): number | null {
+  if (!goal.config) {
+    return null;
+  }
+  return timeLimitEnd(goal, 0) - goalActiveMs(events, now);
+}
+
 /** US dollars, cents under a hundred. */
 export function formatUsd(value: number): string {
   return value >= 100 ? `$${Math.round(value)}` : `$${value.toFixed(2)}`;
@@ -348,14 +382,26 @@ export type GoalDeadline =
   | { kind: "running"; remainingMs: number; totalMs: number; usedFraction: number }
   | { kind: "overdue"; overdueMs: number };
 
+type DeadlineGoal = Pick<Goal, "createdAt" | "timeBaseAt" | "config">;
+
+/** When the time limit counts from: where a retry restarted it, else creation. */
+function timeLimitStart(goal: DeadlineGoal): number | null {
+  return parseTime(goal.timeBaseAt ?? goal.createdAt);
+}
+
+function timeLimitEnd(goal: DeadlineGoal, start: number): number {
+  const minutes =
+    goal.config?.limits?.goalTimeoutMinutes ?? DAEMON_GOAL_SETTINGS.goalTimeoutMinutes;
+  return start + minutes * 60_000;
+}
+
 /** Time left before the goal timeout fails the goal. */
 export function goalDeadline(goal: ProgressGoal, now: number): GoalDeadline {
-  const start = parseTime(goal.createdAt);
+  const start = timeLimitStart(goal);
   if (ENDED.has(goal.status) || !goal.config || start === null) {
     return { kind: "none" };
   }
-  const minutes = goal.config.limits?.goalTimeoutMinutes ?? DAEMON_GOAL_SETTINGS.goalTimeoutMinutes;
-  const timeoutEnd = start + minutes * 60_000;
+  const timeoutEnd = timeLimitEnd(goal, start);
   // The earlier of the timeout and an explicit deadline wins.
   const explicitEnd = parseTime(goal.config.limits?.deadlineAt);
   const end = explicitEnd === null ? timeoutEnd : Math.min(timeoutEnd, explicitEnd);
