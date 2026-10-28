@@ -756,6 +756,7 @@ export const ptBR: TranslationResources = {
       goalAcknowledged: "Dispensada",
       goalConfigUpdated: "Configurações alteradas",
       goalReopened: "Planejando de novo",
+      goalAccepted: "Aceito como está por uma pessoa, isentos: {{subject}}",
       integrationRetried: "Mesclando de novo: {{subject}}",
       revisionProposed_lead: "O Lead propôs uma mudança no plano: {{subject}}",
       revisionProposed_person: "Mudança no plano proposta: {{subject}}",
@@ -767,6 +768,8 @@ export const ptBR: TranslationResources = {
         "O Lead está decidindo o que fazer com {{subject}} (falhou de novo)",
       leadDeciding_attempts_exhausted:
         "O Lead está decidindo o que fazer com {{subject}} (última tentativa usada)",
+      leadDeciding_worker_blocked:
+        "O Lead está decidindo o que fazer com {{subject}} (o executor informou que ficou bloqueado)",
       leadDeciding_lead_stopped:
         "O Lead está decidindo o que fazer com {{subject}} (execução parada pelo Lead)",
       leadDecided_continue: "Lead: continuar com {{subject}}",
@@ -853,6 +856,21 @@ export const ptBR: TranslationResources = {
       followUpUnmet: "Estes critérios de aceitação não foram verificados:",
       verificationFix:
         "Recuperar permite que o Lead adicione tarefas de correção para os critérios não atendidos. Todos os critérios são verificados de novo depois que elas forem mescladas.",
+    },
+    accept: {
+      button: "Aceitar como está",
+      sheetTitle: "Aceitar o objetivo como está",
+      explain: "O objetivo é concluído com estes critérios isentos. Não é possível desfazer.",
+      explainNothingWaived:
+        "Todos os critérios foram verificados; isto conclui o objetivo. Não é possível desfazer.",
+      notMet: "Não atendidos",
+      neverChecked: "Nunca verificados",
+      noteLabel: "Por que você aceita",
+      noteTooLong: "Longo demais: no máximo {{max}} caracteres",
+      confirm: "Aceitar e concluir",
+      completedWaived: "Concluída · {{n}} isentos",
+      waived: "Isento",
+      note: "Aceita como está: {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -961,12 +979,18 @@ export const ptBR: TranslationResources = {
       cause: {
         timeout: "Tempo esgotado",
         pending_request: "Parou numa pergunta ou permissão que ninguém respondeu",
+        worker_blocked: "O executor informou que ficou bloqueado",
         lead_stopped: "Parada pelo Lead",
         canceled: "Execução cancelada",
         worker_error: "Erro do executor",
         interrupted: "Interrompida quando o objetivo parou",
         cancelled: "Cancelada antes de rodar",
       },
+      causeRemedy: {
+        worker_blocked:
+          "Esta é a própria afirmação do executor. Corrija o que ele indica e tente novamente.",
+      },
+      unchanged: "Concluídas sem alterações: {{titles}}",
       interruptedRuns: "Interrompidas: {{n}}",
       blocks: "Bloqueia {{titles}}",
       limits: {

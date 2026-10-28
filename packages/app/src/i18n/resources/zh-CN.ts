@@ -747,6 +747,7 @@ export const zhCN: TranslationResources = {
       goalAcknowledged: "已忽略",
       goalConfigUpdated: "设置已更改",
       goalReopened: "重新规划中",
+      goalAccepted: "已由人按现状接受，豁免：{{subject}}",
       integrationRetried: "重新合并：{{subject}}",
       revisionProposed_lead: "Lead 提出了计划变更：{{subject}}",
       revisionProposed_person: "已提出计划变更：{{subject}}",
@@ -756,6 +757,7 @@ export const zhCN: TranslationResources = {
       leadDeciding_timeout: "Lead 正在决定如何处理 {{subject}}（超时）",
       leadDeciding_repeated_failure: "Lead 正在决定如何处理 {{subject}}（再次失败）",
       leadDeciding_attempts_exhausted: "Lead 正在决定如何处理 {{subject}}（已用完最后一次尝试）",
+      leadDeciding_worker_blocked: "Lead 正在决定如何处理 {{subject}}（执行者报告受阻）",
       leadDeciding_lead_stopped: "Lead 正在决定如何处理 {{subject}}（Lead 停止了运行）",
       leadDecided_continue: "Lead：继续 {{subject}}",
       leadDecided_give_up: "Lead：放弃 {{subject}}",
@@ -838,6 +840,20 @@ export const zhCN: TranslationResources = {
       followUpUnmet: "以下验收标准未通过验证：",
       verificationFix:
         "恢复时，Lead 可以为未满足的验收标准添加修复任务。修复任务合并后，会重新验证所有验收标准。",
+    },
+    accept: {
+      button: "按现状接受",
+      sheetTitle: "按现状接受目标",
+      explain: "目标将完成，并豁免这些验收标准。此操作无法撤销。",
+      explainNothingWaived: "所有验收标准均已验证，目标将完成。此操作无法撤销。",
+      notMet: "未满足",
+      neverChecked: "未检查",
+      noteLabel: "接受的原因",
+      noteTooLong: "太长了，请控制在 {{max}} 个字符以内",
+      confirm: "接受并完成",
+      completedWaived: "已完成 · 豁免 {{n}} 项",
+      waived: "已豁免",
+      note: "按现状接受：{{note}}",
     },
     recovery: {
       sheetExplain:
@@ -937,12 +953,17 @@ export const zhCN: TranslationResources = {
       cause: {
         timeout: "超时",
         pending_request: "因无人回答的问题或权限请求而停止",
+        worker_blocked: "执行者报告受阻",
         lead_stopped: "被 Lead 停止",
         canceled: "运行已取消",
         worker_error: "执行者出错",
         interrupted: "目标停止时被中断",
         cancelled: "运行前已取消",
       },
+      causeRemedy: {
+        worker_blocked: "这是执行者自己的说法。解决它指出的问题后重试。",
+      },
+      unchanged: "未做更改即完成：{{titles}}",
       interruptedRuns: "{{n}} 次中断",
       blocks: "阻塞：{{titles}}",
       limits: {

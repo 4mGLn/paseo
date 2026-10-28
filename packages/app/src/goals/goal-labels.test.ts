@@ -120,6 +120,32 @@ describe("goalBadge", () => {
     expect(badge({ status: "failed", pausedAt: "2026-10-27T01:00:00.000Z" }).label).toBe("Failed");
   });
 
+  it("says how many criteria a goal accepted as is waived", () => {
+    const at = "2026-10-27T01:00:00.000Z";
+    const waived = { at, note: "Good enough" };
+    expect(
+      badge({
+        status: "completed",
+        accepted: { at, note: "Good enough", from: "Goal timed out", client: "app" },
+        criteria: [
+          { id: "c1", text: "A", verifiedAt: null, evidence: null, waived },
+          { id: "c2", text: "B", verifiedAt: at, evidence: "ok" },
+        ],
+      }),
+    ).toEqual({ label: "Completed · 1 waived", variant: "success" });
+  });
+
+  it("shows a plain Completed for a goal accepted with nothing to waive", () => {
+    const at = "2026-10-27T01:00:00.000Z";
+    expect(
+      badge({
+        status: "completed",
+        accepted: { at, note: "Fine", from: "Goal timed out", client: "app" },
+        criteria: [{ id: "c1", text: "A", verifiedAt: at, evidence: "ok" }],
+      }),
+    ).toEqual({ label: "Completed", variant: "success" });
+  });
+
   it("says a plan change waits for approval, on a running goal and in a recovery", () => {
     const revision = {
       id: "rev-1",

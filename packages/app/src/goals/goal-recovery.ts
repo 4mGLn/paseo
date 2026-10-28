@@ -185,6 +185,8 @@ export interface DiagnosisView {
   personNeeded: PersonNeeded;
   findings: DiagnosisFindingView[];
   tasks: DiagnosisTaskView[];
+  /** Titles of implement tasks that succeeded without changes; information only. */
+  unchanged: string[];
   limits: BlockingLimit[];
   runs: { used: number; max: number };
   merged: number;
@@ -217,6 +219,7 @@ export function diagnosisView(diagnosis: GoalDiagnosis, goal: Pick<Goal, "tasks"
       blocks: task.blockedDependents.map(titleOf),
       lastError: task.lastError,
     })),
+    unchanged: diagnosis.unchanged.map(titleOf),
     limits: diagnosis.blockingLimits,
     runs: diagnosis.runs,
     merged: diagnosis.merged.length,

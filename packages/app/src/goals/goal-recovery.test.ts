@@ -146,6 +146,7 @@ describe("diagnosisView", () => {
       },
     ],
     blocked: ["t8", "t9"],
+    unchanged: [],
     openChangeSets: [],
     merged: [{ changeSetId: "cs-1", taskId: "t1" }],
     runs: { used: 12, max: 60 },
@@ -172,11 +173,18 @@ describe("diagnosisView", () => {
           lastError: "Turn timed out after 60 minutes",
         },
       ],
+      unchanged: [],
       limits: diagnosis.blockingLimits,
       runs: { used: 12, max: 60 },
       merged: 1,
       recoverable: true,
     });
+  });
+
+  it("names the tasks that finished without changes", () => {
+    expect(diagnosisView({ ...diagnosis, unchanged: ["t7"] }, failed).unchanged).toEqual([
+      "Capture",
+    ]);
   });
 
   it("needs you when any finding does, and only then", () => {
@@ -217,6 +225,7 @@ describe("diagnosisView", () => {
     const causes = [
       "timeout",
       "pending_request",
+      "worker_blocked",
       "lead_stopped",
       "canceled",
       "worker_error",
@@ -226,6 +235,8 @@ describe("diagnosisView", () => {
     for (const cause of causes) {
       expect(en.goals.diagnosis.cause[cause]).toBeTypeOf("string");
     }
+    expect(en.goals.diagnosis.causeRemedy.worker_blocked).toBeTypeOf("string");
+    expect(en.goals.diagnosis.unchanged).toBeTypeOf("string");
     const limits = [
       "goalTimeoutMinutes",
       "deadlineAt",

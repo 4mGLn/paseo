@@ -11,7 +11,7 @@ import { SettingsCard, SettingsSection } from "@/components/settings";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { StatusBadge } from "@/components/ui/status-badge";
+import { StatusBadge, type StatusBadgeVariant } from "@/components/ui/status-badge";
 import { useToast } from "@/contexts/toast-context";
 import { canAcknowledgeGoal } from "@/goals/goal-attention";
 import { canApproveGoalPlan, isGoalTerminal } from "@/goals/goal-derivation";
@@ -27,6 +27,7 @@ import {
 } from "@/goals/goal-phase";
 import { goalDeadline } from "@/goals/goal-progress";
 import { buildFollowUpPrefill, canStartFollowUp } from "@/goals/goal-follow-up";
+import { canAccept, criterionState } from "@/goals/goal-accept";
 import {
   canAddFixTasks,
   goalFailureView,
@@ -48,6 +49,7 @@ import { settingsStyles } from "@/styles/settings";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { toErrorMessage } from "@/utils/error-messages";
 import { formatDuration } from "@/utils/time";
+import { GoalAcceptButton } from "./goal-accept-sheet";
 import { GoalActivity } from "./goal-activity";
 import { GoalChangeSetList } from "./goal-change-set-list";
 import { GoalFeedbackSheet } from "./goal-feedback-sheet";
@@ -634,6 +636,9 @@ function GoalFailureActions({
   const showFixTasks = verificationRecovery && recover.kind === "available" && canAddFixTasks(goal);
   const openLaunch = useGoalLaunchStore((state) => state.open);
   const showFollowUp = canStartFollowUp(goal);
+  // COMPAT(goalAccept): added in v0.13.14, remove gate after 2027-10-28.
+  const hasGoalAccept = useHostFeature(serverId, "goalAccept");
+  const showAccept = canAccept(goal, hasGoalAccept);
   const handleFollowUp = useCallback(() => {
     const prefill = buildFollowUpPrefill(goal, {
       title: (title: string) => t("goals.failure.followUpTitle", { title }),
@@ -644,7 +649,7 @@ function GoalFailureActions({
       openLaunch({ serverId, prefill });
     }
   }, [goal, openLaunch, serverId, t]);
-  if (recover.kind === "hidden" && !showFollowUp) {
+  if (recover.kind === "hidden" && !showFollowUp && !showAccept) {
     return null;
   }
   return (
@@ -656,6 +661,7 @@ function GoalFailureActions({
             {t("goals.failure.followUp")}
           </Button>
         ) : null}
+        {showAccept ? <GoalAcceptButton serverId={serverId} goal={goal} /> : null}
       </View>
       {showFixTasks ? (
         <Text style={styles.meta} testID="goal-recover-verification-fix">
@@ -705,6 +711,16 @@ function GoalTeamSection({ config }: { config: GoalConfig }): ReactElement {
   );
 }
 
+const CRITERION_BADGES: Record<
+  ReturnType<typeof criterionState>,
+  { key: string; variant: StatusBadgeVariant }
+> = {
+  verified: { key: "goals.detail.verified", variant: "success" },
+  // An accept waived it unverified; the note says why.
+  waived: { key: "goals.accept.waived", variant: "warning" },
+  unverified: { key: "goals.detail.unverified", variant: "muted" },
+};
+
 function GoalCriteria({ goal }: { goal: Goal }): ReactElement {
   const { t } = useTranslation();
   // A recovery that added work cleared every criterion; each badge is about the current round.
@@ -740,14 +756,19 @@ function GoalCriteria({ goal }: { goal: Goal }): ReactElement {
                 ) : null}
               </View>
               <StatusBadge
-                label={t(
-                  criterion.verifiedAt ? "goals.detail.verified" : "goals.detail.unverified",
-                )}
-                variant={criterion.verifiedAt ? "success" : "muted"}
+                label={t(CRITERION_BADGES[criterionState(criterion)].key)}
+                variant={CRITERION_BADGES[criterionState(criterion)].variant}
               />
             </View>
           ))
         )}
+        {goal.accepted ? (
+          <View style={settingsStyles.row} testID="goal-accepted-note">
+            <Text style={styles.meta} selectable>
+              {t("goals.accept.note", { note: goal.accepted.note })}
+            </Text>
+          </View>
+        ) : null}
       </SettingsCard>
     </SettingsSection>
   );

@@ -757,6 +757,7 @@ export const es: TranslationResources = {
       goalAcknowledged: "Descartado",
       goalConfigUpdated: "Ajustes cambiados",
       goalReopened: "Planificando de nuevo",
+      goalAccepted: "Aceptado tal cual por una persona, dispensados: {{subject}}",
       integrationRetried: "Fusionando de nuevo: {{subject}}",
       revisionProposed_lead: "El Lead propuso un cambio en el plan: {{subject}}",
       revisionProposed_person: "Cambio en el plan propuesto: {{subject}}",
@@ -769,6 +770,8 @@ export const es: TranslationResources = {
         "El Lead está decidiendo qué hacer con {{subject}} (volvió a fallar)",
       leadDeciding_attempts_exhausted:
         "El Lead está decidiendo qué hacer con {{subject}} (último intento usado)",
+      leadDeciding_worker_blocked:
+        "El Lead está decidiendo qué hacer con {{subject}} (el ejecutor informó que estaba bloqueado)",
       leadDeciding_lead_stopped:
         "El Lead está decidiendo qué hacer con {{subject}} (ejecución detenida por el Lead)",
       leadDecided_continue: "Lead: continuar con {{subject}}",
@@ -856,6 +859,21 @@ export const es: TranslationResources = {
       followUpUnmet: "Estos criterios de aceptación no se verificaron:",
       verificationFix:
         "Recuperar permite que el Lead añada tareas de corrección para los criterios no cumplidos. Todos los criterios se verifican de nuevo cuando se fusionan.",
+    },
+    accept: {
+      button: "Aceptar tal cual",
+      sheetTitle: "Aceptar el objetivo tal cual",
+      explain: "El objetivo se completa con estos criterios dispensados. No se puede deshacer.",
+      explainNothingWaived:
+        "Todos los criterios se verificaron; esto completa el objetivo. No se puede deshacer.",
+      notMet: "No cumplidos",
+      neverChecked: "Nunca comprobados",
+      noteLabel: "Por qué lo aceptas",
+      noteTooLong: "Demasiado largo: máximo {{max}} caracteres",
+      confirm: "Aceptar y completar",
+      completedWaived: "Completado · {{n}} dispensados",
+      waived: "Dispensado",
+      note: "Aceptado tal cual: {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -964,12 +982,18 @@ export const es: TranslationResources = {
       cause: {
         timeout: "Se agotó el tiempo",
         pending_request: "Se detuvo en una pregunta o permiso que nadie respondió",
+        worker_blocked: "El ejecutor informó que estaba bloqueado",
         lead_stopped: "Detenida por el Lead",
         canceled: "Ejecución cancelada",
         worker_error: "Error del ejecutor",
         interrupted: "Interrumpida al detenerse el objetivo",
         cancelled: "Cancelada antes de ejecutarse",
       },
+      causeRemedy: {
+        worker_blocked:
+          "Es lo que afirma el propio ejecutor. Corrige lo que indica y vuelve a intentarlo.",
+      },
+      unchanged: "Terminadas sin cambios: {{titles}}",
       interruptedRuns: "Interrumpidas: {{n}}",
       blocks: "Bloquea {{titles}}",
       limits: {

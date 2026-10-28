@@ -751,6 +751,7 @@ export const ko: TranslationResources = {
       goalAcknowledged: "닫음",
       goalConfigUpdated: "설정 변경됨",
       goalReopened: "다시 계획 중",
+      goalAccepted: "사람이 그대로 수락함, 면제: {{subject}}",
       integrationRetried: "다시 병합: {{subject}}",
       revisionProposed_lead: "Lead가 계획 변경을 제안했습니다: {{subject}}",
       revisionProposed_person: "계획 변경이 제안되었습니다: {{subject}}",
@@ -761,6 +762,8 @@ export const ko: TranslationResources = {
       leadDeciding_repeated_failure: "Lead가 {{subject}}을(를) 어떻게 할지 결정하는 중 (다시 실패)",
       leadDeciding_attempts_exhausted:
         "Lead가 {{subject}}을(를) 어떻게 할지 결정하는 중 (마지막 시도 사용)",
+      leadDeciding_worker_blocked:
+        "Lead가 {{subject}}을(를) 어떻게 할지 결정하는 중 (워커가 막혔다고 보고함)",
       leadDeciding_lead_stopped:
         "Lead가 {{subject}}을(를) 어떻게 할지 결정하는 중 (Lead가 실행을 멈춤)",
       leadDecided_continue: "Lead: {{subject}} 계속 진행",
@@ -844,6 +847,21 @@ export const ko: TranslationResources = {
       followUpUnmet: "확인되지 않은 수락 기준:",
       verificationFix:
         "복구하면 Lead가 충족되지 않은 수락 기준을 위한 수정 작업을 추가할 수 있습니다. 수정 작업이 병합되면 모든 수락 기준을 다시 확인합니다.",
+    },
+    accept: {
+      button: "그대로 수락",
+      sheetTitle: "목표를 그대로 수락",
+      explain: "이 수락 기준을 면제하고 목표를 완료합니다. 되돌릴 수 없습니다.",
+      explainNothingWaived:
+        "모든 수락 기준이 확인되었습니다. 목표를 완료합니다. 되돌릴 수 없습니다.",
+      notMet: "충족되지 않음",
+      neverChecked: "확인되지 않음",
+      noteLabel: "수락하는 이유",
+      noteTooLong: "너무 깁니다. {{max}}자 이내로 줄이세요",
+      confirm: "수락하고 완료",
+      completedWaived: "완료됨 · {{n}}개 면제",
+      waived: "면제됨",
+      note: "그대로 수락함: {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -950,12 +968,17 @@ export const ko: TranslationResources = {
       cause: {
         timeout: "시간 초과",
         pending_request: "아무도 답하지 않은 질문이나 권한 요청에서 멈춤",
+        worker_blocked: "워커가 막혔다고 보고함",
         lead_stopped: "Lead가 멈춤",
         canceled: "실행 취소됨",
         worker_error: "워커 오류",
         interrupted: "목표가 멈출 때 중단됨",
         cancelled: "실행 전에 취소됨",
       },
+      causeRemedy: {
+        worker_blocked: "워커 자신의 주장입니다. 워커가 말한 원인을 해결한 뒤 다시 시도하세요.",
+      },
+      unchanged: "변경 없이 끝남: {{titles}}",
       interruptedRuns: "중단 {{n}}회",
       blocks: "막힌 작업: {{titles}}",
       limits: {
