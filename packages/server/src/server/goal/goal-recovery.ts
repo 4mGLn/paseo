@@ -17,7 +17,7 @@ import type {
 import type { GitPort } from "./git-ops.js";
 import type { ManagerAgentPort, ManagerWorkspacePort } from "./goal-manager.js";
 import { budgetExceeded, resolveLimits } from "./goal-limits.js";
-import { MAX_PLAN_REVISIONS } from "./goal-reducer.js";
+import { MAX_PLAN_REVISIONS, isReworkFailed } from "./goal-reducer.js";
 import type { GoalStore } from "./goal-store.js";
 import { thinkingInput } from "./goal-thinking.js";
 import {
@@ -110,6 +110,30 @@ export async function integrationProblem(
 }
 
 /**
+ * Why a change set whose rework failed cannot be reworked again, or null. Its rework runs in the
+ * change set's own worktree, so that worktree must still exist; once archived it is gone, and
+ * reopening would only fail the rework again.
+ */
+export async function reworkWorktreeProblem(
+  goal: Goal,
+  git: Pick<GitPort, "head">,
+): Promise<string | null> {
+  for (const cs of goal.changeSets.filter(isReworkFailed)) {
+    try {
+      await git.head(cs.cwd);
+      continue;
+    } catch {
+      if (await exists(cs.cwd)) continue;
+    }
+    const task = goal.tasks.findLast((t) => t.rework?.changeSetId === cs.id);
+    const branch = goal.integration ? ` ${shellQuote(goal.integration.branch)}` : "";
+    // Branches are never deleted, so the change set's own branch still holds its work.
+    return `The rework worktree ${shellQuote(cs.cwd)} of ${cs.id} is gone, so its rework${task ? ` ${task.id}` : ""} cannot run again. Its work is on branch ${shellQuote(cs.branch)}. Start a new goal from the integration branch${branch} and rebuild the change from that branch.`;
+  }
+  return null;
+}
+
+/**
  * Whether an apply refused against the goal as it is now was refused for the Lead's decision
  * (its ops or hints no longer fit), which counts toward the recovery limit. Any other refusal
  * comes from a limit (time, runs, budget) and does not count. A revise is checked against the
@@ -138,6 +162,12 @@ export function recoveryTimeFields(recovery: Recovery): { timeMode?: string; act
     ...(recovery.timeMode === undefined ? {} : { timeMode: recovery.timeMode }),
     ...(recovery.activeMs === undefined ? {} : { activeMs: recovery.activeMs }),
   };
+}
+
+/** The change sets an applied recovery reworks again: every one whose rework failed. */
+export function reworkChangeSetFields(goal: Goal): { reworkChangeSetIds?: string[] } {
+  const ids = goal.changeSets.filter(isReworkFailed).map((c) => c.id);
+  return ids.length > 0 ? { reworkChangeSetIds: ids } : {};
 }
 
 /** What the recovery handler needs from the Manager. */
@@ -261,7 +291,9 @@ export class GoalRecoveries {
     try {
       if (!recovery.leadAgentId) {
         const goal = this.host.store.get(goalId) as Goal;
-        const problem = await integrationProblem(goal, this.host.git);
+        const problem =
+          (await integrationProblem(goal, this.host.git)) ??
+          (await reworkWorktreeProblem(goal, this.host.git));
         if (problem) {
           await this.decideWithout(goalId, recovery.id, "needs_person", problem);
           return;
@@ -379,7 +411,9 @@ export class GoalRecoveries {
     const recovery = goal?.recovery;
     if (!goal || goal.status !== "failed" || recovery?.status !== "decided") return;
     if (this.host.isStopped()) return;
-    const problem = await integrationProblem(goal, this.host.git);
+    const problem =
+      (await integrationProblem(goal, this.host.git)) ??
+      (await reworkWorktreeProblem(goal, this.host.git));
     if (this.host.isStopped()) return;
     if (problem) {
       await this.needsPerson(goalId, recovery.id, problem, true);
@@ -392,6 +426,7 @@ export class GoalRecoveries {
       recoveryId: recovery.id,
       outcome: "applied",
       ...recoveryTimeFields(recovery),
+      ...reworkChangeSetFields(goal),
     });
     if (refusal === null) return;
     const current = this.host.store.get(goalId);

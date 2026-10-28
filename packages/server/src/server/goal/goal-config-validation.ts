@@ -38,7 +38,7 @@ export function goalAutoModeId(provider: string, modes: GoalMode[]): string | un
 }
 
 export interface ConfigValidationDeps {
-  git: Pick<GitPort, "head">;
+  git: Pick<GitPort, "head" | "resolveCommit">;
   /** Provider ids the daemon has registered. */
   knownProviders: () => string[];
   /**
@@ -88,6 +88,18 @@ export function createGoalConfigValidator(deps: ConfigValidationDeps): GoalConfi
     } catch {
       throw new Error(`cwd "${config.cwd}" is not a git repository`);
     }
+    // A given base is stored as the full id it names now, so later reads cannot drift.
+    let baseCommit = head;
+    if (config.baseCommit !== undefined) {
+      const resolved = await deps.git.resolveCommit(config.cwd, config.baseCommit);
+      if (!resolved) {
+        throw new Error(
+          `baseCommit "${config.baseCommit}" is not a commit in the repository at "${config.cwd}". ` +
+            "Give a commit id of at least 7 hex digits that exists there, or leave baseCommit out to start from its HEAD.",
+        );
+      }
+      baseCommit = resolved;
+    }
     const thinking = [
       ["leadThinking", "lead", config.leadThinking],
       ["workerThinking", "worker", config.workerThinking],
@@ -105,7 +117,7 @@ export function createGoalConfigValidator(deps: ConfigValidationDeps): GoalConfi
       });
     }
     await assertAutoPolicy(config, deps);
-    return { ...config, baseCommit: config.baseCommit ?? head };
+    return { ...config, baseCommit };
   };
 }
 

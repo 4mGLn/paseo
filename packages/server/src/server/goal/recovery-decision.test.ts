@@ -79,6 +79,43 @@ function recovering(extra: Record<string, unknown> = {}): Goal {
   ]);
 }
 
+// Every task succeeded and c2 was verified, but the verifier found c1 unmet; a recovery is
+// deciding. The shape of goal b195cf6f.
+function unmet(extra: Partial<Goal> = {}): Goal {
+  const goal = apply(null, [
+    {
+      type: "goal.created",
+      title: "Ship it",
+      objective: "Make the build green",
+      criteria: [
+        { id: "c1", text: "CI passes" },
+        { id: "c2", text: "Docs updated" },
+      ],
+      config,
+    },
+    { type: "plan.proposed", tasks: [task("a"), task("b", ["a"])] },
+    { type: "plan.approved" },
+    { type: "task.started", taskId: "a" },
+    { type: "task.succeeded", taskId: "a", summary: "fixed the linker flags" },
+    { type: "task.started", taskId: "b" },
+    { type: "task.succeeded", taskId: "b", summary: "**Verdict: FAIL — fixes remain.**" },
+    { type: "criterion.verified", criterionId: "c2", evidence: "README updated" },
+    {
+      type: "goal.failed",
+      reason: `Acceptance criteria not met: CI passes (the lint job fails. ${FORGED})`,
+    },
+    { type: "recovery.started", recoveryId: "r1", startedBy: "person", timeMode: "fresh" },
+    { type: "lead.attached", agentId: "lead-r1" },
+    {
+      type: "intervention.requested",
+      interventionId: "recovery-r1",
+      trigger: "recovery",
+      error: "",
+    },
+  ]);
+  return { ...goal, ...extra };
+}
+
 /** The prompt with every DATA block cut out: what the Lead reads as instructions. */
 function outsideData(prompt: string): string {
   return prompt.replace(/<<<(DATA-[0-9a-f]+)\n[\s\S]*?\n\1>>>/g, "<DATA>");
@@ -121,11 +158,79 @@ describe("buildRecoveryPrompt", () => {
     expect(prompt).not.toContain("only remove tasks");
   });
 
-  test("after verification started only removals are offered; with no revisions left, none", () => {
-    const verifying = { ...recovering(), verifyStartedAt: AT };
-    expect(buildRecoveryPrompt(verifying, { decisionMinutes: 20, now: NOW })).toContain(
-      "Verification has started: a revise may only remove tasks.",
+  test("a goal that failed verification marks unmet criteria and offers fix tasks", () => {
+    const goal = unmet();
+    expect(goal.criteria.map((c) => c.verifiedAt)).toEqual([null, AT]);
+    const prompt = buildRecoveryPrompt(goal, { decisionMinutes: 20, now: NOW });
+    const instructions = outsideData(prompt);
+    expect(instructions).toContain(
+      "Acceptance criteria:\n- [NOT MET] CI passes\n- [verified] Docs updated",
     );
+    // The verifier's finding is in the failure reason, quoted as data.
+    expect(prompt).toContain("the lint job fails");
+    expect(instructions).not.toContain("the lint job fails");
+    expect(instructions).not.toContain(FORGED);
+    // No task can change, yet a revise is offered, with the rules for fix tasks.
+    expect(instructions).toContain("Tasks a revise can replace or remove: (none)");
+    expect(instructions).toContain('{"decision": "revise", "reason": "why", "ops": [...]');
+    expect(instructions).toContain(
+      "If a criterion is not met, add implement tasks with new ids to fix it. Each description names the criterion it fixes and how to check that it is met.",
+    );
+    expect(instructions).not.toContain("[not verified]");
+    expect(instructions).toContain(
+      "A new task depends only on succeeded tasks or on other new tasks.",
+    );
+    expect(instructions).toContain(
+      "every criterion is verified again, the ones verified before included",
+    );
+    expect(instructions).toContain(
+      "A retry alone runs no task and checks the unchanged code again.",
+    );
+    expect(instructions).not.toContain("only remove tasks");
+    expect(instructions).toContain("Recoveries counted so far: 0 of 3.\n");
+  });
+
+  test("criteria the verifier never judged are marked not verified, and a retry asks again", () => {
+    const reasons = [
+      "Verification failed: Verifier gave no usable answer: no JSON block",
+      "Time limit of 60 minutes reached",
+    ];
+    for (const failureReason of reasons) {
+      // The recovery carries the reason the goal failed with when it started.
+      const goal = unmet();
+      const failed = { ...goal, recovery: { ...goal.recovery!, failureReason } };
+      const prompt = buildRecoveryPrompt(failed, {
+        decisionMinutes: 20,
+        now: NOW,
+      });
+      expect(prompt).toContain(
+        "Acceptance criteria:\n- [not verified] CI passes\n- [verified] Docs updated",
+      );
+      expect(prompt).not.toContain("[NOT MET]");
+      expect(prompt).toContain(
+        "A criterion marked [not verified] was never judged: verification did not finish. A retry asks the verifier again",
+      );
+      expect(prompt).toContain("If a criterion is not met, add implement tasks");
+    }
+  });
+
+  test("the recovery before the limit is called the last one", () => {
+    expect(
+      buildRecoveryPrompt(unmet({ recoveries: 1 }), { decisionMinutes: 20, now: NOW }),
+    ).not.toContain("last recovery");
+    expect(
+      buildRecoveryPrompt(unmet({ recoveries: 2 }), { decisionMinutes: 20, now: NOW }),
+    ).toContain("Recoveries counted so far: 2 of 3. This is the last recovery.");
+  });
+
+  test("a goal that failed on a task neither marks criteria unmet nor gives the fix-task rules", () => {
+    const prompt = buildRecoveryPrompt(recovering(), { decisionMinutes: 20, now: NOW });
+    expect(prompt).toContain("Acceptance criteria:\n- CI passes");
+    expect(prompt).not.toContain("[NOT MET]");
+    expect(prompt).not.toContain("add implement tasks with new ids");
+  });
+
+  test("with no revisions left, no revise is offered", () => {
     const exhausted = {
       ...recovering(),
       planRevisions: Array.from({ length: MAX_PLAN_REVISIONS }, (_, i) => ({
@@ -281,11 +386,13 @@ describe("extractRecoveryDecision", () => {
     }
   });
 
-  test("after verification started a revise may only remove tasks", () => {
-    const goal = { ...recovering(), verifyStartedAt: AT };
-    expect(() =>
-      read({ decision: "revise", reason: "x", ops: [{ op: "add", task: task("d") }] }, goal),
-    ).toThrow(/can only lose tasks/);
+  test("after verification started a revise may add a fix task", () => {
+    const fix = { op: "add", task: task("fix", ["a", "b"]) };
+    expect(read({ decision: "revise", reason: "fix c1", ops: [fix] }, unmet())).toEqual({
+      decision: "revise",
+      reason: "fix c1",
+      ops: [fix],
+    });
   });
 
   test("a revise is refused once the plan was revised too often", () => {
