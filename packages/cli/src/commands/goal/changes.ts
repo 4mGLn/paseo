@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { CHANGE_SET_REWORK_FAILED, type ChangeSet } from "@getpaseo/protocol/goal/types";
 import type { ListResult, OutputSchema } from "../../output/index.js";
 import { connectGoalClient, toGoalCommandError, type GoalCommandOptions } from "./shared.js";
 
@@ -23,6 +24,13 @@ const changeSetSchema: OutputSchema<ChangeSetRow> = {
   ],
 };
 
+/** A change set whose rework failed says so, since a retry reworks it again. */
+function changeSetStatusLabel(changeSet: Pick<ChangeSet, "status" | "rejectionReason">): string {
+  return changeSet.status === "rejected" && changeSet.rejectionReason === CHANGE_SET_REWORK_FAILED
+    ? "rejected (rework failed)"
+    : changeSet.status;
+}
+
 export async function runChangesCommand(
   id: string,
   options: GoalCommandOptions,
@@ -41,7 +49,7 @@ export async function runChangesCommand(
         id: c.id,
         task: c.taskId,
         round: c.round,
-        status: c.status,
+        status: changeSetStatusLabel(c),
         commits: `${c.baseCommit.slice(0, 7)}..${c.headCommit.slice(0, 7)}`,
         files: c.files.length,
       })),
