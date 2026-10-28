@@ -1,16 +1,21 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import pino from "pino";
 import {
   createGoalAgentPort,
   createGoalWorkspacePort,
   createTurnUsageMeter,
   goalPolicyModeId,
+  readActivityDigest,
+  readTimelineCursor,
   settleTurn,
   toTurnUsage,
+  waitForNoRun,
   watchTurn,
   type GoalPortDeps,
 } from "./goal-ports.js";
 import type { AgentManagerEvent } from "../agent/agent-manager.js";
+import { InMemoryAgentTimelineStore } from "../agent/agent-timeline-store.js";
+import type { AgentTimelineFetchOptions } from "../agent/agent-timeline-store-types.js";
 import type { GoalMode } from "./goal-config-validation.js";
 
 const done = (lastMessage: string) => ({ status: "idle", permission: null, lastMessage });
@@ -179,6 +184,66 @@ describe("settleTurn", () => {
     );
     expect(result).toMatchObject({ outcome: "needs_permission" });
     expect(polls).toBe(2);
+  });
+});
+
+describe("waitForNoRun", () => {
+  /** An agent manager whose one agent is busy until `finish()`. */
+  function busyAgent() {
+    let busy = true;
+    const listeners = new Set<(event: AgentManagerEvent) => void>();
+    return {
+      manager: {
+        hasInFlightRun: () => busy,
+        subscribe(listener: (event: AgentManagerEvent) => void) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      listeners,
+      finish() {
+        busy = false;
+        for (const listener of listeners) listener({ type: "agent_state" } as AgentManagerEvent);
+      },
+    };
+  }
+
+  test("resolves at once for an idle agent and when a busy one ends its run", async () => {
+    const agent = busyAgent();
+    const waiting = waitForNoRun(agent.manager, "lead").then(() => "idle");
+    const pause = new Promise((resolve) => setTimeout(() => resolve("busy"), 10));
+    expect(await Promise.race([waiting, pause])).toBe("busy");
+    agent.finish();
+    expect(await waiting).toBe("idle");
+    expect(agent.listeners.size).toBe(0);
+    await expect(waitForNoRun(agent.manager, "lead")).resolves.toBeUndefined();
+  });
+
+  test("notices a run that ended without an event on its slow poll", async () => {
+    vi.useFakeTimers();
+    try {
+      let busy = true;
+      const manager = { hasInFlightRun: () => busy, subscribe: () => () => {} };
+      let idle = false;
+      const waiting = waitForNoRun(manager, "lead").then(() => {
+        idle = true;
+        return idle;
+      });
+      busy = false;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await waiting).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("rejects when its signal aborts, and stops listening", async () => {
+    const agent = busyAgent();
+    const abort = new AbortController();
+    const waiting = waitForNoRun(agent.manager, "lead", abort.signal);
+    abort.abort();
+    await expect(waiting).rejects.toThrow(/aborted/);
+    expect(agent.listeners.size).toBe(0);
   });
 });
 
@@ -388,6 +453,34 @@ describe("agent port", () => {
 
   const base = { cwd: "/repo", workspaceId: "ws-1", title: "Lead", labels: {} };
 
+  test("findAgents returns agents not archived that carry every label, with their workspace", async () => {
+    const records = [
+      {
+        id: "a1",
+        workspaceId: "ws-1",
+        labels: { "paseo.goal-id": "g1", "paseo.goal-recovery": "r1" },
+      },
+      { id: "a2", labels: { "paseo.goal-id": "g1", "paseo.goal-recovery": "r1" } },
+      {
+        id: "a3",
+        workspaceId: "ws-3",
+        archivedAt: "2026-01-01T00:00:00.000Z",
+        labels: { "paseo.goal-id": "g1", "paseo.goal-recovery": "r1" },
+      },
+      { id: "a4", workspaceId: "ws-4", labels: { "paseo.goal-id": "g1" } },
+    ];
+    const port = createGoalAgentPort({
+      logger: pino({ level: "silent" }),
+      agentStorage: { list: async () => records },
+    } as unknown as GoalPortDeps);
+    expect(await port.findAgents?.({ "paseo.goal-id": "g1", "paseo.goal-recovery": "r1" })).toEqual(
+      [
+        { agentId: "a1", workspaceId: "ws-1" },
+        { agentId: "a2", workspaceId: null },
+      ],
+    );
+  });
+
   test("a provider/model value starts the provider with that model", async () => {
     const { port, calls } = setup();
     await port.createAgent({ ...base, provider: "codex/some-model" });
@@ -551,5 +644,130 @@ describe("agent port setPermissionMode", () => {
       modeId: "auto-review",
       nextTurn: false,
     });
+  });
+});
+
+describe("watching ports", () => {
+  const AT = "2026-01-01T00:00:00.000Z";
+  const running = {
+    type: "tool_call",
+    callId: "c1",
+    name: "Bash",
+    status: "running",
+    error: null,
+    detail: { type: "shell", command: "npm test" },
+  } as const;
+
+  function timeline() {
+    const store = new InMemoryAgentTimelineStore();
+    store.initialize("w1", { timestamp: AT });
+    const agentManager = {
+      fetchTimeline: (id: string, options?: AgentTimelineFetchOptions) => store.fetch(id, options),
+      getTimeline: (id: string) => store.getItems(id),
+    };
+    return { store, agentManager };
+  }
+
+  test("the cursor grows with every raw row, even reasoning merged into one row", () => {
+    const { store, agentManager } = timeline();
+    store.append("w1", { type: "reasoning", text: "think" }, { timestamp: AT });
+    const first = readTimelineCursor(agentManager, "w1");
+    store.append("w1", { type: "reasoning", text: " more" }, { timestamp: AT });
+    const second = readTimelineCursor(agentManager, "w1");
+    expect(store.getItems("w1")).toHaveLength(1);
+    expect(second?.nextSeq).toBe((first?.nextSeq ?? 0) + 1);
+    expect(second?.lastTool).toBeUndefined();
+  });
+
+  const tool = (callId: string, status: "running" | "completed") =>
+    ({ ...running, callId, name: callId === "a" ? "Bash" : "Read", status }) as const;
+  const at = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, "0")}:00.000Z`;
+
+  test("a tool updated while it runs is one running tool, and every update moves the cursor", () => {
+    const { store, agentManager } = timeline();
+    store.append("w1", tool("a", "running"), { timestamp: at(0), turnId: "t1" });
+    const first = readTimelineCursor(agentManager, "w1");
+    store.append("w1", tool("a", "running"), { timestamp: at(15), turnId: "t1" });
+    const second = readTimelineCursor(agentManager, "w1");
+    expect(store.getItems("w1")).toHaveLength(1);
+    expect(second).toMatchObject({
+      nextSeq: (first?.nextSeq ?? 0) + 1,
+      runningTools: [{ callId: "a", name: "Bash" }],
+    });
+  });
+
+  test("a tool still running behind a parallel one that finished is found", () => {
+    const { store, agentManager } = timeline();
+    store.append("w1", tool("a", "running"), { timestamp: at(0), turnId: "t1" });
+    store.append("w1", tool("b", "running"), { timestamp: at(1), turnId: "t1" });
+    store.append("w1", tool("b", "completed"), { timestamp: at(2), turnId: "t1" });
+    expect(readTimelineCursor(agentManager, "w1")?.runningTools).toEqual([
+      { callId: "a", name: "Bash" },
+    ]);
+    store.append("w1", tool("a", "completed"), { timestamp: at(3), turnId: "t1" });
+    expect(readTimelineCursor(agentManager, "w1")?.runningTools).toEqual([]);
+  });
+
+  test("a tool left running by an earlier turn does not count; the last error does", () => {
+    const { store, agentManager } = timeline();
+    store.append("w1", tool("a", "running"), { timestamp: at(0), turnId: "t1" });
+    store.append(
+      "w1",
+      { type: "error", message: "x".repeat(800) },
+      { timestamp: at(1), turnId: "t2" },
+    );
+    store.append(
+      "w1",
+      { type: "assistant_message", text: "next" },
+      { timestamp: at(2), turnId: "t2" },
+    );
+    const cursor = readTimelineCursor(agentManager, "w1");
+    expect(cursor?.runningTools).toEqual([]);
+    expect(cursor?.lastError).toHaveLength(500);
+  });
+
+  test("an agent that is not loaded has no cursor", () => {
+    const { agentManager } = timeline();
+    expect(readTimelineCursor(agentManager, "unknown")).toBeNull();
+  });
+
+  test("the activity digest keeps the newest text within its cap", () => {
+    const { store, agentManager } = timeline();
+    for (let i = 0; i < 40; i += 1) {
+      store.append("w1", { type: "assistant_message", text: `message ${i} ${"x".repeat(200)}` });
+    }
+    const digest = readActivityDigest(agentManager, "w1", 3000);
+    expect(digest.length).toBe(3000);
+    expect(digest.startsWith("…")).toBe(true);
+    expect(digest).toContain("message 39");
+  });
+
+  test("steer never replaces the turn and records the message with a client id", async () => {
+    const calls: { agentId: string; prompt: unknown; clientMessageId?: string }[] = [];
+    let status: "steered" | "inactive" | "unavailable" = "steered";
+    const deps = {
+      logger: pino({ level: "silent" }),
+      agentManager: {
+        steerActiveTurnOnly: async (
+          agentId: string,
+          prompt: unknown,
+          options?: { clientMessageId?: string },
+        ) => {
+          calls.push({ agentId, prompt, clientMessageId: options?.clientMessageId });
+          return { status };
+        },
+        hasInFlightRun: (agentId: string) => agentId === "busy",
+      },
+    } as unknown as GoalPortDeps;
+    const port = createGoalAgentPort(deps);
+    expect(await port.steer("w1", "hello")).toBe("steered");
+    expect(calls[0]).toMatchObject({ agentId: "w1", prompt: "hello" });
+    expect(calls[0]?.clientMessageId).toEqual(expect.any(String));
+    status = "inactive";
+    expect(await port.steer("w1", "hello")).toBe("unavailable");
+    status = "unavailable";
+    expect(await port.steer("w1", "hello")).toBe("unavailable");
+    expect(await port.isBusy("busy")).toBe(true);
+    expect(await port.isBusy("w1")).toBe(false);
   });
 });

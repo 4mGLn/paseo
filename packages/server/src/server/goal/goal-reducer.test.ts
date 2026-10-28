@@ -2,11 +2,23 @@ import { describe, expect, test } from "vitest";
 import type { Goal, GoalEvent, TaskSpec } from "@getpaseo/protocol/goal/types";
 import {
   GoalTransitionError,
+  MAX_INTERVENTIONS_PER_GOAL,
   MAX_NOTIFICATION_ATTEMPTS,
+  MAX_PLAN_REVISIONS,
+  MAX_RECOVERIES,
+  checkInCapError,
+  countedFailures,
+  failureWakeUpCapError,
   NOTIFICATION_BACKOFF_MS,
   applyGoalEvent,
   replayGoal,
 } from "./goal-reducer.js";
+import {
+  MAX_DECISION_REASON_CHARS,
+  MAX_INTERVENTION_ERROR_CHARS,
+  MAX_NUDGE_CHARS,
+  MAX_WORK_SUMMARY_CHARS,
+} from "@getpaseo/protocol/goal/interventions";
 import { TaskGraphError, blockedTasks, readyTasks, validateTaskGraph } from "./task-graph.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -578,6 +590,23 @@ describe("integration retry", () => {
     expect(merging.changeSets[0]?.status).toBe("integrating");
   });
 
+  test("a merge retry past the time limit chooses how it restarts, and replays the same", () => {
+    // Two days later, past the default limit of a day.
+    const later = new Date(Date.parse(AT) + 2 * 24 * 60 * 60_000).toISOString();
+    expect(() => run([...integrationFailed, { ...retry(["cs1"], ["b"]), at: later }])).toThrow(
+      /time limit has passed; choose time mode fresh/,
+    );
+    const events = [
+      ...integrationFailed,
+      { ...retry(["cs1"], ["b"]), at: later, timeMode: "remaining", activeMs: 60_000 },
+    ];
+    const goal = run(events);
+    expect(goal.timeBaseAt).toBe(new Date(Date.parse(later) - 60_000).toISOString());
+    // A log without time modes replays with no time base at all.
+    expect(run(integrationFailed)).not.toHaveProperty("timeBaseAt");
+    expect(run([...integrationFailed, retry(["cs1"], ["b"])])).not.toHaveProperty("timeBaseAt");
+  });
+
   test("a reopen must cover every failed or cancelled task and every change set it leaves rejected", () => {
     expect(() => run([...integrationFailed, retry(["cs1"], [])])).toThrow(
       /every failed or cancelled task retried; missing b/,
@@ -880,5 +909,1646 @@ describe("notifications", () => {
   test("the same key may be queued once per target", () => {
     const goal = run([created, queued, { ...queued, target: "lead" }]);
     expect(goal.notifications?.map((n) => n.target)).toEqual(["origin", "lead"]);
+  });
+});
+
+// Shared by the plan revision tests below.
+const revisionConfig = {
+  cwd: "/repo",
+  leadProvider: "claude",
+  defaultProvider: "codex",
+  maxParallel: 2,
+  maxAttempts: 2,
+  autoApprovePlan: false,
+  notifyLead: false,
+};
+
+function apply(goal: Goal, events: Record<string, unknown>[]): Goal {
+  return events.reduce((g, partial) => applyGoalEvent(g, ev(g, partial)), goal);
+}
+
+// a succeeded, b failed, c waits on b.
+const executing = () =>
+  run([
+    { ...created, config: revisionConfig },
+    { type: "plan.proposed", tasks: [task("a"), task("b"), task("c", ["b"])] },
+    { type: "plan.approved" },
+    { type: "task.started", taskId: "a" },
+    { type: "task.succeeded", taskId: "a" },
+    { type: "task.started", taskId: "b" },
+    { type: "task.failed", taskId: "b", error: "boom" },
+  ]);
+
+const propose = (
+  revisionId: string,
+  source: string,
+  ops: Record<string, unknown>[],
+  extra: Record<string, unknown> = {},
+) => ({ type: "plan.revision_proposed", revisionId, source, reason: "why", ops, ...extra });
+
+const splitB = [
+  { op: "replace", task: { ...task("b"), title: "smaller b" } },
+  { op: "add", task: task("b2", ["b"]) },
+];
+
+describe("plan revisions", () => {
+  test("a proposed revision waits, then applies its ops on approval", () => {
+    const proposed = apply(executing(), [propose("r1", "lead", splitB)]);
+    expect(proposed.planRevisions).toEqual([
+      { id: "r1", source: "lead", reason: "why", ops: splitB, status: "pending", proposedAt: AT },
+    ]);
+    expect(proposed.tasks.map((t) => t.id)).toEqual(["a", "b", "c"]);
+
+    const approved = apply(proposed, [{ type: "plan.revision_approved", revisionId: "r1" }]);
+    expect(approved.planRevisions?.[0]).toMatchObject({ status: "applied", decidedAt: AT });
+    expect(approved.tasks.map((t) => t.id)).toEqual(["a", "b", "c", "b2"]);
+    expect(approved.tasks[1]).toMatchObject({
+      title: "smaller b",
+      status: "pending",
+      attempts: 1,
+      error: null,
+    });
+    // The replaced task starts again under the next attempt number.
+    const started = apply(approved, [{ type: "task.started", taskId: "b" }]);
+    expect(started.tasks[1]).toMatchObject({ status: "running", attempts: 2 });
+  });
+
+  test("a rejected revision changes no task and records the reason", () => {
+    const rejected = apply(executing(), [
+      propose("r1", "lead", splitB),
+      { type: "plan.revision_rejected", revisionId: "r1", reason: "keep b" },
+    ]);
+    expect(rejected.planRevisions?.[0]).toMatchObject({
+      status: "rejected",
+      decisionReason: "keep b",
+    });
+    expect(rejected.tasks.map((t) => t.id)).toEqual(["a", "b", "c"]);
+    expect(() => apply(rejected, [{ type: "plan.revision_approved", revisionId: "r1" }])).toThrow(
+      /revision r1 is rejected/,
+    );
+    expect(() => apply(rejected, [{ type: "plan.revision_approved", revisionId: "nope" }])).toThrow(
+      /unknown revision nope/,
+    );
+  });
+
+  test("a revision id is used once", () => {
+    const decided = apply(executing(), [
+      propose("r1", "person", splitB),
+      { type: "plan.revision_rejected", revisionId: "r1", reason: "" },
+    ]);
+    expect(() => apply(decided, [propose("r1", "person", splitB)])).toThrow(
+      /revision r1 already exists/,
+    );
+  });
+
+  test("one revision is pending at a time; a person's replaces the pending one", () => {
+    const pending = apply(executing(), [propose("r1", "lead", splitB)]);
+    expect(() => apply(pending, [propose("r2", "lead", splitB)])).toThrow(
+      /revision r1 is still pending/,
+    );
+    const replaced = apply(pending, [propose("r2", "person", [{ op: "remove", taskId: "c" }])]);
+    expect(replaced.planRevisions?.map((r) => [r.id, r.status])).toEqual([
+      ["r1", "superseded"],
+      ["r2", "pending"],
+    ]);
+    expect(replaced.planRevisions?.[0]?.decisionReason).toBe("superseded by revision r2");
+  });
+
+  test("a task a pending revision changes cannot start", () => {
+    const goal = apply(executing(), [
+      { type: "task.retried", taskId: "b" },
+      propose("r1", "lead", splitB),
+    ]);
+    expect(() => apply(goal, [{ type: "task.started", taskId: "b" }])).toThrow(
+      /task b is changed by pending revision r1/,
+    );
+  });
+
+  test("approval checks the revision again against the goal as it is then", () => {
+    const pending = apply(executing(), [propose("r1", "lead", splitB)]);
+    const lowered = apply(pending, [
+      { type: "goal.config_updated", config: { ...revisionConfig, limits: { maxTasks: 3 } } },
+    ]);
+    expect(() => apply(lowered, [{ type: "plan.revision_approved", revisionId: "r1" }])).toThrow(
+      /at most 3 are allowed/,
+    );
+  });
+
+  test("refused on a manual goal, outside execution and once verification started", () => {
+    const manual = run([
+      created,
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+    ]);
+    expect(() => apply(manual, [propose("r1", "person", splitB)])).toThrow(/manual goal/);
+
+    const planning = run([{ ...created, config: revisionConfig }]);
+    expect(() => apply(planning, [propose("r1", "person", splitB)])).toThrow(
+      /requires goal status executing/,
+    );
+
+    const verifying = run([
+      { ...created, config: revisionConfig },
+      { type: "plan.proposed", tasks: [{ ...task("a"), kind: "read" }] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.succeeded", taskId: "a" },
+    ]);
+    expect(verifying.verifyStartedAt).toBe(AT);
+    expect(() =>
+      apply(verifying, [propose("r1", "person", [{ op: "add", task: task("z") }])]),
+    ).toThrow(/verification has started/);
+  });
+
+  test("verification waits for a pending revision, and the goal cannot complete past it", () => {
+    const readOnly = [
+      { ...created, config: revisionConfig },
+      { type: "plan.proposed", tasks: [{ ...task("a"), kind: "read" }] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+    ];
+    const waiting = run([
+      ...readOnly,
+      propose("r1", "lead", [{ op: "add", task: task("z") }]),
+      { type: "task.succeeded", taskId: "a" },
+      { type: "criterion.verified", criterionId: "c1" },
+    ]);
+    expect(waiting).not.toHaveProperty("verifyStartedAt");
+    expect(() => apply(waiting, [{ type: "goal.completed" }])).toThrow(/revision r1 is pending/);
+    // A criterion verified while the revision waited would vouch for work it never saw.
+    expect(() => apply(waiting, [{ type: "plan.revision_approved", revisionId: "r1" }])).toThrow(
+      /verification has started/,
+    );
+
+    const rejected = apply(waiting, [
+      { type: "plan.revision_rejected", revisionId: "r1", reason: "no" },
+    ]);
+    expect(rejected.verifyStartedAt).toBe(AT);
+    expect(apply(rejected, [{ type: "goal.completed" }]).status).toBe("completed");
+  });
+
+  test("tasks a pending revision does not touch still start; removed ones do not", () => {
+    const goal = apply(executing(), [
+      { type: "task.retried", taskId: "b" },
+      propose("r1", "lead", [
+        { op: "remove", taskId: "c" },
+        { op: "add", task: task("d") },
+      ]),
+    ]);
+    expect(apply(goal, [{ type: "task.started", taskId: "b" }]).tasks[1]?.status).toBe("running");
+    const bDone = apply(goal, [
+      { type: "task.started", taskId: "b" },
+      { type: "task.succeeded", taskId: "b" },
+    ]);
+    expect(() => apply(bDone, [{ type: "task.started", taskId: "c" }])).toThrow(
+      /task c is changed by pending revision r1/,
+    );
+  });
+
+  test("a replaced task that used every attempt gets a full set again", () => {
+    const exhausted = run([
+      { ...created, config: revisionConfig },
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+      { type: "run.finished", runId: "a-a1", outcome: "failed", error: "x" },
+      { type: "task.retried", taskId: "a" },
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a2", taskId: "a", provider: "codex" },
+      { type: "run.finished", runId: "a-a2", outcome: "failed", error: "x" },
+      { type: "task.failed", taskId: "a", error: "x" },
+    ]);
+    expect(countedFailures(exhausted, "a")).toBe(revisionConfig.maxAttempts);
+    const replaced = apply(exhausted, [
+      propose("r1", "lead", [{ op: "replace", task: { ...task("a"), title: "smaller a" } }]),
+      { type: "plan.revision_approved", revisionId: "r1" },
+    ]);
+    expect(countedFailures(replaced, "a")).toBe(0);
+    const started = apply(replaced, [
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a3", taskId: "a", provider: "codex" },
+    ]);
+    expect(started.runs.at(-1)?.id).toBe("a-a3");
+  });
+
+  test("a Lead revision proposed before an intervention opened can still be approved", () => {
+    const pending = apply(executing(), [propose("r1", "lead", [{ op: "add", task: task("z") }])]);
+    const woken: Goal = {
+      ...pending,
+      interventions: [
+        {
+          id: "b-a1",
+          taskId: "b",
+          runId: "b-a1",
+          trigger: "timeout",
+          error: "boom",
+          status: "open",
+          requestedAt: AT,
+        },
+      ],
+    };
+    const approved = apply(woken, [{ type: "plan.revision_approved", revisionId: "r1" }]);
+    expect(approved.planRevisions?.[0]?.status).toBe("applied");
+    expect(approved.interventions?.[0]?.status).toBe("open");
+  });
+
+  for (const end of ["goal.failed", "goal.cancelled"]) {
+    test(`${end} abandons a pending revision`, () => {
+      const ended = apply(executing(), [
+        propose("r1", "lead", splitB),
+        end === "goal.failed" ? { type: end, reason: "stop" } : { type: end },
+      ]);
+      expect(ended.planRevisions?.[0]).toMatchObject({ status: "abandoned", decidedAt: AT });
+    });
+  }
+
+  test("a goal without revisions ends without the new fields", () => {
+    const failed = apply(executing(), [{ type: "goal.failed", reason: "stop" }]);
+    expect(failed).not.toHaveProperty("planRevisions");
+    expect(failed).not.toHaveProperty("interventions");
+  });
+});
+
+describe("plan revisions answering Lead interventions", () => {
+  // Interventions are written by events added later; these rules read them when present.
+  const open = (taskId: string, status = "open") => ({
+    id: `${taskId}-a1`,
+    taskId,
+    runId: `${taskId}-a1`,
+    trigger: "timeout",
+    error: "boom",
+    status,
+    requestedAt: AT,
+  });
+  const woken = (...interventions: ReturnType<typeof open>[]): Goal => ({
+    ...executing(),
+    interventions,
+  });
+  const answer = (revisionId = "b-a1") =>
+    propose(revisionId, "lead", splitB, { interventionId: "b-a1" });
+
+  test("a revision answering an intervention needs it open and holds it for approval", () => {
+    const awaiting = apply(woken(open("b")), [answer()]);
+    expect(awaiting.interventions?.[0]).toMatchObject({
+      status: "awaiting_approval",
+      revisionId: "b-a1",
+    });
+    expect(awaiting.planRevisions?.[0]?.interventionId).toBe("b-a1");
+    expect(() => apply(woken(open("b", "resolved")), [answer()])).toThrow(
+      /intervention b-a1 is resolved, expected open/,
+    );
+    expect(() => apply(executing(), [answer()])).toThrow(/Unknown intervention b-a1/);
+  });
+
+  test("the revision must replace or remove the intervention's task", () => {
+    expect(() =>
+      apply(woken(open("b")), [
+        propose("r1", "lead", [{ op: "add", task: task("z") }], { interventionId: "b-a1" }),
+      ]),
+    ).toThrow(/must replace or remove b/);
+  });
+
+  test("approval resolves the intervention as revised, rejection as revision_rejected", () => {
+    const approved = apply(woken(open("b")), [
+      answer(),
+      { type: "plan.revision_approved", revisionId: "b-a1" },
+    ]);
+    expect(approved.interventions?.[0]).toMatchObject({
+      status: "resolved",
+      outcome: "revised",
+      resolvedAt: AT,
+    });
+    const rejected = apply(woken(open("b")), [
+      answer(),
+      { type: "plan.revision_rejected", revisionId: "b-a1", reason: "no" },
+    ]);
+    expect(rejected.interventions?.[0]).toMatchObject({
+      status: "resolved",
+      outcome: "revision_rejected",
+    });
+  });
+
+  test("the Lead cannot revise outside the decision prompt while one is live", () => {
+    expect(() =>
+      apply(woken(open("b")), [propose("r1", "lead", [{ op: "add", task: task("z") }])]),
+    ).toThrow(/answer the decision prompt/);
+  });
+
+  test("an intervention about the whole goal is named as such", () => {
+    const { taskId: _task, runId: _run, ...goalLevel } = open("b");
+    expect(() =>
+      apply({ ...executing(), interventions: [goalLevel] }, [
+        propose("r1", "lead", [{ op: "add", task: task("z") }]),
+      ]),
+    ).toThrow(/decide about this goal; answer the decision prompt/);
+  });
+
+  test("a person's revision touching the task supersedes the intervention and its revision", () => {
+    const awaiting = apply(woken(open("b")), [answer()]);
+    const person = apply(awaiting, [propose("p1", "person", [{ op: "remove", taskId: "c" }])]);
+    expect(person.planRevisions?.map((r) => r.status)).toEqual(["superseded", "pending"]);
+    expect(person.interventions?.[0]).toMatchObject({
+      status: "resolved",
+      outcome: "superseded",
+    });
+
+    const touched = apply(woken(open("b")), [
+      propose("p1", "person", [{ op: "replace", task: { ...task("b"), title: "mine" } }]),
+    ]);
+    expect(touched.interventions?.[0]).toMatchObject({
+      status: "resolved",
+      outcome: "superseded",
+    });
+
+    const untouched = apply(woken(open("b")), [
+      propose("p1", "person", [{ op: "add", task: task("z") }]),
+    ]);
+    expect(untouched.interventions?.[0]?.status).toBe("open");
+  });
+
+  test("the goal ending abandons live interventions", () => {
+    const failed = apply(woken(open("b"), open("c", "resolved")), [
+      answer(),
+      { type: "goal.failed", reason: "stop" },
+    ]);
+    expect(failed.interventions?.[0]).toMatchObject({ status: "abandoned", resolvedAt: AT });
+    expect(failed.interventions?.[0]).not.toHaveProperty("outcome");
+    expect(failed.interventions?.[1]?.status).toBe("resolved");
+    expect(failed.planRevisions?.[0]?.status).toBe("abandoned");
+  });
+});
+
+describe("Lead interventions", () => {
+  const interventionConfig = { ...revisionConfig, maxAttempts: 3, leadInterventions: true };
+  const timedOut = "Turn timed out after 90 minutes";
+  const failRun = (taskId: string, attempt: number, error = "boom") => [
+    { type: "task.started", taskId },
+    { type: "run.started", runId: `${taskId}-a${attempt}`, taskId, provider: "codex" },
+    { type: "run.finished", runId: `${taskId}-a${attempt}`, outcome: "failed", error },
+    { type: "task.failed", taskId, error },
+  ];
+  // a runs on a-a1; b failed on b-a1; c waits on b.
+  const failedB = (config: Record<string, unknown> = interventionConfig) =>
+    run([
+      { ...created, config },
+      { type: "lead.attached", agentId: "lead-1" },
+      { type: "plan.proposed", tasks: [task("a"), task("b"), task("c", ["b"])] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+      ...failRun("b", 1, timedOut),
+    ]);
+  const wake = (runId: string, trigger = "timeout", extra: Record<string, unknown> = {}) => ({
+    type: "intervention.requested",
+    interventionId: runId,
+    taskId: runId.split("-")[0],
+    runId,
+    trigger,
+    error: "boom",
+    ...extra,
+  });
+  const checkIn = (n: number, extra: Record<string, unknown> = {}) => ({
+    type: "intervention.requested",
+    interventionId: `a-a1:check-${n}`,
+    taskId: "a",
+    runId: "a-a1",
+    trigger: "watch",
+    triggers: ["near_timeout"],
+    checkIn: n,
+    error: "",
+    ...extra,
+  });
+  const resolve = (id: string, outcome: string, extra: Record<string, unknown> = {}) => ({
+    type: "intervention.resolved",
+    interventionId: id,
+    outcome,
+    ...extra,
+  });
+  const resolved = (id: string, trigger: string, taskId = "z") => ({
+    id,
+    taskId,
+    runId: id,
+    trigger,
+    error: "",
+    status: "resolved",
+    outcome: "continue",
+    requestedAt: AT,
+  });
+  const smallerB = [{ op: "replace", task: { ...task("b"), title: "smaller" } }];
+
+  test("a failure wake-up opens about the failed run, once per run", () => {
+    const goal = apply(failedB(), [wake("b-a1", "timeout", { workSummary: "1 file changed" })]);
+    expect(goal.interventions).toEqual([
+      {
+        id: "b-a1",
+        taskId: "b",
+        runId: "b-a1",
+        trigger: "timeout",
+        error: "boom",
+        workSummary: "1 file changed",
+        status: "open",
+        requestedAt: AT,
+      },
+    ]);
+    const decided = apply(goal, [resolve("b-a1", "continue", { note: "flaky" })]);
+    expect(decided.interventions?.[0]).toMatchObject({
+      status: "resolved",
+      outcome: "continue",
+      note: "flaky",
+      resolvedAt: AT,
+    });
+    expect(() => apply(decided, [{ ...wake("b-a1"), interventionId: "again" }])).toThrow(
+      /already woken about run b-a1/,
+    );
+    expect(() => apply(decided, [wake("b-a1")])).toThrow(/intervention b-a1 already exists/);
+  });
+
+  test("a wake-up needs the setting on and a Lead", () => {
+    const { leadInterventions: _off, ...oldConfig } = interventionConfig;
+    expect(() => apply(failedB(oldConfig), [wake("b-a1")])).toThrow(/Lead interventions are off/);
+    expect(() =>
+      apply(failedB({ ...interventionConfig, leadInterventions: false }), [wake("b-a1")]),
+    ).toThrow(/Lead interventions are off/);
+    expect(() => apply({ ...failedB(), leadAgentId: null }, [wake("b-a1")])).toThrow(
+      /the goal has no Lead/,
+    );
+  });
+
+  test("a failure wake-up needs a failed task, a failed run of it, and no check-in fields", () => {
+    expect(() => apply(failedB(), [wake("a-a1")])).toThrow(/task a is running, expected failed/);
+    expect(() => apply(failedB(), [{ ...wake("b-a1"), runId: "a-a1" }])).toThrow(
+      /run a-a1 is not a run of task b/,
+    );
+    expect(() => apply(failedB(), [{ ...wake("b-a1"), runId: undefined }])).toThrow(
+      /needs a taskId and runId/,
+    );
+    expect(() => apply(failedB(), [wake("b-a1", "timeout", { checkIn: 1 })])).toThrow(
+      /only a check-in carries/,
+    );
+    const rework = failedB();
+    const b = rework.tasks.findIndex((t) => t.id === "b");
+    rework.tasks[b] = {
+      ...rework.tasks[b]!,
+      rework: { changeSetId: "cs1", reason: "review", round: 1 },
+    };
+    expect(() => apply(rework, [wake("b-a1")])).toThrow(/task b is a rework task/);
+  });
+
+  test("one intervention is live per goal, whatever its kind", () => {
+    const failure = apply(failedB(), [wake("b-a1")]);
+    expect(() => apply(failure, [checkIn(1)])).toThrow(/intervention b-a1 is still open/);
+    const watching = apply(failedB(), [checkIn(1)]);
+    expect(() => apply(watching, [wake("b-a1")])).toThrow(
+      /intervention a-a1:check-1 is still open/,
+    );
+  });
+
+  test("no intervention opens while a plan revision is pending", () => {
+    const pending = apply(failedB(), [propose("r1", "lead", smallerB)]);
+    expect(() => apply(pending, [wake("b-a1")])).toThrow(/revision r1 is pending/);
+  });
+
+  test("a task wakes the Lead twice at most, and once more about its last attempt", () => {
+    const twice = apply(failedB(), [
+      wake("b-a1"),
+      resolve("b-a1", "continue"),
+      { type: "task.retried", taskId: "b" },
+      ...failRun("b", 2),
+      wake("b-a2", "repeated_failure"),
+      resolve("b-a2", "continue"),
+      { type: "task.retried", taskId: "b" },
+      ...failRun("b", 3),
+    ]);
+    expect(() => apply(twice, [wake("b-a3", "repeated_failure")])).toThrow(
+      /woken 2 times about task b; the limit is 2/,
+    );
+    const last = apply(twice, [wake("b-a3", "attempts_exhausted")]);
+    expect(last.interventions?.at(-1)).toMatchObject({ trigger: "attempts_exhausted" });
+  });
+
+  test("a goal wakes the Lead about failures four times at most; check-ins count apart", () => {
+    const four = {
+      ...failedB(),
+      interventions: ["x1", "x2", "x3", "x4"].map((id) => resolved(id, "timeout")),
+    };
+    expect(() => apply(four, [wake("b-a1", "attempts_exhausted")])).toThrow(
+      /woken 4 times about failed tasks; the limit is 4/,
+    );
+    expect(apply(four, [checkIn(1)]).interventions?.at(-1)?.status).toBe("open");
+  });
+
+  test("an intervention resolves only while open, with an outcome of its kind", () => {
+    const failure = apply(failedB(), [wake("b-a1")]);
+    expect(() => apply(failure, [resolve("b-a1", "ok")])).toThrow(
+      /outcome ok does not resolve a failure wake-up/,
+    );
+    for (const outcome of ["revised", "revision_rejected", "superseded", "run_ended"]) {
+      expect(() => apply(failure, [resolve("b-a1", outcome)])).toThrow(/does not resolve/);
+    }
+    expect(() => apply(failure, [resolve("x", "continue")])).toThrow(/unknown intervention x/);
+    const gaveUp = apply(failure, [resolve("b-a1", "give_up", { note: "too big" })]);
+    expect(() => apply(gaveUp, [resolve("b-a1", "continue")])).toThrow(
+      /intervention b-a1 is resolved, expected open/,
+    );
+    const awaiting = apply(failure, [
+      propose("b-a1", "lead", smallerB, { interventionId: "b-a1" }),
+    ]);
+    expect(() => apply(awaiting, [resolve("b-a1", "continue")])).toThrow(
+      /is awaiting_approval, expected open/,
+    );
+  });
+
+  test("an answering revision resolves the intervention as revised when approved", () => {
+    const revised = apply(failedB(), [
+      wake("b-a1"),
+      propose("b-a1", "lead", smallerB, { interventionId: "b-a1" }),
+      { type: "plan.revision_approved", revisionId: "b-a1" },
+    ]);
+    expect(revised.interventions?.[0]).toMatchObject({ status: "resolved", outcome: "revised" });
+    expect(revised.tasks.find((t) => t.id === "b")?.status).toBe("pending");
+  });
+
+  test("a check-in nudge records its message; stop needs the run near its time limit", () => {
+    const open = apply(failedB(), [checkIn(1)]);
+    expect(() => apply(open, [resolve("a-a1:check-1", "nudged")])).toThrow(
+      /message is recorded with outcome nudged only/,
+    );
+    expect(() => apply(open, [resolve("a-a1:check-1", "ok", { message: "hi" })])).toThrow(
+      /message is recorded with outcome nudged only/,
+    );
+    expect(() => apply(open, [resolve("a-a1:check-1", "continue")])).toThrow(
+      /does not resolve a check-in/,
+    );
+    const nudged = apply(open, [resolve("a-a1:check-1", "nudged", { message: "run the tests" })]);
+    expect(nudged.interventions?.[0]).toMatchObject({
+      outcome: "nudged",
+      message: "run the tests",
+    });
+    expect(apply(open, [resolve("a-a1:check-1", "stopped")]).interventions?.[0]?.outcome).toBe(
+      "stopped",
+    );
+    const stalled = apply(failedB(), [checkIn(1, { triggers: ["stall"] })]);
+    expect(() => apply(stalled, [resolve("a-a1:check-1", "stopped")])).toThrow(
+      /stop a run only near its time limit/,
+    );
+  });
+
+  test("a check-in needs the task's live run and the next number", () => {
+    const opened = apply(failedB(), [checkIn(1)]);
+    expect(opened.interventions?.[0]).toMatchObject({
+      trigger: "watch",
+      triggers: ["near_timeout"],
+      checkIn: 1,
+      status: "open",
+    });
+    expect(() => apply(failedB(), [checkIn(2)])).toThrow(/check-in 2 on run a-a1, expected 1/);
+    expect(() => apply(failedB(), [checkIn(1, { checkIn: undefined })])).toThrow(
+      /without a number on run a-a1, expected 1/,
+    );
+    const second = apply(opened, [resolve("a-a1:check-1", "ok")]);
+    expect(() => apply(second, [checkIn(1, { interventionId: "dup" })])).toThrow(
+      /check-in 1 on run a-a1, expected 2/,
+    );
+    expect(() =>
+      apply(failedB(), [checkIn(1, { taskId: "b", runId: "b-a1", interventionId: "w" })]),
+    ).toThrow(/task b is failed, expected running/);
+  });
+
+  test("a check-in requested after its run ended is refused", () => {
+    const ended = apply(failedB(), [
+      { type: "run.finished", runId: "a-a1", outcome: "failed", error: "boom" },
+    ]);
+    expect(() => apply(ended, [checkIn(1)])).toThrow(/run a-a1 is failed, expected running/);
+  });
+
+  test("a run gets three check-ins at most, a goal twelve", () => {
+    const three = apply(failedB(), [
+      checkIn(1),
+      resolve("a-a1:check-1", "ok"),
+      checkIn(2),
+      resolve("a-a1:check-2", "ok"),
+      checkIn(3),
+      resolve("a-a1:check-3", "ok"),
+    ]);
+    expect(() => apply(three, [checkIn(4)])).toThrow(/checked in 3 times on run a-a1/);
+    const twelve = {
+      ...failedB(),
+      interventions: Array.from({ length: 12 }, (_, i) => resolved(`w${i}`, "watch")),
+    };
+    expect(() => apply(twelve, [checkIn(1)])).toThrow(/checked in 12 times; the limit is 12/);
+    // Failure wake-ups have their own cap.
+    expect(apply(twelve, [wake("b-a1")]).interventions?.at(-1)?.status).toBe("open");
+  });
+
+  test("the end of the run resolves an open check-in as run_ended", () => {
+    for (const end of [
+      { type: "run.finished", runId: "a-a1", outcome: "succeeded" },
+      { type: "task.succeeded", taskId: "a" },
+      { type: "task.failed", taskId: "a", error: "boom" },
+    ]) {
+      const goal = apply(failedB(), [checkIn(1), end]);
+      expect(goal.interventions?.[0]).toMatchObject({
+        status: "resolved",
+        outcome: "run_ended",
+        resolvedAt: AT,
+      });
+    }
+    // A decided check-in keeps its outcome.
+    const decided = apply(failedB(), [
+      checkIn(1),
+      resolve("a-a1:check-1", "stopped"),
+      { type: "run.finished", runId: "a-a1", outcome: "failed", error: "Stopped by the Lead: x" },
+    ]);
+    expect(decided.interventions?.[0]?.outcome).toBe("stopped");
+  });
+
+  test("a task the Lead is deciding about is neither retried nor started", () => {
+    const deciding = apply(failedB(), [wake("b-a1")]);
+    expect(() => apply(deciding, [{ type: "task.retried", taskId: "b" }])).toThrow(
+      /task b waits for the Lead's decision \(intervention b-a1\)/,
+    );
+    const pendingC: Goal = {
+      ...deciding,
+      interventions: [{ ...resolved("c-a1", "timeout", "c"), status: "open" }],
+      tasks: [...deciding.tasks],
+    };
+    const b = pendingC.tasks.findIndex((t) => t.id === "b");
+    pendingC.tasks[b] = { ...pendingC.tasks[b]!, status: "succeeded" };
+    expect(() => apply(pendingC, [{ type: "task.started", taskId: "c" }])).toThrow(
+      /task c waits for the Lead's decision/,
+    );
+  });
+
+  test("after the Lead gives up, the failed run is not retried; a later run may be", () => {
+    const gaveUp = apply(failedB(), [wake("b-a1"), resolve("b-a1", "give_up", { note: "no" })]);
+    expect(() => apply(gaveUp, [{ type: "task.retried", taskId: "b" }])).toThrow(
+      /the Lead gave up on task b \(intervention b-a1\)/,
+    );
+    // A person's retry wins; the next failure stands on its own.
+    const again = apply(gaveUp, [
+      { type: "goal.retried", taskIds: ["b"], reopen: false },
+      ...failRun("b", 2),
+      { type: "task.retried", taskId: "b" },
+    ]);
+    expect(again.tasks.find((t) => t.id === "b")?.status).toBe("pending");
+  });
+
+  test("a task is not retried while its run is live, once the goal woke the Lead", () => {
+    const watched = apply(failedB(), [checkIn(1), resolve("a-a1:check-1", "ok")]);
+    expect(() => apply(watched, [{ type: "task.retried", taskId: "a" }])).toThrow(
+      /task a still has a live run/,
+    );
+    // A goal that never woke the Lead replays as before.
+    const before = apply(failedB(), [{ type: "task.retried", taskId: "a" }]);
+    expect(before.tasks.find((t) => t.id === "a")?.status).toBe("pending");
+  });
+
+  test("restart recovery: the run is closed first, so an open check-in ends and the task is retried", () => {
+    const goal = apply(failedB(), [
+      checkIn(1),
+      { type: "run.finished", runId: "a-a1", outcome: "interrupted", error: "restart" },
+      { type: "task.retried", taskId: "a" },
+    ]);
+    expect(goal.interventions?.[0]?.outcome).toBe("run_ended");
+    expect(goal.tasks.find((t) => t.id === "a")?.status).toBe("pending");
+  });
+
+  test("a wake-up about an earlier run of the task is refused", () => {
+    const again = apply(failedB(), [{ type: "task.retried", taskId: "b" }, ...failRun("b", 2)]);
+    expect(() => apply(again, [wake("b-a1")])).toThrow(
+      /run b-a1 is not the latest run of task b \(b-a2\)/,
+    );
+    expect(apply(again, [wake("b-a2")]).interventions?.[0]?.runId).toBe("b-a2");
+  });
+
+  test("a trigger this version does not know is refused", () => {
+    expect(() => apply(failedB(), [wake("b-a1", "audit")])).toThrow(/unknown trigger audit/);
+    expect(() => apply(failedB(), [wake("b-a1", "")])).toThrow(/unknown trigger/);
+  });
+
+  test("recorded text is capped", () => {
+    const long = "x".repeat(10_000);
+    const goal = apply(failedB(), [
+      wake("b-a1", "timeout", { error: long, workSummary: long }),
+      resolve("b-a1", "continue", { note: long }),
+      checkIn(1),
+      resolve("a-a1:check-1", "nudged", { message: long, note: "n" }),
+    ]);
+    const [failure, nudge] = goal.interventions ?? [];
+    expect(failure?.error).toHaveLength(MAX_INTERVENTION_ERROR_CHARS);
+    expect(failure?.workSummary).toHaveLength(MAX_WORK_SUMMARY_CHARS);
+    expect(failure?.note).toHaveLength(MAX_DECISION_REASON_CHARS);
+    expect(failure?.note?.endsWith("…")).toBe(true);
+    expect(nudge?.message).toHaveLength(MAX_NUDGE_CHARS);
+  });
+
+  test("a person's retry supersedes the intervention and the revision answering it", () => {
+    const awaiting = apply(failedB(), [
+      wake("b-a1"),
+      propose("b-a1", "lead", smallerB, { interventionId: "b-a1" }),
+    ]);
+    const retried = apply(awaiting, [{ type: "goal.retried", taskIds: ["b"], reopen: false }]);
+    expect(retried.interventions?.[0]).toMatchObject({
+      status: "resolved",
+      outcome: "superseded",
+      resolvedAt: AT,
+    });
+    expect(retried.planRevisions?.[0]).toMatchObject({
+      status: "superseded",
+      decisionReason: "superseded by a person's retry",
+    });
+    expect(retried.tasks.find((t) => t.id === "b")?.status).toBe("pending");
+  });
+
+  test("a person's revision of the task supersedes the open intervention", () => {
+    const goal = apply(failedB(), [
+      wake("b-a1"),
+      propose("p1", "person", [{ op: "replace", task: { ...task("b"), title: "mine" } }]),
+    ]);
+    expect(goal.interventions?.[0]).toMatchObject({ status: "resolved", outcome: "superseded" });
+  });
+
+  test("the goal failing or being cancelled abandons a live intervention", () => {
+    for (const end of [{ type: "goal.failed", reason: "stop" }, { type: "goal.cancelled" }]) {
+      const goal = apply(failedB(), [checkIn(1), end]);
+      expect(goal.interventions?.[0]).toMatchObject({ status: "abandoned", resolvedAt: AT });
+      expect(goal.interventions?.[0]).not.toHaveProperty("outcome");
+      expect(() => apply(goal, [resolve("a-a1:check-1", "ok")])).toThrow(/goal is/);
+    }
+  });
+
+  test("a failed goal with no recovery in progress takes no Lead work", () => {
+    const wokenThenFailed = apply(failedB(), [wake("b-a1"), { type: "goal.failed", reason: "x" }]);
+    for (const event of [
+      { type: "lead.attached", agentId: "lead-2" },
+      { ...wake("b-a1"), interventionId: "other" },
+      { ...wake("b-a1"), interventionId: "goal-level", taskId: undefined, runId: undefined },
+      resolve("b-a1", "continue"),
+      { type: "usage.recorded", role: "lead", agentId: "lead-1" },
+    ]) {
+      expect(() => apply(wokenThenFailed, [event])).toThrow(/goal is failed/);
+    }
+    const reopened = apply(wokenThenFailed, [
+      { type: "goal.retried", taskIds: ["a", "b"], reopen: true },
+    ]);
+    expect(reopened.status).toBe("executing");
+  });
+
+  test("an open intervention still resolves after the setting is switched off", () => {
+    const off = apply(failedB(), [
+      checkIn(1),
+      { type: "goal.config_updated", config: { ...interventionConfig, leadInterventions: false } },
+      resolve("a-a1:check-1", "expired"),
+    ]);
+    expect(off.interventions?.[0]?.outcome).toBe("expired");
+  });
+});
+
+describe("recovery", () => {
+  const T0 = Date.parse(AT);
+  const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+  const recoveryConfig = {
+    ...revisionConfig,
+    maxAttempts: 5,
+    autoApprovePlan: true,
+    limits: { goalTimeoutMinutes: 60 },
+  };
+  const fail = (taskId: string, attempt: number, error = "boom", when = AT) => [
+    { type: "task.started", taskId, at: when },
+    { type: "run.started", runId: `${taskId}-a${attempt}`, taskId, provider: "codex", at: when },
+    {
+      type: "run.finished",
+      runId: `${taskId}-a${attempt}`,
+      outcome: "failed",
+      error,
+      at: when,
+    },
+    { type: "task.failed", taskId, error, at: when },
+  ];
+  // a succeeded, b failed twice, c waits on b; the goal failed ten minutes in.
+  const failed = (config: Record<string, unknown> = recoveryConfig) =>
+    run([
+      { ...created, config },
+      { type: "lead.attached", agentId: "lead-1", workspaceId: "ws-1" },
+      { type: "plan.proposed", tasks: [task("a"), task("b"), task("c", ["b"])] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.succeeded", taskId: "a" },
+      ...fail("b", 1),
+      { type: "task.retried", taskId: "b" },
+      ...fail("b", 2, "Turn timed out after 30 minutes"),
+      {
+        type: "goal.failed",
+        reason: "No task can make progress. Failed or blocked: b, c",
+        at: at(10),
+      },
+    ]);
+  const start = (extra: Record<string, unknown> = {}) => ({
+    type: "recovery.started",
+    recoveryId: "r1",
+    startedBy: "person",
+    at: at(20),
+    ...extra,
+  });
+  const attach = { type: "lead.attached", agentId: "lead-r1", workspaceId: "ws-r1", at: at(20) };
+  const ask = {
+    type: "intervention.requested",
+    interventionId: "recovery-r1",
+    trigger: "recovery",
+    error: "",
+    at: at(20),
+  };
+  const decide = (decision: Record<string, unknown>, when = at(25)) => ({
+    type: "recovery.decided",
+    recoveryId: "r1",
+    decision,
+    at: when,
+  });
+  const resolveAs = (outcome: string, extra: Record<string, unknown> = {}) => ({
+    type: "recovery.resolved",
+    recoveryId: "r1",
+    outcome,
+    at: at(26),
+    ...extra,
+  });
+  const deciding = (config?: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    apply(failed(config), [start(extra), attach, ask]);
+  const retry = { decision: "retry", reason: "flaky", hints: { b: "use the cache" } };
+  const removeC = {
+    decision: "revise",
+    reason: "c is not needed",
+    ops: [{ op: "remove", taskId: "c" }],
+  };
+
+  test("goal.failed records when the goal failed", () => {
+    expect(failed().failedAt).toBe(at(10));
+  });
+
+  test("a recovery starts deciding on a failed goal and changes no work", () => {
+    const goal = failed();
+    const started = apply(goal, [
+      start({ guidance: { goal: "keep the API", tasks: { b: "skip the flaky test" } } }),
+    ]);
+    expect(started.status).toBe("failed");
+    expect(started.recovery).toEqual({
+      id: "r1",
+      status: "deciding",
+      startedAt: at(20),
+      startedBy: "person",
+      failureReason: "No task can make progress. Failed or blocked: b, c",
+      failedAt: at(10),
+    });
+    expect(started.guidance).toEqual({ goal: "keep the API", tasks: { b: "skip the flaky test" } });
+    expect(started.tasks).toEqual(goal.tasks);
+    expect(started.runs).toEqual(goal.runs);
+    expect(started.failureReason).toBe(goal.failureReason);
+  });
+
+  test("a recovery starts only on a failed managed goal with a plan, one at a time", () => {
+    const live = run([
+      { ...created, config: recoveryConfig },
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+    ]);
+    expect(() => apply(live, [start()])).toThrow(/goal is executing/);
+    const planningFailure = run([
+      { ...created, config: recoveryConfig },
+      { type: "goal.failed", reason: "no plan" },
+    ]);
+    expect(() => apply(planningFailure, [start()])).toThrow(/failed before it had a plan/);
+    const manual = run([
+      created,
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+      { type: "goal.failed", reason: "x" },
+    ]);
+    expect(() => apply(manual, [start()])).toThrow(/manual goal/);
+    const archived = apply(failed(), [{ type: "goal.archived" }]);
+    expect(() => apply(archived, [start()])).toThrow(/archived/);
+    const open = apply(failed(), [start()]);
+    expect(() => apply(open, [{ ...start(), recoveryId: "r2" }])).toThrow(
+      /recovery r1 is still deciding/,
+    );
+  });
+
+  test("a recovery is refused once MAX_RECOVERIES counted, or when its id was used", () => {
+    expect(() => apply({ ...failed(), recoveries: MAX_RECOVERIES }, [start()])).toThrow(
+      `already recovered ${MAX_RECOVERIES} times`,
+    );
+    expect(apply({ ...failed(), recoveries: MAX_RECOVERIES - 1 }, [start()]).recovery?.status).toBe(
+      "deciding",
+    );
+    const ended = apply(failed(), [start(), resolveAs("cancelled")]);
+    expect(() => apply(ended, [start()])).toThrow(/recovery id r1 was already used/);
+    const revised = {
+      ...failed(),
+      planRevisions: [
+        { id: "r1", source: "lead", reason: "x", ops: [], status: "applied", proposedAt: AT },
+      ],
+    };
+    expect(() => apply(revised, [start()])).toThrow(/recovery id r1 was already used/);
+  });
+
+  test("a recovery is refused when a change set was rejected by review, or nothing can run", () => {
+    const goal = failed();
+    const rejected: Goal = {
+      ...goal,
+      changeSets: [
+        {
+          id: "cs-a",
+          taskId: "a",
+          runId: "a-a1",
+          round: 0,
+          supersedes: null,
+          workspaceId: "w",
+          cwd: "/w",
+          branch: "b",
+          baseCommit: "x",
+          headCommit: "y",
+          files: [],
+          status: "rejected",
+          findings: null,
+          testSummary: null,
+          integratedCommit: null,
+          error: null,
+          createdAt: AT,
+          updatedAt: AT,
+        },
+      ],
+    };
+    expect(() => apply(rejected, [start()])).toThrow(/cs-a was rejected by review/);
+    const runsUsed: Goal = {
+      ...goal,
+      config: { ...goal.config!, limits: { goalTimeoutMinutes: 60, maxRuns: 2 } },
+    };
+    expect(() => apply(runsUsed, [start()])).toThrow(/run limit of 2 is used up/);
+    const spent: Goal = {
+      ...goal,
+      config: { ...goal.config!, limits: { goalTimeoutMinutes: 60, maxCostUsd: 1 } },
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 2,
+        reportedTurns: 1,
+        totalTurns: 1,
+      },
+    };
+    expect(() => apply(spent, [start()])).toThrow(/Cost budget/);
+  });
+
+  test("past the time limit a recovery must choose a valid time mode", () => {
+    const late = at(90);
+    expect(() => apply(failed(), [start({ at: late })])).toThrow(/time limit has passed/);
+    expect(() => apply(failed(), [start({ at: late, timeMode: "soon" })])).toThrow(
+      /unknown time mode soon/,
+    );
+    expect(() => apply(failed(), [start({ at: late, timeMode: "remaining" })])).toThrow(
+      /needs activeMs/,
+    );
+    expect(() =>
+      apply(failed(), [start({ at: late, timeMode: "remaining", activeMs: 60 * 60_000 })]),
+    ).toThrow(/no time is left/);
+    const fresh = apply(failed(), [start({ at: late, timeMode: "fresh" })]);
+    expect(fresh.recovery).toMatchObject({ status: "deciding", timeMode: "fresh" });
+    // The time base moves only when the recovery applies.
+    expect(fresh).not.toHaveProperty("timeBaseAt");
+    const remaining = apply(failed(), [
+      start({ at: late, timeMode: "remaining", activeMs: 10 * 60_000 }),
+    ]);
+    expect(remaining.recovery).toMatchObject({ timeMode: "remaining", activeMs: 10 * 60_000 });
+    const base = failed();
+    const passedDeadline: Goal = {
+      ...base,
+      config: {
+        ...base.config!,
+        limits: { goalTimeoutMinutes: 60, deadlineAt: at(15) },
+      },
+    };
+    expect(() => apply(passedDeadline, [start({ timeMode: "fresh" })])).toThrow(
+      /deadline .* has passed/,
+    );
+  });
+
+  test("a failed goal takes the Lead and its prompt only while a recovery decides", () => {
+    const goal = failed();
+    expect(() => apply(goal, [attach])).toThrow(/goal is failed/);
+    expect(() => apply(goal, [ask])).toThrow(/goal is failed/);
+    expect(() =>
+      apply(goal, [{ type: "usage.recorded", role: "lead", agentId: "lead-1" }]),
+    ).toThrow(/goal is failed/);
+    const started = apply(goal, [start()]);
+    const attached = apply(started, [attach]);
+    expect(attached).toMatchObject({ leadAgentId: "lead-r1", leadWorkspaceId: "ws-r1" });
+    expect(attached.recovery).toMatchObject({ leadAgentId: "lead-r1", leadWorkspaceId: "ws-r1" });
+    const used = apply(attached, [{ type: "usage.recorded", role: "lead", agentId: "lead-r1" }]);
+    expect(used.usageByRole?.lead?.totalTurns).toBe(1);
+    for (const event of [
+      { type: "usage.recorded", role: "worker", agentId: "w", runId: "b-a2" },
+      { type: "task.retried", taskId: "b" },
+      { ...ask, trigger: "timeout", taskId: "b", runId: "b-a2", interventionId: "b-a2" },
+      {
+        type: "plan.revision_proposed",
+        revisionId: "x",
+        source: "person",
+        reason: "r",
+        ops: removeC.ops,
+      },
+    ]) {
+      expect(() => apply(attached, [event])).toThrow(/goal is failed/);
+    }
+    const decided = apply(attached, [ask, decide(retry)]);
+    expect(() => apply(decided, [{ ...attach, agentId: "other" }])).toThrow(/goal is failed/);
+  });
+
+  test("the Lead's late usage is accepted after the recovery ended", () => {
+    const ended = apply(deciding(), [resolveAs("cancelled")]);
+    const late = apply(ended, [{ type: "usage.recorded", role: "lead", agentId: "lead-r1" }]);
+    expect(late.usage?.totalTurns).toBe(1);
+  });
+
+  test("the recovery prompt is one per recovery, about the goal, and needs no leadInterventions", () => {
+    const { leadInterventions: _off, ...config } = { ...recoveryConfig, leadInterventions: true };
+    const started = apply(failed(config), [start()]);
+    expect(() => apply(started, [ask])).toThrow(/recovery r1 has no Lead yet/);
+    const asked = apply(started, [attach, ask]);
+    expect(asked.interventions?.at(-1)).toEqual({
+      id: "recovery-r1",
+      trigger: "recovery",
+      error: "",
+      status: "open",
+      requestedAt: at(20),
+    });
+    expect(asked.recovery?.interventionId).toBe("recovery-r1");
+    expect(() => apply(asked, [{ ...ask, interventionId: "again" }])).toThrow(
+      /intervention recovery-r1 is still open/,
+    );
+    const closed: Goal = {
+      ...asked,
+      interventions: [{ ...asked.interventions![0]!, status: "abandoned" }],
+    };
+    expect(() => apply(closed, [{ ...ask, interventionId: "again" }])).toThrow(
+      /already asked its Lead/,
+    );
+    const attached = apply(started, [attach]);
+    expect(() => apply(attached, [{ ...ask, taskId: "b" }])).toThrow(/about the goal, not a task/);
+    expect(() => apply(attached, [{ ...ask, checkIn: 1 }])).toThrow(/no check-in fields/);
+  });
+
+  test("intervention.resolved never decides a recovery", () => {
+    const goal = deciding();
+    expect(() =>
+      apply(goal, [
+        { type: "intervention.resolved", interventionId: "recovery-r1", outcome: "decided" },
+      ]),
+    ).toThrow(/goal is failed/);
+  });
+
+  test("a retry decision resolves the prompt and waits to be applied", () => {
+    const decided = apply(deciding(), [decide(retry)]);
+    expect(decided.recovery).toMatchObject({
+      status: "decided",
+      decision: retry,
+      decidedAt: at(25),
+      counted: true,
+    });
+    expect(decided.interventions?.at(-1)).toMatchObject({
+      status: "resolved",
+      outcome: "decided",
+      resolvedAt: at(25),
+    });
+    expect(decided.status).toBe("failed");
+    expect(() => apply(decided, [decide(retry)])).toThrow(
+      /recovery r1 is decided, expected deciding/,
+    );
+  });
+
+  test("a fallback decision does not count", () => {
+    const fallback = apply(deciding(), [
+      decide({ decision: "retry", reason: "no answer", fallback: true }),
+    ]);
+    expect(fallback.recovery?.counted).toBe(false);
+    const applied = apply(fallback, [resolveAs("applied")]);
+    expect(applied).not.toHaveProperty("recoveries");
+  });
+
+  test("a revise waits for a person unless plans approve on their own", () => {
+    const auto = apply(deciding(), [decide(removeC)]);
+    expect(auto.recovery?.status).toBe("decided");
+    const held = apply(deciding({ ...recoveryConfig, autoApprovePlan: false }), [decide(removeC)]);
+    expect(held.recovery?.status).toBe("awaiting_approval");
+  });
+
+  test("a decision is checked against the goal", () => {
+    const goal = deciding();
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ decision: "unrecoverable", reason: "x" }, /Unknown decision "unrecoverable"/],
+      [{ ...retry, ops: removeC.ops }, /retry decision carries no ops/],
+      [{ decision: "revise", reason: "x" }, /revise decision needs ops/],
+      [{ decision: "retry", reason: "x", hints: { a: "redo" } }, /a is succeeded/],
+      [{ decision: "retry", reason: "x", hints: { z: "redo" } }, /z is not a task/],
+      [{ decision: "retry", reason: "x", hints: { b: "x".repeat(1001) } }, /limit is 1000/],
+      [{ decision: "needs_person", reason: "x", hints: { b: "y" } }, /carries no hints/],
+      [
+        { decision: "revise", reason: "x", ops: [{ op: "remove", taskId: "a" }] },
+        /a is succeeded and cannot change/,
+      ],
+    ];
+    for (const [decision, error] of cases) {
+      expect(() => apply(goal, [decide(decision)])).toThrow(error);
+    }
+    expect(
+      apply(goal, [decide({ ...retry, hints: { b: "x".repeat(1000) } })]).recovery?.status,
+    ).toBe("decided");
+  });
+
+  test("after verification started a revise may only remove tasks", () => {
+    const goal = { ...deciding(), verifyStartedAt: AT };
+    expect(() =>
+      apply(goal, [
+        decide({
+          decision: "revise",
+          reason: "x",
+          ops: [{ op: "replace", task: { ...task("b"), title: "smaller" } }],
+        }),
+      ]),
+    ).toThrow(/can only lose tasks; b cannot be added or replaced/);
+    expect(apply(goal, [decide(removeC)]).recovery?.status).toBe("decided");
+  });
+
+  test("a Lead's needs_person ends the recovery, counted, and the goal stays failed", () => {
+    const ended = apply(deciding(), [
+      decide({ decision: "needs_person", reason: "raise maxRuns" }),
+    ]);
+    expect(ended.status).toBe("failed");
+    expect(ended.failureReason).toBe("Recovery needs a person: raise maxRuns");
+    expect(ended.failedAt).toBe(at(25));
+    expect(ended.recoveries).toBe(1);
+    expect(ended.recovery).toMatchObject({
+      status: "ended",
+      outcome: "needs_person",
+      reason: "raise maxRuns",
+      failureReason: "No task can make progress. Failed or blocked: b, c",
+    });
+    // A pre-check failure is recorded as a fallback and does not count.
+    const precheck = apply(failed(), [
+      start(),
+      decide({ decision: "needs_person", reason: "worktree is dirty", fallback: true }),
+    ]);
+    expect(precheck.recovery?.status).toBe("ended");
+    expect(precheck).not.toHaveProperty("recoveries");
+    // The next recovery keeps the reason the goal first failed with.
+    const next = apply(ended, [{ ...start(), recoveryId: "r2" }]);
+    expect(next.recovery?.failureReason).toBe("No task can make progress. Failed or blocked: b, c");
+  });
+
+  test("an applied retry reopens the goal in one step", () => {
+    const goal = { ...failed(), acknowledgedAt: at(15) };
+    const applied = apply(goal, [start(), attach, ask, decide(retry), resolveAs("applied")]);
+    expect(applied).toMatchObject({
+      status: "executing",
+      failureReason: null,
+      failedAt: at(10),
+      reopens: 1,
+      acknowledgedAt: null,
+      recoveries: 1,
+      leadAgentId: "lead-r1",
+    });
+    expect(applied.recovery).toMatchObject({
+      status: "applied",
+      outcome: "applied",
+      resolvedAt: at(26),
+    });
+    expect(applied.tasks.map((t) => [t.id, t.status, t.forgivenFailures])).toEqual([
+      ["a", "succeeded", undefined],
+      ["b", "pending", 2],
+      ["c", "pending", undefined],
+    ]);
+    expect(countedFailures(applied, "b")).toBe(0);
+    expect(applied.guidance).toEqual({ lead: { recoveryId: "r1", tasks: { b: "use the cache" } } });
+    expect(applied.planRevisions).toBeUndefined();
+  });
+
+  test("an applied recovery merges change sets whose integration failed again", () => {
+    const goal = failed();
+    const withFailedMerge: Goal = {
+      ...goal,
+      changeSets: [
+        {
+          id: "cs-a",
+          taskId: "a",
+          runId: "a-a1",
+          round: 0,
+          supersedes: null,
+          workspaceId: "w",
+          cwd: "/w",
+          branch: "b",
+          baseCommit: "x",
+          headCommit: "y",
+          files: [],
+          status: "rejected",
+          rejectionReason: "integration_failed",
+          findings: null,
+          testSummary: null,
+          integratedCommit: null,
+          error: "Integration failed: dirty",
+          createdAt: AT,
+          updatedAt: AT,
+        },
+      ],
+    };
+    const applied = apply(withFailedMerge, [
+      start(),
+      attach,
+      ask,
+      decide(retry),
+      resolveAs("applied"),
+    ]);
+    expect(applied.changeSets[0]).toMatchObject({ status: "approved", error: null });
+    expect(applied.changeSets[0]).not.toHaveProperty("rejectionReason");
+  });
+
+  test("the time limit restarts when the recovery applies, from that event's time", () => {
+    const late = at(90);
+    const fresh = apply(failed(), [
+      start({ at: late, timeMode: "fresh" }),
+      attach,
+      ask,
+      decide(retry),
+      resolveAs("applied", { timeMode: "fresh", at: at(100) }),
+    ]);
+    expect(fresh.timeBaseAt).toBe(at(100));
+    // A slow approval: applied three hours after the recovery started, the goal still gets
+    // the 50 minutes it had left.
+    const slow = apply(failed({ ...recoveryConfig, autoApprovePlan: false }), [
+      start({ at: late, timeMode: "remaining", activeMs: 10 * 60_000 }),
+      attach,
+      ask,
+      decide(removeC, at(95)),
+      resolveAs("applied", { timeMode: "remaining", activeMs: 10 * 60_000, at: at(270) }),
+    ]);
+    expect(slow.timeBaseAt).toBe(at(260));
+    expect(Date.parse(slow.timeBaseAt!) + 60 * 60_000 - Date.parse(at(270))).toBe(50 * 60_000);
+  });
+
+  test("the applied event carries the recovery's time mode and active time", () => {
+    const goal = apply(failed(), [start({ timeMode: "fresh" }), attach, ask, decide(retry)]);
+    expect(() => apply(goal, [resolveAs("applied")])).toThrow(
+      /must be the ones the recovery started/,
+    );
+    expect(() =>
+      apply(goal, [resolveAs("applied", { timeMode: "remaining", activeMs: 1 })]),
+    ).toThrow(/must be the ones the recovery started/);
+  });
+
+  test("only a needs_person outcome can be uncounted", () => {
+    const goal = apply(failed(), [start({ timeMode: "fresh" }), attach, ask, decide(retry)]);
+    expect(() =>
+      apply(goal, [resolveAs("applied", { timeMode: "fresh", uncounted: false })]),
+    ).toThrow(/only a needs_person outcome can be uncounted/);
+    const held = apply(deciding({ ...recoveryConfig, autoApprovePlan: false }), [decide(removeC)]);
+    for (const outcome of ["rejected", "cancelled"]) {
+      expect(() => apply(held, [resolveAs(outcome, { uncounted: true })])).toThrow(
+        /only a needs_person outcome can be uncounted/,
+      );
+    }
+  });
+
+  test("a limit that runs out while the Lead decides needs a time mode, or a later deadline", () => {
+    // 60-minute limit: at minute 45 the Lead's 20 minutes would outlast it.
+    expect(() => apply(failed(), [start({ at: at(45) })])).toThrow(
+      /the Lead has 20 minutes to decide, and by then the goal's time limit has passed; choose time mode/,
+    );
+    expect(apply(failed(), [start({ at: at(45), timeMode: "fresh" })]).recovery?.status).toBe(
+      "deciding",
+    );
+    expect(apply(failed(), [start({ at: at(39) })]).recovery?.status).toBe("deciding");
+    const base = failed();
+    const deadline: Goal = {
+      ...base,
+      config: { ...base.config!, limits: { goalTimeoutMinutes: 600, deadlineAt: at(35) } },
+    };
+    expect(() => apply(deadline, [start({ timeMode: "fresh" })])).toThrow(
+      /deadline .* passes within the Lead's 20 minutes to decide; set a later deadline/,
+    );
+  });
+
+  test("a recovery keeps the reason and time the goal first failed with", () => {
+    const ended = apply(deciding(), [decide({ decision: "needs_person", reason: "x" })]);
+    expect(ended.failedAt).toBe(at(25));
+    expect(ended.recovery).toMatchObject({
+      failureReason: expect.stringContaining("No task"),
+      failedAt: at(10),
+    });
+    const next = apply(ended, [{ ...start(), recoveryId: "r2", at: at(30) }]);
+    expect(next.recovery).toMatchObject({ failedAt: at(10) });
+  });
+
+  test("a revise refused once a criterion was verified unless it only removes", () => {
+    const goal = deciding();
+    const verified: Goal = {
+      ...goal,
+      criteria: [{ ...goal.criteria[0]!, verifiedAt: AT, evidence: "ok" }],
+    };
+    expect(() =>
+      apply(verified, [
+        decide({ decision: "revise", reason: "x", ops: [{ op: "add", task: task("d") }] }),
+      ]),
+    ).toThrow(/can only lose tasks; d cannot be added/);
+    expect(apply(verified, [decide(removeC)]).recovery?.status).toBe("decided");
+  });
+
+  test("an applied revise drops a person's guidance for tasks it removed", () => {
+    const applied = apply(failed(), [
+      start({ guidance: { tasks: { b: "use the cache", c: "skip it" } } }),
+      attach,
+      ask,
+      decide(removeC),
+      resolveAs("applied"),
+    ]);
+    expect(applied.guidance).toEqual({ tasks: { b: "use the cache" } });
+  });
+
+  test("an applied recovery is refused when the goal cannot run now", () => {
+    const goal = apply(failed(), [start(), attach, ask, decide(retry)]);
+    // The limit passed while the recovery waited, and it chose no time mode.
+    expect(() => apply(goal, [resolveAs("applied", { at: at(61) })])).toThrow(
+      /time limit has passed/,
+    );
+    expect(() => apply(apply(failed(), [start(), attach, ask]), [resolveAs("applied")])).toThrow(
+      /recovery r1 is deciding, expected decided or awaiting_approval/,
+    );
+  });
+
+  test("an applied revise is recorded as a plan revision and its removed ids stay taken", () => {
+    const applied = apply(deciding(), [decide(removeC), resolveAs("applied")]);
+    expect(applied.tasks.map((t) => t.id)).toEqual(["a", "b"]);
+    expect(applied.planRevisions).toEqual([
+      {
+        id: "r1",
+        source: "lead",
+        reason: "c is not needed",
+        ops: [{ op: "remove", taskId: "c" }],
+        status: "applied",
+        interventionId: "recovery-r1",
+        proposedAt: at(25),
+        decidedAt: at(26),
+      },
+    ]);
+    expect(() =>
+      apply(applied, [
+        {
+          type: "plan.revision_proposed",
+          revisionId: "rv",
+          source: "person",
+          reason: "back",
+          ops: [{ op: "add", task: task("c") }],
+        },
+      ]),
+    ).toThrow(/Task id c was used earlier in this goal/);
+  });
+
+  test("a revise needs room among the plan revisions", () => {
+    const goal = deciding();
+    const full = {
+      ...goal,
+      planRevisions: Array.from({ length: MAX_PLAN_REVISIONS }, (_, i) => ({
+        id: `x${i}`,
+        source: "person",
+        reason: "x",
+        ops: [],
+        status: "rejected",
+        proposedAt: AT,
+      })),
+    };
+    expect(() => apply(full, [decide(removeC)])).toThrow(/already revised 20 times/);
+    expect(apply(full, [decide(retry)]).recovery?.status).toBe("decided");
+  });
+
+  test("ending outcomes and what they count", () => {
+    const held = apply(deciding({ ...recoveryConfig, autoApprovePlan: false }), [decide(removeC)]);
+    const rejected = apply(held, [resolveAs("rejected", { reason: "keep c" })]);
+    expect(rejected).toMatchObject({
+      status: "failed",
+      failureReason: "Recovery rejected: keep c",
+      failedAt: at(26),
+      recoveries: 1,
+    });
+    expect(rejected.recovery).toMatchObject({ status: "ended", outcome: "rejected" });
+    // The integration check before applying failed: not the Lead's doing, not counted.
+    const precheck = apply(held, [resolveAs("needs_person", { reason: "dirty", uncounted: true })]);
+    expect(precheck).not.toHaveProperty("recoveries");
+    const refused = apply(apply(deciding(), [decide(retry)]), [
+      resolveAs("needs_person", { reason: "no room" }),
+    ]);
+    expect(refused.recoveries).toBe(1);
+    const cancelled = apply(held, [resolveAs("cancelled")]);
+    expect(cancelled).not.toHaveProperty("recoveries");
+    expect(cancelled.failureReason).toBe("Recovery cancelled");
+  });
+
+  test("cancelling ends a deciding recovery and abandons its prompt", () => {
+    const cancelled = apply(deciding(), [resolveAs("cancelled", { reason: "changed my mind" })]);
+    expect(cancelled.recovery).toMatchObject({ status: "ended", outcome: "cancelled" });
+    expect(cancelled.interventions?.at(-1)).toMatchObject({
+      id: "recovery-r1",
+      status: "abandoned",
+    });
+  });
+
+  test("a recovery being applied cannot be cancelled, and outcomes need their status", () => {
+    const decided = apply(deciding(), [decide(retry)]);
+    expect(() => apply(decided, [resolveAs("cancelled")])).toThrow(
+      /being applied; cancel the goal after it reopens/,
+    );
+    expect(() => apply(decided, [resolveAs("rejected")])).toThrow(/expected awaiting_approval/);
+    expect(() => apply(deciding(), [resolveAs("needs_person")])).toThrow(
+      /expected decided or awaiting_approval/,
+    );
+    expect(() => apply(decided, [resolveAs("dropped")])).toThrow(/unknown outcome dropped/);
+    expect(() => apply(decided, [resolveAs("needs_person", { timeMode: "fresh" })])).toThrow(
+      /only an applied recovery restarts/,
+    );
+    expect(() => apply(decided, [{ ...resolveAs("applied"), recoveryId: "r9" }])).toThrow(
+      /unknown recovery r9/,
+    );
+  });
+
+  test("retry, reopen, a failed merge's retry and archive wait for a live recovery", () => {
+    for (const goal of [
+      deciding(),
+      apply(deciding(), [decide(retry)]),
+      apply(deciding({ ...recoveryConfig, autoApprovePlan: false }), [decide(removeC)]),
+    ]) {
+      for (const event of [
+        { type: "goal.retried", taskIds: ["b", "c"], reopen: true },
+        { type: "goal.reopened" },
+        { type: "changeset.integration_retried", changeSetIds: ["cs-a"], taskIds: [] },
+        { type: "goal.archived" },
+      ]) {
+        expect(() => apply(goal, [event])).toThrow(
+          /cancel the recovery first: paseo goal recover g1 --cancel/,
+        );
+      }
+    }
+    const ended = apply(deciding(), [resolveAs("cancelled")]);
+    expect(apply(ended, [{ type: "goal.retried", taskIds: ["b"], reopen: true }]).status).toBe(
+      "executing",
+    );
+  });
+
+  test("a reopened goal that ends again ends its recovery", () => {
+    const applied = apply(deciding(), [decide(retry), resolveAs("applied")]);
+    const refailed = apply(applied, [{ type: "goal.failed", reason: "again", at: at(40) }]);
+    expect(refailed.recovery).toMatchObject({ status: "ended", outcome: "applied" });
+    expect(refailed.failedAt).toBe(at(40));
+    const cancelled = apply(applied, [{ type: "goal.cancelled" }]);
+    expect(cancelled.recovery?.status).toBe("ended");
+    // A second recovery can start once the first ended.
+    expect(
+      apply(refailed, [{ ...start(), recoveryId: "r2", at: at(41), timeMode: "fresh" }]).recovery
+        ?.status,
+    ).toBe("deciding");
+  });
+
+  test("a retry merges a person's guidance; null clears an entry", () => {
+    const goal = apply(failed(), [
+      {
+        type: "goal.retried",
+        taskIds: ["b"],
+        reopen: true,
+        guidance: { goal: "be careful", tasks: { b: "use the cache", c: "later" } },
+      },
+    ]);
+    expect(goal.guidance).toEqual({
+      goal: "be careful",
+      tasks: { b: "use the cache", c: "later" },
+    });
+    const cleared = apply(goal, [
+      ...fail("b", 3),
+      {
+        type: "goal.retried",
+        taskIds: ["b"],
+        reopen: false,
+        guidance: { goal: null, tasks: { c: null } },
+      },
+    ]);
+    expect(cleared.guidance).toEqual({ tasks: { b: "use the cache" } });
+    const none = apply(cleared, [
+      ...fail("b", 4),
+      { type: "goal.retried", taskIds: ["b"], reopen: false, guidance: { tasks: { b: null } } },
+    ]);
+    expect(none).not.toHaveProperty("guidance");
+    const retryWith = (guidance: Record<string, unknown>) => ({
+      type: "goal.retried",
+      taskIds: ["b"],
+      reopen: true,
+      guidance,
+    });
+    expect(() => apply(failed(), [retryWith({ tasks: { z: "x" } })])).toThrow(/unknown task z/);
+    expect(() => apply(failed(), [retryWith({ goal: " " })])).toThrow(/send null to clear it/);
+    expect(() => apply(failed(), [retryWith({ goal: "x".repeat(4001) })])).toThrow(/limit is 4000/);
+  });
+
+  test("the Lead's advice stays apart from a person's guidance and is replaced by the next recovery", () => {
+    const applied = apply(failed(), [
+      start({ guidance: { goal: "keep the API" } }),
+      attach,
+      ask,
+      decide(retry),
+      resolveAs("applied"),
+    ]);
+    expect(applied.guidance).toEqual({
+      goal: "keep the API",
+      lead: { recoveryId: "r1", tasks: { b: "use the cache" } },
+    });
+    const again = apply(applied, [
+      ...fail("b", 3),
+      { type: "goal.failed", reason: "again", at: at(30) },
+      { ...start(), recoveryId: "r2", at: at(31) },
+      { ...attach, agentId: "lead-r2", at: at(31) },
+      { ...ask, interventionId: "recovery-r2", at: at(31) },
+      { ...decide({ decision: "retry", reason: "again" }), recoveryId: "r2", at: at(32) },
+      { ...resolveAs("applied"), recoveryId: "r2", at: at(33) },
+    ]);
+    expect(again.guidance).toEqual({ goal: "keep the API" });
+    expect(again.recoveries).toBe(2);
+  });
+});
+
+describe("intervention caps per reopen", () => {
+  const failure = (id: string, taskId: string, epoch?: number) => ({
+    id,
+    taskId,
+    runId: id,
+    trigger: "timeout",
+    error: "",
+    status: "resolved",
+    outcome: "continue",
+    requestedAt: AT,
+    ...(epoch === undefined ? {} : { epoch }),
+  });
+  const checkIn = (id: string, runId: string, epoch?: number) => ({
+    ...failure(id, "a", epoch),
+    runId,
+    trigger: "watch",
+  });
+  const base = run([{ ...created, config: revisionConfig }]);
+
+  test("failure wake-ups count only the current reopen; those without an epoch read as 0", () => {
+    const four = Array.from({ length: MAX_INTERVENTIONS_PER_GOAL }, (_, i) =>
+      failure(`f${i}`, `t${i}`),
+    );
+    const before: Goal = { ...base, interventions: four };
+    expect(failureWakeUpCapError(before, "x", "timeout")).toMatch(/limit is 4/);
+    const reopened: Goal = { ...before, reopens: 1 };
+    expect(failureWakeUpCapError(reopened, "x", "timeout")).toBeNull();
+    const again: Goal = {
+      ...reopened,
+      interventions: [
+        ...four,
+        ...Array.from({ length: MAX_INTERVENTIONS_PER_GOAL }, (_, i) =>
+          failure(`g${i}`, `t${i}`, 1),
+        ),
+      ],
+    };
+    expect(failureWakeUpCapError(again, "x", "timeout")).toMatch(/limit is 4/);
+    const perTask: Goal = { ...reopened, interventions: [failure("p1", "x"), failure("p2", "x")] };
+    expect(failureWakeUpCapError(perTask, "x", "timeout")).toBeNull();
+    expect(failureWakeUpCapError({ ...perTask, reopens: 0 }, "x", "timeout")).toMatch(/task x/);
+  });
+
+  test("check-ins count only the current reopen", () => {
+    const twelve = Array.from({ length: 12 }, (_, i) => checkIn(`c${i}`, `r${i}`));
+    expect(checkInCapError({ ...base, interventions: twelve }, "new")).toMatch(/limit is 12/);
+    expect(checkInCapError({ ...base, interventions: twelve, reopens: 2 }, "new")).toBeNull();
+  });
+
+  test("an intervention records the reopen it belongs to, and none before the first", () => {
+    const failedB = (reopens: number) => {
+      const goal = run([
+        { ...created, config: { ...revisionConfig, maxAttempts: 5, leadInterventions: true } },
+        { type: "lead.attached", agentId: "lead-1" },
+        { type: "plan.proposed", tasks: [task("b")] },
+        { type: "plan.approved" },
+        { type: "task.started", taskId: "b" },
+        { type: "run.started", runId: "b-a1", taskId: "b", provider: "codex" },
+        { type: "run.finished", runId: "b-a1", outcome: "failed", error: "x" },
+        { type: "task.failed", taskId: "b", error: "x" },
+      ]);
+      return { ...goal, reopens };
+    };
+    const wake = {
+      type: "intervention.requested",
+      interventionId: "b-a1",
+      taskId: "b",
+      runId: "b-a1",
+      trigger: "repeated_failure",
+      error: "x",
+    };
+    expect(apply(failedB(0), [wake]).interventions?.[0]).not.toHaveProperty("epoch");
+    expect(apply(failedB(2), [wake]).interventions?.[0]?.epoch).toBe(2);
   });
 });

@@ -1,17 +1,32 @@
 import type { Task, TaskSpec } from "@getpaseo/protocol/goal/types";
 
 /** Ids the Manager gives rework tasks. */
-const RESERVED_ID = /-rw\d+$/;
+export const RESERVED_ID = /-rw\d+$/;
 
 export class TaskGraphError extends Error {}
 
-/** Throws on duplicate ids, unknown or self dependencies, and cycles. */
+/** Throws on reserved ids, duplicate ids, unknown or self dependencies, and cycles. */
 export function validateTaskGraph(specs: readonly TaskSpec[]): void {
-  const ids = new Set<string>();
+  assertNoReservedIds(specs);
+  assertGraphShape(specs);
+}
+
+/** Throws when a spec uses an id reserved for rework tasks. */
+export function assertNoReservedIds(specs: readonly TaskSpec[]): void {
   for (const spec of specs) {
     if (RESERVED_ID.test(spec.id)) {
       throw new TaskGraphError(`Task id ${spec.id} is reserved for rework tasks (ends in -rw<n>)`);
     }
+  }
+}
+
+/**
+ * Throws on duplicate ids, unknown or self dependencies, and cycles. Rework ids are
+ * allowed, since a running goal's task list holds them.
+ */
+export function assertGraphShape(specs: readonly TaskSpec[]): void {
+  const ids = new Set<string>();
+  for (const spec of specs) {
     if (ids.has(spec.id)) {
       throw new TaskGraphError(`Duplicate task id: ${spec.id}`);
     }

@@ -135,6 +135,349 @@ describe("goal logs written by earlier phases", () => {
     expect(goal?.runs[0]).not.toHaveProperty("thinking");
     expect(goal?.config).not.toHaveProperty("leadThinking");
     expect(goal?.config).not.toHaveProperty("workerThinking");
+    // Nor plan revisions, interventions or task run timeouts.
+    expect(goal).not.toHaveProperty("planRevisions");
+    expect(goal).not.toHaveProperty("interventions");
+    // An older goal has no leadInterventions and reads as off.
+    expect(goal?.config).not.toHaveProperty("leadInterventions");
+    expect(goal?.tasks[0]).not.toHaveProperty("runTimeoutMinutes");
+    // Nor a time base: the time limit counts from creation.
+    expect(goal).not.toHaveProperty("timeBaseAt");
+  });
+
+  test("a retry that restarted the time limit replays to the same time base", async () => {
+    const later = "2026-01-03T00:00:00.000Z";
+    const lines = preNotificationLog("t1").trimEnd().split("\n");
+    lines.push(
+      JSON.stringify({
+        id: "t1-11",
+        goalId: "t1",
+        seq: 11,
+        at: later,
+        type: "goal.retried",
+        taskIds: ["a"],
+        reopen: true,
+        timeMode: "remaining",
+        activeMs: 60_000,
+      }),
+    );
+    await writeFile(join(dir, "t1.jsonl"), `${lines.join("\n")}\n`);
+    const first = (await load()).get("t1");
+    expect(first).toMatchObject({ status: "executing", timeBaseAt: "2026-01-02T23:59:00.000Z" });
+    expect(GoalSchema.safeParse(first).success).toBe(true);
+    expect((await load()).get("t1")).toEqual(first);
+  });
+
+  test("plan revisions round-trip through the log and replay to the same goal", async () => {
+    await writeFile(
+      join(dir, "r1.jsonl"),
+      jsonl("r1", [
+        {
+          type: "goal.created",
+          title: "Revised",
+          objective: "o",
+          criteria: [{ id: "c1", text: "w" }],
+          config,
+        },
+        { type: "lead.attached", agentId: "lead-1" },
+        { type: "plan.proposed", tasks: [spec("a"), spec("b")] },
+        { type: "plan.approved" },
+        { type: "task.started", taskId: "a" },
+        { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+        {
+          type: "run.finished",
+          runId: "a-a1",
+          outcome: "failed",
+          error: "Turn timed out after 90 minutes",
+        },
+        { type: "task.failed", taskId: "a", error: "Turn timed out after 90 minutes" },
+        {
+          type: "plan.revision_proposed",
+          revisionId: "rv1",
+          source: "lead",
+          reason: "a is too big",
+          ops: [
+            { op: "replace", task: { ...spec("a"), runTimeoutMinutes: 30 } },
+            { op: "add", task: { ...spec("a2"), dependsOn: ["a"] } },
+          ],
+        },
+        { type: "plan.revision_approved", revisionId: "rv1" },
+        {
+          type: "plan.revision_proposed",
+          revisionId: "rv2",
+          source: "person",
+          reason: "drop b",
+          ops: [{ op: "remove", taskId: "b" }],
+        },
+        { type: "plan.revision_rejected", revisionId: "rv2", reason: "keep b" },
+      ]),
+    );
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    const goal = store.get("r1");
+    expect(GoalSchema.safeParse(goal).success).toBe(true);
+    expect(goal?.planRevisions?.map((r) => [r.id, r.status])).toEqual([
+      ["rv1", "applied"],
+      ["rv2", "rejected"],
+    ]);
+    expect(goal?.tasks.map((t) => [t.id, t.status, t.runTimeoutMinutes])).toEqual([
+      ["a", "pending", 30],
+      ["b", "pending", undefined],
+      ["a2", "pending", undefined],
+    ]);
+
+    // A revision appended now is read back by a fresh load exactly as dispatched.
+    await store.dispatch("r1", {
+      id: "r1-next",
+      goalId: "r1",
+      type: "plan.revision_proposed",
+      revisionId: "rv3",
+      source: "person",
+      reason: "drop b",
+      ops: [{ op: "remove", taskId: "b" }],
+    });
+    const events = await log.read("r1");
+    expect(events.at(-1)).toMatchObject({ type: "plan.revision_proposed", revisionId: "rv3" });
+    expect((await load()).get("r1")).toEqual(store.get("r1"));
+  });
+
+  test("Lead interventions round-trip through the log and replay to the same goal", async () => {
+    const timedOut = "Turn timed out after 90 minutes";
+    await writeFile(
+      join(dir, "i1.jsonl"),
+      jsonl("i1", [
+        {
+          type: "goal.created",
+          title: "Woken",
+          objective: "o",
+          criteria: [{ id: "c1", text: "w" }],
+          config: { ...config, autoApprovePlan: false, leadInterventions: true },
+        },
+        { type: "lead.attached", agentId: "lead-1" },
+        { type: "plan.proposed", tasks: [spec("a"), spec("b")] },
+        { type: "plan.approved" },
+        { type: "task.started", taskId: "a" },
+        { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+        {
+          type: "intervention.requested",
+          interventionId: "a-a1:check-1",
+          taskId: "a",
+          runId: "a-a1",
+          trigger: "watch",
+          triggers: ["near_timeout"],
+          checkIn: 1,
+          error: "",
+        },
+        { type: "intervention.resolved", interventionId: "a-a1:check-1", outcome: "stopped" },
+        { type: "run.finished", runId: "a-a1", outcome: "failed", error: "Stopped by the Lead: x" },
+        { type: "task.failed", taskId: "a", error: "Stopped by the Lead: x" },
+        {
+          type: "intervention.requested",
+          interventionId: "a-a1",
+          taskId: "a",
+          runId: "a-a1",
+          trigger: "lead_stopped",
+          error: "Stopped by the Lead: x",
+          workSummary: " a.ts | 2 +-",
+        },
+        {
+          type: "plan.revision_proposed",
+          revisionId: "a-a1",
+          source: "lead",
+          reason: "split a",
+          ops: [{ op: "replace", task: { ...spec("a"), title: "Smaller a" } }],
+          interventionId: "a-a1",
+        },
+        { type: "plan.revision_approved", revisionId: "a-a1" },
+        { type: "task.started", taskId: "b" },
+        { type: "run.started", runId: "b-a1", taskId: "b", provider: "codex" },
+        { type: "run.finished", runId: "b-a1", outcome: "failed", error: timedOut },
+        { type: "task.failed", taskId: "b", error: timedOut },
+        {
+          type: "intervention.requested",
+          interventionId: "b-a1",
+          taskId: "b",
+          runId: "b-a1",
+          trigger: "timeout",
+          error: timedOut,
+        },
+        {
+          type: "intervention.resolved",
+          interventionId: "b-a1",
+          outcome: "continue",
+          note: "flaky",
+        },
+      ]),
+    );
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    const goal = store.get("i1");
+    expect(GoalSchema.safeParse(goal).success).toBe(true);
+    expect(goal?.interventions?.map((i) => [i.id, i.trigger, i.status, i.outcome])).toEqual([
+      ["a-a1:check-1", "watch", "resolved", "stopped"],
+      ["a-a1", "lead_stopped", "resolved", "revised"],
+      ["b-a1", "timeout", "resolved", "continue"],
+    ]);
+    expect(goal?.tasks.map((t) => [t.id, t.status, t.title])).toEqual([
+      ["a", "pending", "Smaller a"],
+      ["b", "failed", "Task b"],
+    ]);
+
+    // The retry after a continue is accepted, and a fresh load reads the same goal.
+    await store.dispatch("i1", {
+      id: "i1-next",
+      goalId: "i1",
+      type: "task.retried",
+      taskId: "b",
+    });
+    const events = await log.read("i1");
+    expect(events.at(-1)).toMatchObject({ type: "task.retried", taskId: "b" });
+    expect((await load()).get("i1")).toEqual(store.get("i1"));
+  });
+
+  test("logs from before recoveries replay with no recovery fields, and failedAt from the failure", async () => {
+    await writeFile(join(dir, "p2.jsonl"), phase2Log("p2"));
+    await writeFile(join(dir, "n1.jsonl"), preNotificationLog("n1"));
+    const store = await load();
+    for (const field of ["recovery", "recoveries", "guidance", "failedAt"]) {
+      expect(store.get("p2")).not.toHaveProperty(field);
+    }
+    const failed = store.get("n1");
+    // failedAt is the goal.failed event's own time, so it reads the same on every replay.
+    expect(failed?.failedAt).toBe(AT);
+    for (const field of ["recovery", "recoveries", "guidance"]) {
+      expect(failed).not.toHaveProperty(field);
+    }
+    expect((await load()).get("n1")).toEqual(failed);
+  });
+
+  test("interventions written before epochs replay without one", async () => {
+    await writeFile(
+      join(dir, "e1.jsonl"),
+      jsonl("e1", [
+        {
+          type: "goal.created",
+          title: "Woken",
+          objective: "o",
+          criteria: [{ id: "c1", text: "w" }],
+          config: { ...config, leadInterventions: true },
+        },
+        { type: "lead.attached", agentId: "lead-1" },
+        { type: "plan.proposed", tasks: [spec("a")] },
+        { type: "plan.approved" },
+        { type: "task.started", taskId: "a" },
+        { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+        { type: "run.finished", runId: "a-a1", outcome: "failed", error: "x" },
+        { type: "task.failed", taskId: "a", error: "x" },
+        {
+          type: "intervention.requested",
+          interventionId: "a-a1",
+          taskId: "a",
+          runId: "a-a1",
+          trigger: "repeated_failure",
+          error: "x",
+        },
+      ]),
+    );
+    const goal = (await load()).get("e1");
+    expect(goal?.interventions).toEqual([
+      {
+        id: "a-a1",
+        taskId: "a",
+        runId: "a-a1",
+        trigger: "repeated_failure",
+        error: "x",
+        status: "open",
+        requestedAt: AT,
+      },
+    ]);
+  });
+
+  test("a recovery round-trips through the log and replays to the same goal", async () => {
+    const later = "2026-01-01T00:30:00.000Z";
+    const lines = preNotificationLog("rc").trimEnd().split("\n");
+    const recovery = [
+      {
+        type: "recovery.started",
+        recoveryId: "r1",
+        startedBy: "person",
+        timeMode: "remaining",
+        activeMs: 0,
+        guidance: { goal: "be careful", tasks: { a: "read the docs first" } },
+      },
+      { type: "lead.attached", agentId: "lead-r1", workspaceId: "ws-r1" },
+      {
+        type: "intervention.requested",
+        interventionId: "recovery-r1",
+        trigger: "recovery",
+        error: "",
+      },
+      { type: "usage.recorded", role: "lead", agentId: "lead-r1", usage: { outputTokens: 10 } },
+      {
+        type: "recovery.decided",
+        recoveryId: "r1",
+        decision: {
+          decision: "revise",
+          reason: "split a",
+          ops: [
+            { op: "replace", task: { ...spec("a", "read"), title: "Smaller a" } },
+            { op: "add", task: spec("a2", "read") },
+          ],
+          hints: { a: "start from the README" },
+        },
+      },
+      {
+        type: "recovery.resolved",
+        recoveryId: "r1",
+        outcome: "applied",
+        timeMode: "remaining",
+        activeMs: 0,
+      },
+    ];
+    recovery.forEach((event, i) => {
+      lines.push(
+        JSON.stringify({ id: `rc-r${i}`, goalId: "rc", seq: 11 + i, at: later, ...event }),
+      );
+    });
+    await writeFile(join(dir, "rc.jsonl"), `${lines.join("\n")}\n`);
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    const goal = store.get("rc");
+    expect(GoalSchema.safeParse(goal).success).toBe(true);
+    expect(goal).toMatchObject({
+      status: "executing",
+      reopens: 1,
+      recoveries: 1,
+      failedAt: AT,
+      timeBaseAt: later,
+      leadAgentId: "lead-r1",
+      guidance: {
+        goal: "be careful",
+        tasks: { a: "read the docs first" },
+        lead: { recoveryId: "r1", tasks: { a: "start from the README" } },
+      },
+    });
+    expect(goal?.recovery).toMatchObject({ id: "r1", status: "applied", counted: true });
+    expect(goal?.planRevisions?.map((r) => [r.id, r.source, r.status])).toEqual([
+      ["r1", "lead", "applied"],
+    ]);
+    expect(goal?.tasks.map((t) => [t.id, t.status, t.title])).toEqual([
+      ["a", "pending", "Smaller a"],
+      ["a2", "pending", "Task a2"],
+    ]);
+
+    // An event appended now is read back by a fresh load exactly as dispatched.
+    await store.dispatch("rc", {
+      id: "rc-next",
+      goalId: "rc",
+      type: "goal.failed",
+      reason: "again",
+    });
+    expect(store.get("rc")?.recovery?.status).toBe("ended");
+    expect((await load()).get("rc")).toEqual(store.get("rc"));
   });
 
   test("a log from before goal management reads as normal priority, not archived, and takes management events", async () => {

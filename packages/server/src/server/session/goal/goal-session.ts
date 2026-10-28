@@ -1,8 +1,16 @@
 import type pino from "pino";
 import { toGoalSummary } from "@getpaseo/protocol/goal/progress";
-import type { Goal, GoalEvent } from "@getpaseo/protocol/goal/types";
+import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
+import { capText, interventionClass } from "@getpaseo/protocol/goal/interventions";
+import type {
+  Goal,
+  GoalEvent,
+  GoalSummary,
+  Guidance,
+  GuidanceChanges,
+} from "@getpaseo/protocol/goal/types";
 import type { SessionInboundMessage, SessionOutboundMessage } from "../../messages.js";
-import type { GoalService } from "../../goal/goal-service.js";
+import type { GoalService, GuidanceInput } from "../../goal/goal-service.js";
 
 export interface GoalSessionHost {
   emit(msg: SessionOutboundMessage): void;
@@ -18,6 +26,12 @@ export interface GoalSessionHost {
   supportsGoalUsageBreakdown?(): boolean;
   /** Whether the client parses changeset.integration_retried. Assumed when absent. */
   supportsGoalIntegrationRetry?(): boolean;
+  /** Whether the client parses the plan.revision_* events. Assumed when absent. */
+  supportsGoalPlanRevision?(): boolean;
+  /** Whether the client parses the intervention.* events. Assumed when absent. */
+  supportsGoalLeadInterventions?(): boolean;
+  /** Whether the client parses the recovery.* events. Assumed when absent. */
+  supportsGoalRecovery?(): boolean;
 }
 
 // COMPAT(goalControlEvents): added in v0.13.0, remove after 2027-04-26.
@@ -50,6 +64,26 @@ const GOAL_INTEGRATION_RETRY_EVENT_TYPES: ReadonlySet<string> = new Set([
   "changeset.integration_retried",
 ]);
 
+// COMPAT(goalPlanRevision): added in v0.13.13, remove after 2027-04-28.
+const GOAL_PLAN_REVISION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "plan.revision_proposed",
+  "plan.revision_approved",
+  "plan.revision_rejected",
+]);
+
+// COMPAT(goalLeadInterventions): added in v0.13.13, remove after 2027-04-28.
+const GOAL_LEAD_INTERVENTION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "intervention.requested",
+  "intervention.resolved",
+]);
+
+// COMPAT(goalRecovery): added in v0.13.13, remove after 2027-04-28.
+const GOAL_RECOVERY_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "recovery.started",
+  "recovery.decided",
+  "recovery.resolved",
+]);
+
 // COMPAT(goalConfigEdit): added in v0.13.3, remove after 2027-04-27. An older client's
 // policy enum has no "auto"; the nearest it knows is "wait", which auto also does when
 // an agent still asks.
@@ -71,6 +105,174 @@ export function withoutUsageBreakdown<T extends Goal>(goal: T): T {
     ...rest
   } = goal;
   return rest as T;
+}
+
+// COMPAT(goalPlanRevision): added in v0.13.13, remove after 2027-04-28. An older client
+// knows neither field; its parser would break on an op kind added after it shipped.
+// COMPAT(goalLeadInterventions): added in v0.13.13, remove after 2027-04-28. A client that
+// parses plan revisions but not interventions gets the revisions only.
+export function withoutInterventions<T extends Goal>(goal: T): T {
+  if (!goal.interventions) return goal;
+  const { interventions: _interventions, ...rest } = goal;
+  return rest as T;
+}
+
+export function withoutPlanRevisions<T extends Goal>(goal: T): T {
+  if (!goal.planRevisions && !goal.interventions) return goal;
+  const { planRevisions: _revisions, interventions: _interventions, ...rest } = goal;
+  return rest as T;
+}
+
+// COMPAT(goalRecovery): added in v0.13.13, remove after 2027-04-28. An older client cannot
+// show a recovery, and the Lead's decision prompt is about no task, which its views assume.
+export function withoutRecovery<T extends Goal>(goal: T): T {
+  if (!goal.recovery && goal.recoveries === undefined && !goal.guidance) {
+    return goal;
+  }
+  const { recovery: _recovery, recoveries: _recoveries, guidance: _guidance, ...rest } = goal;
+  if (!rest.interventions?.some((i) => interventionClass(i) === "recovery")) return rest as T;
+  return {
+    ...rest,
+    interventions: rest.interventions.filter((i) => interventionClass(i) !== "recovery"),
+  } as T;
+}
+
+/**
+ * Revisions and interventions grow with the goal's life. goal.list, mutation responses and
+ * goal.update carry the pending revision in full, which a person needs to decide it. Decided
+ * revisions come with `ops: []`, which means "left out", not "changed nothing"; read their ops
+ * from goal.inspect. Interventions lose only `workSummary` and a nudge's `message`: `error` is
+ * required by the schema an older reader of this field already has, so it stays. A recovery
+ * keeps its decision's ops only while a person has to approve them, and the Lead's advice for
+ * the workers is left out; both are in goal.inspect.
+ */
+export function withSlimPlanHistory<T extends Goal>(goal: T): T {
+  if (!goal.planRevisions && !goal.interventions && !goal.recovery && !goal.guidance) {
+    return goal;
+  }
+  return {
+    ...goal,
+    ...slimRecovery(goal),
+    ...(goal.planRevisions
+      ? {
+          planRevisions: goal.planRevisions.map((r) =>
+            r.status === "pending" ? r : { ...r, ops: [] },
+          ),
+        }
+      : {}),
+    ...(goal.interventions
+      ? {
+          interventions: goal.interventions.map(
+            ({ workSummary: _summary, message: _message, ...rest }) => rest,
+          ),
+        }
+      : {}),
+  };
+}
+
+function slimRecovery(goal: Goal): Pick<Goal, "recovery" | "guidance"> {
+  const slim: Pick<Goal, "recovery" | "guidance"> = {};
+  const recovery = goal.recovery;
+  if (recovery?.decision?.ops && recovery.status !== "awaiting_approval") {
+    slim.recovery = { ...recovery, decision: { ...recovery.decision, ops: [] } };
+  }
+  if (goal.guidance) slim.guidance = slimGuidance(goal.guidance);
+  return slim;
+}
+
+/** Longest piece of a person's guidance goal.list and goal.update carry. */
+export const SLIM_GUIDANCE_CHARS = 500;
+
+/** The person's guidance, each text cut to SLIM_GUIDANCE_CHARS and marked when cut; no Lead advice. */
+function slimGuidance(guidance: Guidance): Guidance {
+  const { lead: _lead, goal, tasks } = guidance;
+  let truncated = guidance.truncated === true;
+  const cut = (text: string) => {
+    if (text.length <= SLIM_GUIDANCE_CHARS) return text;
+    truncated = true;
+    return capText(text, SLIM_GUIDANCE_CHARS);
+  };
+  const slim: Guidance = {
+    ...(goal === undefined ? {} : { goal: cut(goal) }),
+    ...(tasks
+      ? { tasks: Object.fromEntries(Object.entries(tasks).map(([id, text]) => [id, cut(text)])) }
+      : {}),
+  };
+  return truncated ? { ...slim, truncated: true } : slim;
+}
+
+/** What a client parses, as the capabilities it announced say. Absent means supported. */
+export interface GoalClientSupport {
+  configEdit?: boolean;
+  usageBreakdown?: boolean;
+  planRevision?: boolean;
+  leadInterventions?: boolean;
+  recovery?: boolean;
+}
+
+/** The goal as a client with `support` can read it. */
+export function goalForClient<T extends Goal>(goal: T, support: GoalClientSupport): T {
+  const policy = support.configEdit === false ? withoutAutoPolicy(goal) : goal;
+  const usage = support.usageBreakdown === false ? withoutUsageBreakdown(policy) : policy;
+  const recovery = support.recovery === false ? withoutRecovery(usage) : usage;
+  if (support.planRevision === false) return withoutPlanRevisions(recovery);
+  return support.leadInterventions === false ? withoutInterventions(recovery) : recovery;
+}
+
+export interface GoalUpdateTarget {
+  supports(capability: ClientCapability): boolean;
+  publish(message: SessionOutboundMessage): void;
+}
+
+/**
+ * Push one goal.update to each session, in the slim shape goal.list uses and adapted to what
+ * the session's client parses. Sessions that announced the same support share one payload.
+ */
+export function publishGoalUpdate(
+  sessions: Iterable<GoalUpdateTarget>,
+  goal: GoalSummary,
+  options?: { deleted?: boolean },
+): void {
+  const slim = withSlimPlanHistory(goal);
+  // COMPAT(goalConfigEdit, goalUsageBreakdown): added in v0.13.3, remove after 2027-04-27.
+  // COMPAT(goalPlanRevision, goalLeadInterventions): added in v0.13.13, remove after 2027-04-28.
+  // COMPAT(goalRecovery): added in v0.13.13, remove after 2027-04-28.
+  const variants = new Map<string, Extract<SessionOutboundMessage, { type: "goal.update" }>>();
+  for (const session of sessions) {
+    const support = {
+      configEdit: session.supports(CLIENT_CAPS.goalConfigEdit),
+      usageBreakdown: session.supports(CLIENT_CAPS.goalUsageBreakdown),
+      planRevision: session.supports(CLIENT_CAPS.goalPlanRevision),
+      leadInterventions: session.supports(CLIENT_CAPS.goalLeadInterventions),
+      recovery: session.supports(CLIENT_CAPS.goalRecovery),
+    };
+    const key = `${support.configEdit}:${support.usageBreakdown}:${support.planRevision}:${support.leadInterventions}:${support.recovery}`;
+    let message = variants.get(key);
+    if (!message) {
+      const variant = goalForClient(slim, support);
+      message = {
+        type: "goal.update",
+        payload: options?.deleted ? { goal: variant, deleted: true } : { goal: variant },
+      };
+      variants.set(key, message);
+    }
+    session.publish(message);
+  }
+}
+
+// COMPAT(goalRecovery): added in v0.13.13, remove after 2027-04-28. The Lead's recovery
+// decision prompt goes with the recovery events it belongs to.
+function isRecoveryRequest(event: GoalEvent): boolean {
+  return event.type === "intervention.requested" && interventionClass(event) === "recovery";
+}
+
+/** The service's guidance input from a request's guidance changes. */
+function guidanceInput(guidance: GuidanceChanges | undefined): GuidanceInput {
+  if (!guidance) return {};
+  return {
+    ...(guidance.goal === undefined ? {} : { prompt: guidance.goal }),
+    ...(guidance.tasks ? { tasks: guidance.tasks } : {}),
+  };
 }
 
 function eventWithoutAutoPolicy(event: GoalEvent): GoalEvent {
@@ -107,7 +309,13 @@ type GoalMutationRequest = Extract<
       | "goal.set_priority.request"
       | "goal.archive.request"
       | "goal.unarchive.request"
-      | "goal.update_config.request";
+      | "goal.update_config.request"
+      | "goal.plan.revise.request"
+      | "goal.plan.approve_revision.request"
+      | "goal.plan.reject_revision.request"
+      | "goal.recovery.start.request"
+      | "goal.recovery.decide.request"
+      | "goal.recovery.cancel.request";
   }
 >;
 
@@ -129,7 +337,13 @@ type GoalMutationResponseType =
   | "goal.set_priority.response"
   | "goal.archive.response"
   | "goal.unarchive.response"
-  | "goal.update_config.response";
+  | "goal.update_config.response"
+  | "goal.plan.revise.response"
+  | "goal.plan.approve_revision.response"
+  | "goal.plan.reject_revision.response"
+  | "goal.recovery.start.response"
+  | "goal.recovery.decide.response"
+  | "goal.recovery.cancel.response";
 
 export class GoalSession {
   private readonly host: GoalSessionHost;
@@ -187,7 +401,10 @@ export class GoalSession {
         );
       case "goal.retry.request":
         return this.mutate(msg, "goal.retry.response", () =>
-          this.goalService.retry(msg.goalId, msg.taskId, msg.eventId),
+          this.goalService.retry(msg.goalId, msg.taskId, msg.eventId, msg.timeMode, {
+            ...guidanceInput(msg.guidance),
+            ...(msg.agentId ? { agentId: msg.agentId } : {}),
+          }),
         );
       case "goal.pause.request":
         return this.mutate(msg, "goal.pause.response", () =>
@@ -228,7 +445,81 @@ export class GoalSession {
       case "goal.inspect.request":
         return this.handleInspect(msg.requestId, msg.goalId);
       default:
+        return this.dispatchPlanRevision(msg);
+    }
+  }
+
+  private dispatchRecovery(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "goal.recovery.start.request":
+        return this.mutate(msg, "goal.recovery.start.response", () =>
+          this.goalService.startRecovery(
+            msg.goalId,
+            {
+              ...guidanceInput(msg.guidance),
+              ...(msg.timeMode ? { timeMode: msg.timeMode } : {}),
+              ...(msg.agentId ? { agentId: msg.agentId } : {}),
+            },
+            msg.eventId,
+          ),
+        );
+      case "goal.recovery.decide.request":
+        return this.mutate(msg, "goal.recovery.decide.response", () =>
+          this.goalService.decideRecovery(
+            msg.goalId,
+            {
+              recoveryId: msg.recoveryId,
+              approve: msg.approve,
+              ...(msg.message === undefined ? {} : { message: msg.message }),
+              ...(msg.agentId ? { agentId: msg.agentId } : {}),
+            },
+            msg.eventId,
+          ),
+        );
+      case "goal.recovery.cancel.request":
+        return this.mutate(msg, "goal.recovery.cancel.response", () =>
+          this.goalService.cancelRecovery(
+            msg.goalId,
+            { recoveryId: msg.recoveryId, ...(msg.agentId ? { agentId: msg.agentId } : {}) },
+            msg.eventId,
+          ),
+        );
+      default:
         return undefined;
+    }
+  }
+
+  private dispatchPlanRevision(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "goal.plan.revise.request":
+        return this.mutate(msg, "goal.plan.revise.response", () =>
+          this.goalService.revisePlan(
+            msg.goalId,
+            {
+              ops: msg.ops,
+              tasks: msg.tasks,
+              remove: msg.remove,
+              reason: msg.reason,
+              agentId: msg.agentId,
+            },
+            msg.eventId,
+          ),
+        );
+      case "goal.plan.approve_revision.request":
+        return this.mutate(msg, "goal.plan.approve_revision.response", () =>
+          this.goalService.approvePlanRevision(msg.goalId, msg.revisionId, msg.eventId),
+        );
+      case "goal.plan.reject_revision.request":
+        return this.mutate(msg, "goal.plan.reject_revision.response", () =>
+          this.goalService.rejectPlanRevision(
+            msg.goalId,
+            msg.revisionId,
+            msg.feedback,
+            msg.eventId,
+          ),
+        );
+      default:
+        return this.dispatchRecovery(msg);
     }
   }
 
@@ -238,7 +529,7 @@ export class GoalSession {
     run: () => Promise<Goal>,
   ): Promise<void> {
     try {
-      const goal = this.forClient(await run());
+      const goal = withSlimPlanHistory(this.forClient(await run()));
       this.host.emit({
         type: responseType,
         payload: { requestId: request.requestId, goal, error: null },
@@ -261,7 +552,7 @@ export class GoalSession {
         type: "goal.list.response",
         payload: {
           requestId: msg.requestId,
-          goals: goals.map((goal) => toGoalSummary(this.forClient(goal))),
+          goals: goals.map((goal) => toGoalSummary(withSlimPlanHistory(this.forClient(goal)))),
           error: null,
         },
       });
@@ -291,15 +582,29 @@ export class GoalSession {
       const hideManagement = this.host.supportsGoalManagementEvents?.() === false;
       const hideConfigEdit = this.host.supportsGoalConfigEdit?.() === false;
       const hideIntegrationRetry = this.host.supportsGoalIntegrationRetry?.() === false;
+      const hidePlanRevision = this.host.supportsGoalPlanRevision?.() === false;
+      const hideLeadInterventions = this.host.supportsGoalLeadInterventions?.() === false;
+      const hideRecovery = this.host.supportsGoalRecovery?.() === false;
       const visible =
-        hideControl || hideAcknowledge || hideManagement || hideConfigEdit || hideIntegrationRetry
+        hideControl ||
+        hideAcknowledge ||
+        hideManagement ||
+        hideConfigEdit ||
+        hideIntegrationRetry ||
+        hidePlanRevision ||
+        hideLeadInterventions ||
+        hideRecovery
           ? events.filter(
               (e) =>
                 !(hideControl && GOAL_CONTROL_EVENT_TYPES.has(e.type)) &&
                 !(hideAcknowledge && GOAL_ACKNOWLEDGE_EVENT_TYPES.has(e.type)) &&
                 !(hideManagement && GOAL_MANAGEMENT_EVENT_TYPES.has(e.type)) &&
                 !(hideConfigEdit && GOAL_CONFIG_EDIT_EVENT_TYPES.has(e.type)) &&
-                !(hideIntegrationRetry && GOAL_INTEGRATION_RETRY_EVENT_TYPES.has(e.type)),
+                !(hideIntegrationRetry && GOAL_INTEGRATION_RETRY_EVENT_TYPES.has(e.type)) &&
+                !(hidePlanRevision && GOAL_PLAN_REVISION_EVENT_TYPES.has(e.type)) &&
+                !(hideLeadInterventions && GOAL_LEAD_INTERVENTION_EVENT_TYPES.has(e.type)) &&
+                !(hideRecovery && GOAL_RECOVERY_EVENT_TYPES.has(e.type)) &&
+                !(hideRecovery && isRecoveryRequest(e)),
             )
           : events;
       this.host.emit({
@@ -317,10 +622,13 @@ export class GoalSession {
   }
 
   private forClient(goal: Goal): Goal {
-    const policy = this.host.supportsGoalConfigEdit?.() === false ? withoutAutoPolicy(goal) : goal;
-    return this.host.supportsGoalUsageBreakdown?.() === false
-      ? withoutUsageBreakdown(policy)
-      : policy;
+    return goalForClient(goal, {
+      configEdit: this.host.supportsGoalConfigEdit?.(),
+      usageBreakdown: this.host.supportsGoalUsageBreakdown?.(),
+      planRevision: this.host.supportsGoalPlanRevision?.(),
+      leadInterventions: this.host.supportsGoalLeadInterventions?.(),
+      recovery: this.host.supportsGoalRecovery?.(),
+    });
   }
 
   private emitError(requestId: string, requestType: string, error: unknown): void {

@@ -6,7 +6,13 @@ import type {
   GoalConfig,
   GoalEvent,
   GoalStatus,
+  Guidance,
+  GuidanceChanges,
+  LeadIntervention,
   Notification,
+  PlanRevision,
+  Recovery,
+  RecoveryDecision,
   Task,
   TaskSpec,
   TurnUsage,
@@ -14,8 +20,39 @@ import type {
   UsageRole,
   UsageTotals,
 } from "@getpaseo/protocol/goal/types";
-import { CHANGE_SET_INTEGRATION_FAILED } from "@getpaseo/protocol/goal/types";
-import { budgetExceeded, goalDeadlineMs, resolveLimits } from "./goal-limits.js";
+import {
+  CHANGE_SET_INTEGRATION_FAILED,
+  GOAL_TIME_LIMIT_PASSED,
+  GOAL_TIME_MODES,
+} from "@getpaseo/protocol/goal/types";
+import {
+  LAST_ATTEMPT_TRIGGER,
+  MAX_DECISION_REASON_CHARS,
+  MAX_GUIDANCE_CHARS,
+  MAX_INTERVENTION_ERROR_CHARS,
+  MAX_NUDGE_CHARS,
+  MAX_WORK_SUMMARY_CHARS,
+  RECOVERY_DECISION_MS,
+  type InterventionClass,
+  capText,
+  interventionClass,
+} from "@getpaseo/protocol/goal/interventions";
+import {
+  absoluteDeadlineMs,
+  budgetExceeded,
+  goalDeadlineMs,
+  resolveLimits,
+} from "./goal-limits.js";
+import {
+  PlanRevisionError,
+  checkRecoveryDecision,
+  isInterventionLive,
+  pendingRevision as pendingRevisionOf,
+  revisionNeedsApproval,
+  revisionTargets,
+  revisedPlan,
+  validatePlanRevision,
+} from "./plan-revision.js";
 import { readyTasks, validateTaskGraph } from "./task-graph.js";
 
 export class GoalTransitionError extends Error {
@@ -46,8 +83,82 @@ export const NOTIFICATION_BACKOFF_MS = [5_000, 30_000, 120_000, 300_000];
 /** Times a person may send a goal's plan back to the Lead. */
 export const MAX_PLAN_REJECTIONS = 5;
 
+/** Plan revisions a goal may record after approval, whatever their outcome. */
+export const MAX_PLAN_REVISIONS = 20;
+
+/** Times the Lead may be woken about failed tasks over a goal's life, whatever the outcome. */
+export const MAX_INTERVENTIONS_PER_GOAL = 4;
+
+/** Failure wake-ups about one task. A wake-up about its last attempt is not counted. */
+export const MAX_INTERVENTIONS_PER_TASK = 2;
+
+/** Check-ins on one run while it is still going, and over a goal's life. */
+export const MAX_CHECK_INS_PER_RUN = 3;
+export const MAX_CHECK_INS_PER_GOAL = 12;
+
+/** Recoveries a goal may count over its life: those the Lead decided, applied or not. */
+export const MAX_RECOVERIES = 3;
+
 export function isTerminalGoalStatus(status: GoalStatus): boolean {
   return TERMINAL_GOAL_STATUSES.has(status);
+}
+
+function isCheckIn(intervention: Pick<LeadIntervention, "trigger">): boolean {
+  return interventionClass(intervention) === "check_in";
+}
+
+/** Outcomes intervention.resolved may record per class; the reducer sets the others itself. */
+const RESOLVED_OUTCOMES: Record<InterventionClass, ReadonlySet<string>> = {
+  failure: new Set(["continue", "give_up", "expired", "lead_unavailable"]),
+  check_in: new Set(["ok", "nudged", "stopped", "expired", "lead_unavailable"]),
+  // recovery.decided resolves a recovery intervention with outcome "decided", fallbacks too.
+  recovery: new Set(),
+};
+
+const CLASS_NAMES: Record<InterventionClass, string> = {
+  failure: "failure wake-up",
+  check_in: "check-in",
+  recovery: "recovery decision",
+};
+
+/**
+ * Interventions of the goal's current epoch: caps count again after each reopen, so a goal a
+ * person or a recovery reopened can wake its Lead again. Interventions recorded before epochs
+ * read as 0.
+ */
+function currentEpoch(goal: Goal): LeadIntervention[] {
+  const epoch = goal.reopens ?? 0;
+  return (goal.interventions ?? []).filter((i) => (i.epoch ?? 0) === epoch);
+}
+
+/**
+ * Why the goal cannot take another failure wake-up about `taskId` with `trigger`, or null.
+ * Every wake-up counts, whatever its outcome, so a failing task cannot wake the Lead forever.
+ */
+export function failureWakeUpCapError(goal: Goal, taskId: string, trigger: string): string | null {
+  const failures = currentEpoch(goal).filter((i) => interventionClass(i) === "failure");
+  if (failures.length >= MAX_INTERVENTIONS_PER_GOAL) {
+    return `the Lead was already woken ${failures.length} times about failed tasks; the limit is ${MAX_INTERVENTIONS_PER_GOAL}`;
+  }
+  if (trigger === LAST_ATTEMPT_TRIGGER) return null;
+  const forTask = failures.filter((i) => i.taskId === taskId && i.trigger !== LAST_ATTEMPT_TRIGGER);
+  if (forTask.length >= MAX_INTERVENTIONS_PER_TASK) {
+    return `the Lead was already woken ${forTask.length} times about task ${taskId}; the limit is ${MAX_INTERVENTIONS_PER_TASK}`;
+  }
+  return null;
+}
+
+/** Why the goal cannot take another check-in on `runId`, or null. */
+export function checkInCapError(goal: Goal, runId: string): string | null {
+  const checkIns = currentEpoch(goal).filter(isCheckIn);
+  if (checkIns.length >= MAX_CHECK_INS_PER_GOAL) {
+    return `the Lead already checked in ${checkIns.length} times; the limit is ${MAX_CHECK_INS_PER_GOAL}`;
+  }
+  const forRun = checkIns.filter((i) => i.runId === runId).length;
+  if (forRun >= MAX_CHECK_INS_PER_RUN) {
+    return `the Lead already checked in ${forRun} times on run ${runId}; the limit is ${MAX_CHECK_INS_PER_RUN}`;
+  }
+  return null;
 }
 
 /** Runs of a task that failed since a person last retried it; these count against maxAttempts. */
@@ -119,20 +230,70 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
   }
   const managed = applyManagementEvent(goal, event);
   if (managed) return { ...managed, lastSeq: event.seq, updatedAt: event.at };
-  // A goal's outcome is sent as it ends, so its notifications outlive it, and a
-  // failed goal can be reopened by a retry. Nothing else reaches an ended goal
-  // except an acknowledgement, handled above.
-  const reopening =
-    (event.type === "goal.retried" ||
-      event.type === "goal.reopened" ||
-      event.type === "changeset.integration_retried") &&
-    goal.status === "failed";
-  if (isTerminalGoalStatus(goal.status) && !event.type.startsWith("notification.") && !reopening) {
+  if (isTerminalGoalStatus(goal.status) && !allowedOnEndedGoal(goal, event)) {
     throw new GoalTransitionError(event.type, `goal is ${goal.status}`);
   }
 
   const next = withVerificationTimes(applyToLiveGoal(goal, event), event);
   return { ...next, lastSeq: event.seq, updatedAt: event.at };
+}
+
+/**
+ * Events an ended goal still takes, besides acknowledgement and management handled before.
+ * A goal's outcome is sent as it ends, so its notifications outlive it.
+ */
+function allowedOnEndedGoal(goal: Goal, event: GoalEvent): boolean {
+  if (event.type.startsWith("notification.")) return true;
+  return goal.status === "failed" && allowedOnFailedGoal(goal, event);
+}
+
+/**
+ * A failed goal can be reopened by a retry or a recovery. While the recovery's Lead decides,
+ * it also takes the Lead and its decision prompt, and once a recovery exists, the Lead's usage,
+ * which may land after the recovery ended.
+ */
+function allowedOnFailedGoal(goal: Goal, event: GoalEvent): boolean {
+  switch (event.type) {
+    case "goal.retried":
+    case "goal.reopened":
+    case "changeset.integration_retried":
+    case "recovery.started":
+    case "recovery.decided":
+    case "recovery.resolved":
+      return true;
+    case "usage.recorded":
+      return event.role === "lead" && goal.recovery !== undefined;
+    case "lead.attached":
+      return goal.recovery?.status === "deciding";
+    case "intervention.requested":
+      return goal.recovery?.status === "deciding" && interventionClass(event) === "recovery";
+    default:
+      return false;
+  }
+}
+
+/** Recovery statuses during which the goal waits for its recovery and takes no other reopen. */
+const LIVE_RECOVERY_STATUSES: ReadonlySet<string> = new Set([
+  "deciding",
+  "decided",
+  "awaiting_approval",
+]);
+
+/** The recovery still deciding, being applied or waiting for approval, if any. */
+export function liveRecovery(goal: Pick<Goal, "recovery">): Recovery | null {
+  const recovery = goal.recovery;
+  return recovery && LIVE_RECOVERY_STATUSES.has(recovery.status) ? recovery : null;
+}
+
+/** A retry, reopen or archive would race the recovery; the person cancels it first. */
+function refuseWhileRecovering(goal: Goal, event: GoalEvent): void {
+  const live = liveRecovery(goal);
+  if (!live) return;
+  const state = live.status === "awaiting_approval" ? "waiting for approval" : live.status;
+  throw new GoalTransitionError(
+    event.type,
+    `recovery ${live.id} is ${state}; cancel the recovery first: paseo goal recover ${goal.id} --cancel`,
+  );
 }
 
 /** A person dismissed an ended goal. Only the mark changes; a failed goal can still be retried. */
@@ -204,6 +365,7 @@ function applyManagementEvent(goal: Goal, event: GoalEvent): Goal | null {
         );
       }
       if (goal.archivedAt) throw new GoalTransitionError(event.type, "goal is already archived");
+      refuseWhileRecovering(goal, event);
       return { ...goal, archivedAt: event.at };
     case "goal.unarchived":
       if (!goal.archivedAt) throw new GoalTransitionError(event.type, "goal is not archived");
@@ -239,6 +401,8 @@ function withVerificationTimes(goal: Goal, event: GoalEvent): Goal {
 function readyToVerify(goal: Goal): boolean {
   return (
     goal.tasks.length > 0 &&
+    // A pending revision may still add work.
+    !goal.planRevisions?.some((r) => r.status === "pending") &&
     goal.tasks.every((t) => t.status === "succeeded") &&
     (!goal.config || goal.tasks.every((t) => t.kind !== "implement" || t.captured)) &&
     goal.changeSets.every((c) => c.status === "integrated" || c.status === "superseded")
@@ -294,6 +458,8 @@ const HANDLERS: Record<string, EventHandler> = {
   integration: (goal, event) => applyChangeSetEvent(goal, event),
   notification: (goal, event) => applyNotificationEvent(goal, event),
   usage: (goal, event) => applyUsageEvent(goal, event),
+  intervention: (goal, event) => applyInterventionEvent(goal, event),
+  recovery: (goal, event) => applyRecoveryEvent(goal, event),
 };
 
 function applyToLiveGoal(goal: Goal, event: GoalEvent): Goal {
@@ -363,14 +529,595 @@ function applyPlanEvent(goal: Goal, event: GoalEvent): Goal {
       };
     }
 
+    case "plan.revision_proposed":
+      return proposeRevision(goal, event);
+
+    case "plan.revision_approved":
+      return approveRevision(goal, event);
+
+    case "plan.revision_rejected": {
+      const revision = pendingRevision(goal, event, event.revisionId);
+      return decideRevision(goal, revision, "rejected", event.at, event.reason);
+    }
+
     default:
       throw new GoalTransitionError(event.type, "unexpected event for this handler");
   }
 }
 
+/** Reports a plan revision check's refusal as a transition error. */
+function revisionCheck<T>(event: GoalEvent, check: () => T): T {
+  try {
+    return check();
+  } catch (error) {
+    if (error instanceof PlanRevisionError) {
+      throw new GoalTransitionError(event.type, error.message);
+    }
+    throw error;
+  }
+}
+
+function pendingRevision(goal: Goal, event: GoalEvent, revisionId: string): PlanRevision {
+  requireStatus(goal, event, "executing");
+  const revision = (goal.planRevisions ?? []).find((r) => r.id === revisionId);
+  if (!revision) throw new GoalTransitionError(event.type, `unknown revision ${revisionId}`);
+  if (revision.status !== "pending") {
+    throw new GoalTransitionError(event.type, `revision ${revisionId} is ${revision.status}`);
+  }
+  return revision;
+}
+
+function patched<T extends PlanRevision | LeadIntervention>(item: T, patch: Partial<T>): T {
+  return { ...item, ...patch };
+}
+
+function patchById<T extends PlanRevision | LeadIntervention>(
+  items: T[],
+  ids: ReadonlySet<string>,
+  patch: Partial<T>,
+): T[] {
+  return items.map((item) => (ids.has(item.id) ? patched(item, patch) : item));
+}
+
+/** Refuses a proposal the goal cannot take, and returns the revision it replaces, if any. */
+function checkProposal(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "plan.revision_proposed" }>,
+): PlanRevision | undefined {
+  requireStatus(goal, event, "executing");
+  if (!goal.config) {
+    throw new GoalTransitionError(event.type, "a manual goal's plan cannot be revised");
+  }
+  const revisions = goal.planRevisions ?? [];
+  if (revisions.some((r) => r.id === event.revisionId)) {
+    throw new GoalTransitionError(event.type, `revision ${event.revisionId} already exists`);
+  }
+  if (goal.verifyStartedAt) {
+    throw new GoalTransitionError(event.type, "verification has started; the plan cannot change");
+  }
+  if (revisions.length >= MAX_PLAN_REVISIONS) {
+    throw new GoalTransitionError(
+      event.type,
+      `the plan was already revised ${revisions.length} times; the limit is ${MAX_PLAN_REVISIONS}`,
+    );
+  }
+  revisionCheck(event, () =>
+    validatePlanRevision(goal, event.ops, event.source, event.interventionId),
+  );
+  const pending = revisions.find((r) => r.status === "pending");
+  if (pending && event.source !== "person") {
+    throw new GoalTransitionError(
+      event.type,
+      `revision ${pending.id} is still pending; wait for its decision`,
+    );
+  }
+  if (event.interventionId) {
+    const answered = goal.interventions?.find((i) => i.id === event.interventionId);
+    if (answered?.status !== "open") {
+      throw new GoalTransitionError(
+        event.type,
+        `intervention ${event.interventionId} is ${answered?.status ?? "unknown"}, expected open`,
+      );
+    }
+  }
+  return pending;
+}
+
+/**
+ * Interventions a proposal ends: the one the replaced revision answered, and for a person's
+ * revision every live one about a task it replaces or removes.
+ */
+function supersededInterventions(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "plan.revision_proposed" }>,
+  pending: PlanRevision | undefined,
+): Set<string> {
+  const superseded = new Set<string>();
+  if (pending?.interventionId) superseded.add(pending.interventionId);
+  if (event.source !== "person") return superseded;
+  const targets = revisionTargets(event.ops);
+  for (const i of goal.interventions ?? []) {
+    if (
+      i.id !== event.interventionId &&
+      isInterventionLive(i) &&
+      i.taskId !== undefined &&
+      targets.has(i.taskId)
+    ) {
+      superseded.add(i.id);
+    }
+  }
+  return superseded;
+}
+
+/**
+ * The Lead or a person proposes a change to the approved plan. One revision is pending at a
+ * time; a person's replaces a pending one, and a person's change to a task the Lead was woken
+ * about supersedes that intervention. The Lead answers an intervention only through a
+ * revision naming it.
+ */
+function proposeRevision(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "plan.revision_proposed" }>,
+): Goal {
+  const pending = checkProposal(goal, event);
+  const revision: PlanRevision = {
+    id: event.revisionId,
+    source: event.source,
+    reason: event.reason,
+    ops: event.ops,
+    status: "pending",
+    ...(event.interventionId ? { interventionId: event.interventionId } : {}),
+    proposedAt: event.at,
+  };
+  const replaced = new Set(pending ? [pending.id] : []);
+  const planRevisions = [
+    ...patchById(goal.planRevisions ?? [], replaced, {
+      status: "superseded",
+      decidedAt: event.at,
+      decisionReason: `superseded by revision ${event.revisionId}`,
+    }),
+    revision,
+  ];
+  if (!goal.interventions) return { ...goal, planRevisions };
+  const superseded = patchById(goal.interventions, supersededInterventions(goal, event, pending), {
+    status: "resolved",
+    outcome: "superseded",
+    resolvedAt: event.at,
+  });
+  const answered = new Set(event.interventionId ? [event.interventionId] : []);
+  const interventions = patchById(superseded, answered, {
+    status: "awaiting_approval",
+    revisionId: event.revisionId,
+  });
+  return { ...goal, planRevisions, interventions };
+}
+
+/** Applies a pending revision's ops, checked again against the goal as it is now. */
+function approveRevision(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "plan.revision_approved" }>,
+): Goal {
+  const revision = pendingRevision(goal, event, event.revisionId);
+  // Verification does not start while a revision is pending, so this holds only for
+  // criteria verified by other means; new work must not complete on their evidence.
+  if (goal.verifyStartedAt || goal.criteria.some((c) => c.verifiedAt)) {
+    throw new GoalTransitionError(event.type, "verification has started; the plan cannot change");
+  }
+  // Who proposed it is not checked again: an intervention opened since does not void it.
+  const tasks = revisionCheck(event, () =>
+    revisedPlan(goal, revision.ops, revision.interventionId),
+  );
+  return decideRevision({ ...goal, tasks }, revision, "applied", event.at);
+}
+
+/** Records the decision on a revision and resolves the intervention it answered. */
+function decideRevision(
+  goal: Goal,
+  revision: PlanRevision,
+  status: "applied" | "rejected",
+  at: string,
+  reason?: string,
+): Goal {
+  const planRevisions = patchById(goal.planRevisions ?? [], new Set([revision.id]), {
+    status,
+    decidedAt: at,
+    ...(reason === undefined ? {} : { decisionReason: reason }),
+  });
+  if (!goal.interventions || !revision.interventionId) return { ...goal, planRevisions };
+  const interventions = patchById(goal.interventions, new Set([revision.interventionId]), {
+    status: "resolved",
+    outcome: status === "applied" ? "revised" : "revision_rejected",
+    resolvedAt: at,
+  });
+  return { ...goal, planRevisions, interventions };
+}
+
+/**
+ * The goal ended: a pending revision can no longer apply and the Lead's decisions are no
+ * longer needed. Leaves goals without revisions or interventions as they are, so older
+ * logs replay unchanged.
+ */
+function abandonPlanChanges(goal: Goal, at: string): Partial<Goal> {
+  const pending = (goal.planRevisions ?? []).filter((r) => r.status === "pending");
+  const live = (goal.interventions ?? []).filter(isInterventionLive);
+  const planRevisions =
+    goal.planRevisions &&
+    patchById(goal.planRevisions, new Set(pending.map((r) => r.id)), {
+      status: "abandoned",
+      decidedAt: at,
+    });
+  // No outcome: the Lead's decision was never taken.
+  const interventions =
+    goal.interventions &&
+    patchById(goal.interventions, new Set(live.map((i) => i.id)), {
+      status: "abandoned",
+      resolvedAt: at,
+    });
+  return {
+    ...(planRevisions ? { planRevisions } : {}),
+    ...(interventions ? { interventions } : {}),
+  };
+}
+
+function applyInterventionEvent(goal: Goal, event: GoalEvent): Goal {
+  switch (event.type) {
+    case "intervention.requested":
+      return requestIntervention(goal, event);
+    case "intervention.resolved":
+      return resolveIntervention(goal, event);
+    default:
+      throw new GoalTransitionError(event.type, "unexpected event for this handler");
+  }
+}
+
+type InterventionRequest = Extract<GoalEvent, { type: "intervention.requested" }>;
+
+/**
+ * The Manager wakes the Lead about a task: after a failed run, or with a check-in while a run
+ * is still going. One intervention is live per goal, of either kind, and none while a plan
+ * revision waits, since the Lead's answer may be a revision.
+ */
+function requestIntervention(goal: Goal, event: InterventionRequest): Goal {
+  const interventions = goal.interventions ?? [];
+  if (interventions.some((i) => i.id === event.interventionId)) {
+    throw new GoalTransitionError(
+      event.type,
+      `intervention ${event.interventionId} already exists`,
+    );
+  }
+  const live = interventions.find(isInterventionLive);
+  if (live) {
+    throw new GoalTransitionError(event.type, `intervention ${live.id} is still ${live.status}`);
+  }
+  const pending = pendingRevisionOf(goal);
+  if (pending) throw new GoalTransitionError(event.type, `revision ${pending.id} is pending`);
+  // Each class of intervention has its own rules, caps and goal status. A trigger this
+  // version does not know is refused rather than treated as one it does.
+  let subject: { task: Task; run: AgentRun } | null;
+  switch (interventionClass(event)) {
+    case "check_in":
+      subject = taskRun(goal, event);
+      checkCheckIn(goal, event, subject.task, subject.run);
+      break;
+    case "failure":
+      subject = taskRun(goal, event);
+      checkFailureWakeUp(goal, event, subject.task, subject.run);
+      break;
+    case "recovery":
+      return requestRecoveryDecision(goal, event);
+    case null:
+      throw new GoalTransitionError(event.type, `unknown trigger ${event.trigger}`);
+  }
+  // Recorded text is capped here, so a runaway error or summary cannot bloat the goal.
+  const intervention: LeadIntervention = {
+    id: event.interventionId,
+    taskId: subject.task.id,
+    runId: subject.run.id,
+    trigger: event.trigger,
+    error: capText(event.error, MAX_INTERVENTION_ERROR_CHARS),
+    ...(event.triggers ? { triggers: event.triggers } : {}),
+    ...(event.checkIn === undefined ? {} : { checkIn: event.checkIn }),
+    ...(event.workSummary === undefined
+      ? {}
+      : { workSummary: capText(event.workSummary, MAX_WORK_SUMMARY_CHARS) }),
+    status: "open",
+    requestedAt: event.at,
+    ...epochOf(goal),
+  };
+  return { ...goal, interventions: [...interventions, intervention] };
+}
+
+/** The epoch an intervention records; left out while it is 0, which absent reads as. */
+function epochOf(goal: Goal): Pick<LeadIntervention, "epoch"> {
+  return goal.reopens ? { epoch: goal.reopens } : {};
+}
+
+/**
+ * The Lead of a failed goal's recovery is asked how to recover it: once per recovery, while
+ * it decides, about the whole goal. It needs no leadInterventions setting: a person asked.
+ */
+function requestRecoveryDecision(goal: Goal, event: InterventionRequest): Goal {
+  const recovery = goal.recovery;
+  if (goal.status !== "failed" || recovery?.status !== "deciding") {
+    throw new GoalTransitionError(event.type, "a recovery decision needs a recovery deciding");
+  }
+  if (event.taskId !== undefined || event.runId !== undefined) {
+    throw new GoalTransitionError(event.type, "a recovery decision is about the goal, not a task");
+  }
+  if (event.checkIn !== undefined || event.triggers || event.workSummary !== undefined) {
+    throw new GoalTransitionError(event.type, "a recovery decision carries no check-in fields");
+  }
+  if (recovery.interventionId) {
+    throw new GoalTransitionError(
+      event.type,
+      `recovery ${recovery.id} already asked its Lead (intervention ${recovery.interventionId})`,
+    );
+  }
+  if (!recovery.leadAgentId) {
+    throw new GoalTransitionError(event.type, `recovery ${recovery.id} has no Lead yet`);
+  }
+  const intervention: LeadIntervention = {
+    id: event.interventionId,
+    trigger: event.trigger,
+    error: capText(event.error, MAX_INTERVENTION_ERROR_CHARS),
+    status: "open",
+    requestedAt: event.at,
+    ...epochOf(goal),
+  };
+  return {
+    ...goal,
+    interventions: [...(goal.interventions ?? []), intervention],
+    recovery: { ...recovery, interventionId: intervention.id },
+  };
+}
+
+/**
+ * The task and run a failure wake-up or check-in is about; both are required for them. These
+ * classes need an executing goal with the setting on and a Lead.
+ */
+function taskRun(goal: Goal, event: InterventionRequest): { task: Task; run: AgentRun } {
+  requireStatus(goal, event, "executing");
+  if (!goal.config?.leadInterventions) {
+    throw new GoalTransitionError(event.type, "Lead interventions are off for this goal");
+  }
+  if (!goal.leadAgentId) throw new GoalTransitionError(event.type, "the goal has no Lead");
+  if (!event.taskId || !event.runId) {
+    throw new GoalTransitionError(event.type, `trigger ${event.trigger} needs a taskId and runId`);
+  }
+  const task = goal.tasks.find((t) => t.id === event.taskId);
+  if (!task) throw new GoalTransitionError(event.type, `unknown task ${event.taskId}`);
+  const run = goal.runs.find((r) => r.id === event.runId && r.taskId === task.id);
+  if (!run) {
+    throw new GoalTransitionError(event.type, `run ${event.runId} is not a run of task ${task.id}`);
+  }
+  return { task, run };
+}
+
+/**
+ * A failure wake-up: about the latest run of a failed task, which failed, once per run, within
+ * the caps. An earlier run is refused: the give_up guard on task.retried reads the latest run.
+ */
+function checkFailureWakeUp(
+  goal: Goal,
+  event: InterventionRequest,
+  task: Task,
+  run: AgentRun,
+): void {
+  if (task.rework) {
+    throw new GoalTransitionError(event.type, `task ${task.id} is a rework task`);
+  }
+  if (task.status !== "failed") {
+    throw new GoalTransitionError(event.type, `task ${task.id} is ${task.status}, expected failed`);
+  }
+  if (run.status !== "failed") {
+    throw new GoalTransitionError(event.type, `run ${run.id} is ${run.status}, expected failed`);
+  }
+  const latest = goal.runs.findLast((r) => r.taskId === task.id);
+  if (latest?.id !== run.id) {
+    throw new GoalTransitionError(
+      event.type,
+      `run ${run.id} is not the latest run of task ${task.id} (${latest?.id})`,
+    );
+  }
+  if (event.checkIn !== undefined || event.triggers) {
+    throw new GoalTransitionError(event.type, "only a check-in carries checkIn or triggers");
+  }
+  const earlier = (goal.interventions ?? []).find(
+    (i) => interventionClass(i) === "failure" && i.runId === run.id,
+  );
+  if (earlier) {
+    throw new GoalTransitionError(
+      event.type,
+      `the Lead was already woken about run ${run.id} (intervention ${earlier.id})`,
+    );
+  }
+  const capped = failureWakeUpCapError(goal, task.id, event.trigger);
+  if (capped) throw new GoalTransitionError(event.type, capped);
+}
+
+/** A check-in: about the live run of a running task, numbered in order, within the caps. */
+function checkCheckIn(goal: Goal, event: InterventionRequest, task: Task, run: AgentRun): void {
+  if (task.status !== "running") {
+    throw new GoalTransitionError(
+      event.type,
+      `task ${task.id} is ${task.status}, expected running`,
+    );
+  }
+  // The run may end between the watcher's look and this event; the watcher skips then.
+  if (run.status !== "running") {
+    throw new GoalTransitionError(event.type, `run ${run.id} is ${run.status}, expected running`);
+  }
+  const capped = checkInCapError(goal, run.id);
+  if (capped) throw new GoalTransitionError(event.type, capped);
+  const next =
+    (goal.interventions ?? []).filter((i) => isCheckIn(i) && i.runId === run.id).length + 1;
+  if (event.checkIn !== next) {
+    throw new GoalTransitionError(
+      event.type,
+      `check-in ${event.checkIn ?? "without a number"} on run ${run.id}, expected ${next}`,
+    );
+  }
+}
+
+/**
+ * The Lead decided, or the Manager stopped waiting. Only an open intervention resolves here:
+ * one awaiting approval of its revision is decided by plan.revision_approved or _rejected.
+ */
+function resolveIntervention(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "intervention.resolved" }>,
+): Goal {
+  const intervention = (goal.interventions ?? []).find((i) => i.id === event.interventionId);
+  if (!intervention) {
+    throw new GoalTransitionError(event.type, `unknown intervention ${event.interventionId}`);
+  }
+  if (intervention.status !== "open") {
+    throw new GoalTransitionError(
+      event.type,
+      `intervention ${intervention.id} is ${intervention.status}, expected open`,
+    );
+  }
+  const kind = interventionClass(intervention);
+  if (!kind) {
+    throw new GoalTransitionError(event.type, `unknown trigger ${intervention.trigger}`);
+  }
+  if (kind === "recovery") {
+    throw new GoalTransitionError(
+      event.type,
+      "a recovery decision is recorded by recovery.decided, not intervention.resolved",
+    );
+  }
+  // Failure wake-ups and check-ins are about the work of an executing goal.
+  requireStatus(goal, event, "executing");
+  const outcomes = RESOLVED_OUTCOMES[kind];
+  if (!outcomes.has(event.outcome)) {
+    throw new GoalTransitionError(
+      event.type,
+      `outcome ${event.outcome} does not resolve a ${CLASS_NAMES[kind]}; expected ${[...outcomes].join(", ")}`,
+    );
+  }
+  if ((event.outcome === "nudged") !== (event.message !== undefined)) {
+    throw new GoalTransitionError(event.type, "a message is recorded with outcome nudged only");
+  }
+  // Stopping a run that is merely quiet would throw away work on a guess.
+  if (event.outcome === "stopped" && !intervention.triggers?.includes("near_timeout")) {
+    throw new GoalTransitionError(event.type, "the Lead may stop a run only near its time limit");
+  }
+  const resolved: LeadIntervention = {
+    ...intervention,
+    status: "resolved",
+    outcome: event.outcome,
+    ...(event.note === undefined ? {} : { note: capText(event.note, MAX_DECISION_REASON_CHARS) }),
+    ...(event.message === undefined ? {} : { message: capText(event.message, MAX_NUDGE_CHARS) }),
+    resolvedAt: event.at,
+  };
+  return {
+    ...goal,
+    interventions: (goal.interventions ?? []).map((i) => (i.id === resolved.id ? resolved : i)),
+  };
+}
+
+/** A run ended while the Lead was checking in on it; its answer no longer applies. */
+function endCheckIns(goal: Goal, at: string, ended: (i: LeadIntervention) => boolean): Goal {
+  if (!goal.interventions) return goal;
+  const ids = new Set(
+    goal.interventions
+      .filter((i) => i.status === "open" && isCheckIn(i) && ended(i))
+      .map((i) => i.id),
+  );
+  if (ids.size === 0) return goal;
+  return {
+    ...goal,
+    interventions: patchById(goal.interventions, ids, {
+      status: "resolved",
+      outcome: "run_ended",
+      resolvedAt: at,
+    }),
+  };
+}
+
+/** A task the Lead is deciding about waits for that decision. */
+function refuseWhileDeciding(goal: Goal, event: GoalEvent, taskId: string): void {
+  const live = goal.interventions?.find((i) => i.taskId === taskId && isInterventionLive(i));
+  if (live) {
+    throw new GoalTransitionError(
+      event.type,
+      `task ${taskId} waits for the Lead's decision (intervention ${live.id})`,
+    );
+  }
+}
+
+/**
+ * A task is retried only once its run ended, and not after the Lead gave up on its last
+ * failure. Goals that never woke the Lead replay as before: these rules read interventions.
+ */
+function checkRetry(goal: Goal, event: GoalEvent, taskId: string): void {
+  if (!goal.interventions) return;
+  refuseWhileDeciding(goal, event, taskId);
+  const runs = goal.runs.filter((r) => r.taskId === taskId);
+  if (runs.some((r) => r.status === "running")) {
+    throw new GoalTransitionError(event.type, `task ${taskId} still has a live run`);
+  }
+  const last = runs.at(-1);
+  const gaveUp =
+    last &&
+    goal.interventions.find(
+      (i) => i.runId === last.id && i.outcome === "give_up" && interventionClass(i) === "failure",
+    );
+  if (gaveUp) {
+    throw new GoalTransitionError(
+      event.type,
+      `the Lead gave up on task ${taskId} (intervention ${gaveUp.id})`,
+    );
+  }
+}
+
+/**
+ * A person's retry wins over the Lead: live interventions about the retried tasks end as
+ * superseded, and a revision answering one of them is superseded with it.
+ */
+function supersedeForRetry(
+  goal: Goal,
+  retried: ReadonlySet<string>,
+  event: GoalEvent,
+): Partial<Goal> {
+  if (!goal.interventions) return {};
+  const live = goal.interventions.filter(
+    (i) => i.taskId !== undefined && retried.has(i.taskId) && isInterventionLive(i),
+  );
+  if (live.length === 0) return {};
+  const answering = new Set(
+    live.map((i) => i.revisionId).filter((id): id is string => id !== undefined),
+  );
+  return {
+    interventions: patchById(goal.interventions, new Set(live.map((i) => i.id)), {
+      status: "resolved",
+      outcome: "superseded",
+      resolvedAt: event.at,
+    }),
+    ...(goal.planRevisions && answering.size > 0
+      ? {
+          planRevisions: patchById(
+            goal.planRevisions,
+            new Set(
+              goal.planRevisions
+                .filter((r) => r.status === "pending" && answering.has(r.id))
+                .map((r) => r.id),
+            ),
+            {
+              status: "superseded",
+              decidedAt: event.at,
+              decisionReason: "superseded by a person's retry",
+            },
+          ),
+        }
+      : {}),
+  };
+}
+
 function applyTaskEvent(goal: Goal, event: GoalEvent): Goal {
   switch (event.type) {
-    case "task.started":
+    case "task.started": {
       requireStatus(goal, event, "executing");
       if (!readyTasks(goal.tasks).some((t) => t.id === event.taskId)) {
         const known = goal.tasks.some((t) => t.id === event.taskId);
@@ -379,28 +1126,44 @@ function applyTaskEvent(goal: Goal, event: GoalEvent): Goal {
           known ? `task ${event.taskId} is not ready` : `unknown task ${event.taskId}`,
         );
       }
+      const revising = goal.planRevisions?.find(
+        (r) => r.status === "pending" && revisionTargets(r.ops).has(event.taskId),
+      );
+      if (revising) {
+        throw new GoalTransitionError(
+          event.type,
+          `task ${event.taskId} is changed by pending revision ${revising.id}`,
+        );
+      }
+      refuseWhileDeciding(goal, event, event.taskId);
       return updateTask(goal, event, event.taskId, ["pending"], (t) => ({
         ...t,
         status: "running",
         attempts: t.attempts + 1,
       }));
+    }
 
-    case "task.succeeded":
-      return updateTask(goal, event, event.taskId, ["running"], (t) => ({
+    case "task.succeeded": {
+      const succeeded = updateTask(goal, event, event.taskId, ["running"], (t) => ({
         ...t,
         status: "succeeded",
         error: null,
         summary: event.summary ?? null,
       }));
+      return endCheckIns(succeeded, event.at, (i) => i.taskId === event.taskId);
+    }
 
-    case "task.failed":
-      return updateTask(goal, event, event.taskId, ["running"], (t) => ({
+    case "task.failed": {
+      const failed = updateTask(goal, event, event.taskId, ["running"], (t) => ({
         ...t,
         status: "failed",
         error: event.error,
       }));
+      return endCheckIns(failed, event.at, (i) => i.taskId === event.taskId);
+    }
 
     case "task.retried":
+      checkRetry(goal, event, event.taskId);
       return updateTask(goal, event, event.taskId, ["running", "failed"], (t) => ({
         ...t,
         status: "pending",
@@ -463,6 +1226,8 @@ function updateRun(
 function applyRunEvent(goal: Goal, event: GoalEvent): Goal {
   switch (event.type) {
     case "lead.attached":
+      // The terminal gate lets it reach a failed goal only while a recovery decides.
+      if (goal.status === "failed") return attachRecoveryLead(goal, event);
       requireStatus(goal, event, "planning", "awaiting_plan_approval");
       return {
         ...goal,
@@ -512,13 +1277,15 @@ function applyRunEvent(goal: Goal, event: GoalEvent): Goal {
         ...(event.thinking ? { thinking: event.thinking } : {}),
       }));
 
-    case "run.finished":
-      return updateRun(goal, event, event.runId, (r) => ({
+    case "run.finished": {
+      const finished = updateRun(goal, event, event.runId, (r) => ({
         ...r,
         status: event.outcome,
         endedAt: event.at,
         error: event.error ?? null,
       }));
+      return endCheckIns(finished, event.at, (i) => i.runId === event.runId);
+    }
 
     default:
       throw new GoalTransitionError(event.type, "unexpected event for this handler");
@@ -954,6 +1721,10 @@ function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
 
     case "goal.completed": {
       requireStatus(goal, event, "executing");
+      const revising = goal.planRevisions?.find((r) => r.status === "pending");
+      if (revising) {
+        throw new GoalTransitionError(event.type, `revision ${revising.id} is pending`);
+      }
       const open = goal.tasks.filter((t) => t.status !== "succeeded");
       if (open.length > 0) {
         throw new GoalTransitionError(
@@ -988,7 +1759,7 @@ function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
           `criteria not verified: ${unverified.map((c) => c.id).join(", ")}`,
         );
       }
-      return { ...goal, status: "completed" };
+      return { ...goal, status: "completed", ...endAppliedRecovery(goal) };
     }
 
     case "goal.failed":
@@ -997,8 +1768,11 @@ function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
         ...goal,
         status: "failed",
         failureReason: event.reason,
+        failedAt: event.at,
         tasks: goal.tasks.map((t) => (t.status === "running" ? { ...t, status: "cancelled" } : t)),
         runs: interruptLiveRuns(goal.runs, event.at),
+        ...abandonPlanChanges(goal, event.at),
+        ...endAppliedRecovery(goal),
       };
 
     case "goal.cancelled":
@@ -1009,6 +1783,8 @@ function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
           t.status === "pending" || t.status === "running" ? { ...t, status: "cancelled" } : t,
         ),
         runs: interruptLiveRuns(goal.runs, event.at),
+        ...abandonPlanChanges(goal, event.at),
+        ...endAppliedRecovery(goal),
       };
 
     case "goal.paused":
@@ -1044,6 +1820,7 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
   if (goal.archivedAt) {
     throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
   }
+  refuseWhileRecovering(goal, event);
   const reopen = goal.status === "failed";
   if (event.reopen !== reopen) {
     throw new GoalTransitionError(
@@ -1051,7 +1828,10 @@ function applyRetry(goal: Goal, event: Extract<GoalEvent, { type: "goal.retried"
       reopen ? "the goal failed; a retry must reopen it" : "only a failed goal can be reopened",
     );
   }
-  return retryTasks(goal, event, event.taskIds, reopen, new Set());
+  const retried = retryTasks(goal, event, event.taskIds, reopen, new Set());
+  return event.guidance
+    ? withGuidance(retried, mergeGuidance(goal, event, event.guidance))
+    : retried;
 }
 
 /**
@@ -1071,6 +1851,7 @@ function applyIntegrationRetry(
   if (goal.archivedAt) {
     throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
   }
+  refuseWhileRecovering(goal, event);
   for (const id of event.changeSetIds) {
     const cs = goal.changeSets.find((c) => c.id === id);
     if (!cs) throw new GoalTransitionError(event.type, `unknown change set ${id}`);
@@ -1095,10 +1876,26 @@ function reapprove(cs: ChangeSet, at: string): ChangeSet {
   return { ...rest, status: "approved", error: null, updatedAt: at };
 }
 
+/**
+ * The events that put a goal back to work; each may restart its time limit. recovery.started
+ * checks, without applying, that its recovery could restart it.
+ */
+type RetryEvent = Extract<
+  GoalEvent,
+  {
+    type:
+      | "goal.retried"
+      | "goal.reopened"
+      | "changeset.integration_retried"
+      | "recovery.started"
+      | "recovery.resolved";
+  }
+>;
+
 /** Return tasks to pending; on a reopen, check the goal can still finish. */
 function retryTasks(
   goal: Goal,
-  event: GoalEvent,
+  event: RetryEvent,
   taskIds: readonly string[],
   reopen: boolean,
   remergedChangeSetIds: ReadonlySet<string>,
@@ -1117,7 +1914,7 @@ function retryTasks(
       );
     }
   }
-  assertRoomToRun(goal, event);
+  const timeBase = assertRoomToRun(goal, event);
   if (reopen) {
     const missing = [...retryable].filter((id) => !taskIds.includes(id));
     if (missing.length > 0) {
@@ -1141,6 +1938,8 @@ function retryTasks(
     goal.runs.filter((r) => r.taskId === taskId && r.status === "failed").length;
   return {
     ...goal,
+    ...supersedeForRetry(goal, retried, event),
+    ...timeBase,
     status: "executing",
     failureReason: reopen ? null : goal.failureReason,
     ...(reopen ? { reopens: (goal.reopens ?? 0) + 1 } : {}),
@@ -1154,17 +1953,64 @@ function retryTasks(
   };
 }
 
-/** The run limit, time limit and budgets must leave room before work starts again. */
-function assertRoomToRun(goal: Goal, event: GoalEvent): void {
+/**
+ * The run limit, time limit and budgets must leave room before work starts again. Returns
+ * the goal's new time base when the event chose a time mode, else nothing: the time limit
+ * keeps counting as before.
+ */
+function assertRoomToRun(goal: Goal, event: RetryEvent): Pick<Goal, "timeBaseAt"> {
   const { maxRuns } = resolveLimits(goal.config);
   if (goal.runs.length >= maxRuns) {
     throw new GoalTransitionError(event.type, `the run limit of ${maxRuns} is used up`);
   }
-  if (Date.parse(event.at) >= goalDeadlineMs(goal)) {
-    throw new GoalTransitionError(event.type, "the goal's time limit has passed");
-  }
+  const timeBase = restartTimeLimit(goal, event);
   const overBudget = budgetExceeded(goal);
   if (overBudget) throw new GoalTransitionError(event.type, overBudget);
+  return timeBase;
+}
+
+/**
+ * The time base a retry sets. `fresh` counts the full time limit from the event; `remaining`
+ * counts it from as long before the event as the goal already ran (`activeMs`, recorded on
+ * the event), so editing the limit later moves the deadline the same way. Budgets are not
+ * time and stay cumulative. Neither mode moves an absolute deadline.
+ */
+function restartTimeLimit(goal: Goal, event: RetryEvent): Pick<Goal, "timeBaseAt"> {
+  const at = Date.parse(event.at);
+  const absolute = absoluteDeadlineMs(goal);
+  if (absolute !== null && at >= absolute) {
+    throw new GoalTransitionError(
+      event.type,
+      `the goal's deadline ${goal.config?.limits?.deadlineAt} has passed; set a later deadline or clear it`,
+    );
+  }
+  const { timeMode } = event;
+  if (timeMode === undefined) {
+    if (at >= goalDeadlineMs(goal)) {
+      throw new GoalTransitionError(
+        event.type,
+        `${GOAL_TIME_LIMIT_PASSED}; choose time mode fresh (the full limit from now) or remaining (the limit minus the time the goal ran)`,
+      );
+    }
+    return {};
+  }
+  if (timeMode === "fresh") return { timeBaseAt: event.at };
+  if (timeMode !== "remaining") {
+    throw new GoalTransitionError(
+      event.type,
+      `unknown time mode ${timeMode}; expected ${GOAL_TIME_MODES.join(" or ")}`,
+    );
+  }
+  if (event.activeMs === undefined) {
+    throw new GoalTransitionError(event.type, "the remaining time mode needs activeMs");
+  }
+  if (event.activeMs > at - Date.parse(goal.createdAt)) {
+    throw new GoalTransitionError(event.type, "activeMs is longer than the goal has existed");
+  }
+  if (event.activeMs >= resolveLimits(goal.config).goalTimeoutMs) {
+    throw new GoalTransitionError(event.type, "no time is left; choose fresh or raise the limit");
+  }
+  return { timeBaseAt: new Date(at - event.activeMs).toISOString() };
 }
 
 /**
@@ -1183,18 +2029,471 @@ function applyReopenPlanning(
   if (goal.archivedAt) {
     throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
   }
+  refuseWhileRecovering(goal, event);
   if (goal.tasks.length > 0) {
     throw new GoalTransitionError(
       event.type,
       "the goal failed after planning; retry its tasks instead",
     );
   }
-  assertRoomToRun(goal, event);
+  const timeBase = assertRoomToRun(goal, event);
   return {
     ...goal,
+    ...timeBase,
     status: "planning",
     failureReason: null,
     reopens: (goal.reopens ?? 0) + 1,
     ...(goal.acknowledgedAt ? { acknowledgedAt: null } : {}),
   };
+}
+
+function applyRecoveryEvent(goal: Goal, event: GoalEvent): Goal {
+  switch (event.type) {
+    case "recovery.started":
+      return startRecovery(goal, event);
+    case "recovery.decided":
+      return decideRecovery(goal, event);
+    case "recovery.resolved":
+      return resolveRecovery(goal, event);
+    default:
+      throw new GoalTransitionError(event.type, "unexpected event for this handler");
+  }
+}
+
+/** The goal with `guidance`, or without the field when there is none. */
+function withGuidance(goal: Goal, guidance: Guidance | undefined): Goal {
+  if (guidance) return { ...goal, guidance };
+  const { guidance: _guidance, ...rest } = goal;
+  return rest;
+}
+
+function checkGuidanceText(event: GoalEvent, subject: string, text: string): void {
+  if (!text.trim()) {
+    throw new GoalTransitionError(
+      event.type,
+      `the guidance for ${subject} is empty; send null to clear it`,
+    );
+  }
+  if (text.length > MAX_GUIDANCE_CHARS) {
+    throw new GoalTransitionError(
+      event.type,
+      `the guidance for ${subject} has ${text.length} characters; the limit is ${MAX_GUIDANCE_CHARS}`,
+    );
+  }
+}
+
+/**
+ * A person's guidance merged into the goal's: a string sets an entry, null clears it, absent
+ * leaves it. The Lead's advice is kept apart and never changed here.
+ */
+function mergeGuidance(
+  goal: Goal,
+  event: GoalEvent,
+  changes: GuidanceChanges,
+): Guidance | undefined {
+  const { goal: goalText, tasks: taskTexts, ...lead } = goal.guidance ?? {};
+  let nextGoal = goalText;
+  if (changes.goal === null) nextGoal = undefined;
+  else if (changes.goal !== undefined) {
+    checkGuidanceText(event, "the goal", changes.goal);
+    nextGoal = changes.goal;
+  }
+  const tasks: Record<string, string> = { ...taskTexts };
+  for (const [taskId, text] of Object.entries(changes.tasks ?? {})) {
+    if (text === null) {
+      delete tasks[taskId];
+      continue;
+    }
+    if (!goal.tasks.some((t) => t.id === taskId)) {
+      throw new GoalTransitionError(event.type, `guidance names unknown task ${taskId}`);
+    }
+    checkGuidanceText(event, `task ${taskId}`, text);
+    tasks[taskId] = text;
+  }
+  const next: Guidance = {
+    ...(nextGoal === undefined ? {} : { goal: nextGoal }),
+    ...(Object.keys(tasks).length > 0 ? { tasks } : {}),
+    ...lead,
+  };
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+/** The goal's recovery `recoveryId`; only the latest one can change. */
+function recoveryOf(goal: Goal, event: GoalEvent, recoveryId: string): Recovery {
+  const recovery = goal.recovery;
+  if (recovery?.id !== recoveryId) {
+    throw new GoalTransitionError(
+      event.type,
+      `unknown recovery ${recoveryId}${recovery ? ` (the latest is ${recovery.id})` : ""}`,
+    );
+  }
+  return recovery;
+}
+
+function requireRecoveryStatus(event: GoalEvent, recovery: Recovery, ...allowed: string[]): void {
+  if (!allowed.includes(recovery.status)) {
+    throw new GoalTransitionError(
+      event.type,
+      `recovery ${recovery.id} is ${recovery.status}, expected ${allowed.join(" or ")}`,
+    );
+  }
+}
+
+/**
+ * A person asks the Lead to recover a failed goal. The goal stays failed while the Lead
+ * decides; nothing about its tasks, change sets or integration changes yet. A recovery that
+ * could never apply is refused now: the limits must leave room as a retry's would, with the
+ * time mode it chose.
+ */
+function startRecovery(goal: Goal, event: Extract<GoalEvent, { type: "recovery.started" }>): Goal {
+  requireStatus(goal, event, "failed");
+  if (!goal.config) throw new GoalTransitionError(event.type, "a manual goal has no Lead");
+  if (goal.archivedAt) {
+    throw new GoalTransitionError(event.type, "the goal is archived; unarchive it first");
+  }
+  if (goal.tasks.length === 0) {
+    throw new GoalTransitionError(
+      event.type,
+      "the goal failed before it had a plan; retry it to plan again",
+    );
+  }
+  const live = liveRecovery(goal);
+  if (live)
+    throw new GoalTransitionError(event.type, `recovery ${live.id} is still ${live.status}`);
+  // An applied revise is recorded under the recovery's id, which must stay unique.
+  if (
+    goal.recovery?.id === event.recoveryId ||
+    goal.planRevisions?.some((r) => r.id === event.recoveryId)
+  ) {
+    throw new GoalTransitionError(event.type, `recovery id ${event.recoveryId} was already used`);
+  }
+  const used = goal.recoveries ?? 0;
+  if (used >= MAX_RECOVERIES) {
+    throw new GoalTransitionError(
+      event.type,
+      `the goal was already recovered ${used} times; the limit is ${MAX_RECOVERIES}`,
+    );
+  }
+  refuseRejectedByReview(goal, event);
+  assertRoomToRun(goal, event);
+  refuseDeadlineWhileDeciding(goal, event);
+  const guidance = event.guidance ? mergeGuidance(goal, event, event.guidance) : goal.guidance;
+  const previous = goal.recovery;
+  // A recovery that ended without applying rewrote the reason and failure time; keep the ones
+  // the goal first failed with. Only while that ending is still the goal's failure: a retry
+  // that failed again since has a reason of its own.
+  const original =
+    previous?.status === "ended" &&
+    previous.outcome !== "applied" &&
+    previous.resolvedAt === goal.failedAt
+      ? { reason: previous.failureReason, failedAt: previous.failedAt }
+      : { reason: goal.failureReason ?? "", failedAt: goal.failedAt };
+  const recovery: Recovery = {
+    id: event.recoveryId,
+    status: "deciding",
+    startedAt: event.at,
+    startedBy: event.startedBy,
+    failureReason: original.reason,
+    ...(original.failedAt === undefined ? {} : { failedAt: original.failedAt }),
+    ...(event.timeMode === undefined ? {} : { timeMode: event.timeMode }),
+    ...(event.activeMs === undefined ? {} : { activeMs: event.activeMs }),
+  };
+  return withGuidance({ ...goal, recovery }, guidance);
+}
+
+/**
+ * A limit that runs out while the Lead decides would refuse the recovery when it applies, after
+ * it counted. Without a time mode the time limit must outlast the decision; an absolute
+ * deadline, which no time mode moves, must outlast it always.
+ */
+function refuseDeadlineWhileDeciding(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "recovery.started" }>,
+): void {
+  const decided = Date.parse(event.at) + RECOVERY_DECISION_MS;
+  const minutes = RECOVERY_DECISION_MS / 60_000;
+  const absolute = absoluteDeadlineMs(goal);
+  if (absolute !== null && decided >= absolute) {
+    throw new GoalTransitionError(
+      event.type,
+      `the goal's deadline ${goal.config?.limits?.deadlineAt} passes within the Lead's ${minutes} minutes to decide; set a later deadline or clear it`,
+    );
+  }
+  if (event.timeMode === undefined && decided >= goalDeadlineMs(goal)) {
+    throw new GoalTransitionError(
+      event.type,
+      // GOAL_TIME_LIMIT_PASSED in the text lets a client ask for a time mode, as after a retry.
+      `the Lead has ${minutes} minutes to decide, and by then ${GOAL_TIME_LIMIT_PASSED}; choose time mode fresh or remaining`,
+    );
+  }
+}
+
+/** A change set rejected by review has no way back, so the goal can never complete. */
+function refuseRejectedByReview(goal: Goal, event: GoalEvent): void {
+  const rejected = goal.changeSets.filter(
+    (c) => c.status === "rejected" && !isIntegrationFailed(c),
+  );
+  if (rejected.length > 0) {
+    throw new GoalTransitionError(
+      event.type,
+      `change set ${rejected.map((c) => c.id).join(", ")} was rejected by review, so the goal cannot complete; start a new goal from its integration branch`,
+    );
+  }
+}
+
+/** The recovery's Lead joins while it decides; it stays the goal's Lead once the goal reopens. */
+function attachRecoveryLead(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "lead.attached" }>,
+): Goal {
+  const recovery = goal.recovery;
+  if (recovery?.status !== "deciding") {
+    throw new GoalTransitionError(
+      event.type,
+      "a failed goal takes a Lead only while a recovery decides",
+    );
+  }
+  return {
+    ...goal,
+    leadAgentId: event.agentId,
+    leadWorkspaceId: event.workspaceId ?? null,
+    recovery: {
+      ...recovery,
+      leadAgentId: event.agentId,
+      ...(event.workspaceId ? { leadWorkspaceId: event.workspaceId } : {}),
+    },
+  };
+}
+
+/** A revise is recorded as a plan revision, so it needs room among them. */
+function checkRevisionRoom(goal: Goal, event: GoalEvent, decision: RecoveryDecision): void {
+  const revisions = goal.planRevisions?.length ?? 0;
+  if (decision.decision === "revise" && revisions >= MAX_PLAN_REVISIONS) {
+    throw new GoalTransitionError(
+      event.type,
+      `the plan was already revised ${revisions} times; the limit is ${MAX_PLAN_REVISIONS}`,
+    );
+  }
+}
+
+/**
+ * The Lead decided how to recover, or the Manager decided without it. A retry, or a revise the
+ * goal approves on its own, is applied next by recovery.resolved; another revise waits for a
+ * person; needs_person ends the recovery. Only a decision the Lead took counts toward the limit.
+ */
+function decideRecovery(goal: Goal, event: Extract<GoalEvent, { type: "recovery.decided" }>): Goal {
+  const recovery = recoveryOf(goal, event, event.recoveryId);
+  requireRecoveryStatus(event, recovery, "deciding");
+  const decision: RecoveryDecision = {
+    ...event.decision,
+    reason: capText(event.decision.reason, MAX_DECISION_REASON_CHARS),
+  };
+  checkRevisionRoom(goal, event, decision);
+  revisionCheck(event, () => checkRecoveryDecision(goal, decision, recovery.interventionId));
+  const asked = recovery.interventionId;
+  const interventions =
+    asked && goal.interventions
+      ? patchById(
+          goal.interventions,
+          new Set(
+            goal.interventions
+              .filter((i) => i.id === asked && i.status === "open")
+              .map((i) => i.id),
+          ),
+          { status: "resolved", outcome: "decided", resolvedAt: event.at },
+        )
+      : goal.interventions;
+  const decided: Recovery = {
+    ...recovery,
+    decision,
+    decidedAt: event.at,
+    counted: decision.fallback !== true,
+  };
+  const next: Goal = { ...goal, recovery: decided, ...(interventions ? { interventions } : {}) };
+  if (decision.decision === "needs_person") {
+    return endRecovery(next, "needs_person", decision.reason, event.at, decided.counted === true);
+  }
+  const awaiting = decision.decision === "revise" && revisionNeedsApproval(goal.config, "lead");
+  return { ...next, recovery: { ...decided, status: awaiting ? "awaiting_approval" : "decided" } };
+}
+
+const ENDED_REASONS: Record<string, string> = {
+  needs_person: "Recovery needs a person",
+  rejected: "Recovery rejected",
+  cancelled: "Recovery cancelled",
+};
+
+/**
+ * The recovery ended without reopening the goal: it stays failed, now with the recovery's
+ * outcome as its reason, and a recovery intervention still open is abandoned.
+ */
+function endRecovery(
+  goal: Goal,
+  outcome: string,
+  reason: string | undefined,
+  at: string,
+  counts: boolean,
+): Goal {
+  const recovery = goal.recovery as Recovery;
+  const prefix = ENDED_REASONS[outcome] ?? `Recovery ${outcome}`;
+  const live = (goal.interventions ?? []).filter(
+    (i) => i.id === recovery.interventionId && isInterventionLive(i),
+  );
+  return {
+    ...goal,
+    failureReason: reason ? `${prefix}: ${reason}` : prefix,
+    failedAt: at,
+    // A new ending asks for attention again, and can be dismissed again.
+    ...(goal.acknowledgedAt ? { acknowledgedAt: null } : {}),
+    recovery: {
+      ...recovery,
+      status: "ended",
+      outcome,
+      ...(reason ? { reason } : {}),
+      resolvedAt: at,
+    },
+    ...(counts ? { recoveries: (goal.recoveries ?? 0) + 1 } : {}),
+    ...(goal.interventions && live.length > 0
+      ? {
+          interventions: patchById(goal.interventions, new Set(live.map((i) => i.id)), {
+            status: "abandoned",
+            resolvedAt: at,
+          }),
+        }
+      : {}),
+  };
+}
+
+/** A goal reopened by a recovery that ends again ends the recovery with it. */
+function endAppliedRecovery(goal: Goal): Partial<Goal> {
+  if (goal.recovery?.status !== "applied") return {};
+  return { recovery: { ...goal.recovery, status: "ended" } };
+}
+
+/**
+ * The recovery ends. "applied" reopens the goal; "rejected" (a person turned down the Lead's
+ * revise), "needs_person" and "cancelled" leave it failed. A person cannot cancel while the
+ * Manager applies a decision.
+ */
+function resolveRecovery(
+  goal: Goal,
+  event: Extract<GoalEvent, { type: "recovery.resolved" }>,
+): Goal {
+  const recovery = recoveryOf(goal, event, event.recoveryId);
+  // Only a needs_person the Manager records itself can leave a Lead decision uncounted.
+  if (event.uncounted !== undefined && event.outcome !== "needs_person") {
+    throw new GoalTransitionError(event.type, "only a needs_person outcome can be uncounted");
+  }
+  if (event.outcome === "applied") {
+    requireRecoveryStatus(event, recovery, "decided", "awaiting_approval");
+    return applyRecovery(goal, recovery, event);
+  }
+  if (event.timeMode !== undefined || event.activeMs !== undefined) {
+    throw new GoalTransitionError(event.type, "only an applied recovery restarts the time limit");
+  }
+  switch (event.outcome) {
+    case "rejected":
+      requireRecoveryStatus(event, recovery, "awaiting_approval");
+      break;
+    case "needs_person":
+      requireRecoveryStatus(event, recovery, "decided", "awaiting_approval");
+      break;
+    case "cancelled":
+      if (recovery.status === "decided") {
+        throw new GoalTransitionError(
+          event.type,
+          "the recovery is being applied; cancel the goal after it reopens",
+        );
+      }
+      requireRecoveryStatus(event, recovery, "deciding", "awaiting_approval");
+      break;
+    default:
+      throw new GoalTransitionError(
+        event.type,
+        `unknown outcome ${event.outcome}; expected applied, rejected, needs_person or cancelled`,
+      );
+  }
+  const reason =
+    event.reason === undefined ? undefined : capText(event.reason, MAX_DECISION_REASON_CHARS);
+  const counts =
+    recovery.counted === true && event.outcome !== "cancelled" && event.uncounted !== true;
+  return endRecovery(goal, event.outcome, reason, event.at, counts);
+}
+
+/**
+ * Applies the recovery's decision in one step, checked against the goal as it is now: the
+ * revise's ops (recorded as an applied plan revision), every failed and cancelled task back to
+ * pending with its failures forgiven, merges that failed approved again, the time limit
+ * restarted with the recovery's time mode from this event, the Lead's advice for the workers,
+ * and the goal reopened. Refused when the goal cannot run; the Manager then ends the recovery.
+ */
+function applyRecovery(
+  goal: Goal,
+  recovery: Recovery,
+  event: Extract<GoalEvent, { type: "recovery.resolved" }>,
+): Goal {
+  if (event.timeMode !== recovery.timeMode || event.activeMs !== recovery.activeMs) {
+    throw new GoalTransitionError(
+      event.type,
+      "the time mode and active time must be the ones the recovery started with",
+    );
+  }
+  const decision = recovery.decision;
+  if (!decision)
+    throw new GoalTransitionError(event.type, `recovery ${recovery.id} has no decision`);
+  checkRevisionRoom(goal, event, decision);
+  const tasks = revisionCheck(event, () =>
+    checkRecoveryDecision(goal, decision, recovery.interventionId),
+  );
+  const planRevisions = decision.ops
+    ? [
+        ...(goal.planRevisions ?? []),
+        {
+          id: recovery.id,
+          source: "lead",
+          reason: decision.reason,
+          ops: decision.ops,
+          status: "applied",
+          ...(recovery.interventionId ? { interventionId: recovery.interventionId } : {}),
+          proposedAt: recovery.decidedAt ?? event.at,
+          decidedAt: event.at,
+        } satisfies PlanRevision,
+      ]
+    : goal.planRevisions;
+  const revised: Goal = { ...goal, tasks, ...(planRevisions ? { planRevisions } : {}) };
+  refuseRejectedByReview(revised, event);
+  const timeBase = assertRoomToRun(revised, event);
+  const failedRuns = (taskId: string) =>
+    goal.runs.filter((r) => r.taskId === taskId && r.status === "failed").length;
+  const { lead: _lead, tasks: personTasks, ...personGuidance } = goal.guidance ?? {};
+  // A person's guidance for a task the revise removed has no task left to reach.
+  const kept = Object.entries(personTasks ?? {}).filter(([id]) =>
+    revised.tasks.some((t) => t.id === id),
+  );
+  const hints = decision.hints ?? {};
+  const guidance: Guidance = {
+    ...personGuidance,
+    ...(kept.length > 0 ? { tasks: Object.fromEntries(kept) } : {}),
+    ...(Object.keys(hints).length > 0 ? { lead: { recoveryId: recovery.id, tasks: hints } } : {}),
+  };
+  const counted = recovery.counted === true;
+  const reopened: Goal = {
+    ...revised,
+    ...timeBase,
+    status: "executing",
+    failureReason: null,
+    reopens: (goal.reopens ?? 0) + 1,
+    ...(goal.acknowledgedAt ? { acknowledgedAt: null } : {}),
+    tasks: revised.tasks.map((t) =>
+      t.status === "failed" || t.status === "cancelled"
+        ? { ...t, status: "pending", error: null, forgivenFailures: failedRuns(t.id) }
+        : t,
+    ),
+    changeSets: revised.changeSets.map((c) =>
+      isIntegrationFailed(c) ? reapprove(c, event.at) : c,
+    ),
+    ...(counted ? { recoveries: (goal.recoveries ?? 0) + 1 } : {}),
+    recovery: { ...recovery, status: "applied", outcome: "applied", resolvedAt: event.at },
+  };
+  return withGuidance(reopened, Object.keys(guidance).length > 0 ? guidance : undefined);
 }
