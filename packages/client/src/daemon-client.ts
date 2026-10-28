@@ -7209,6 +7209,7 @@ export class DaemonClient {
     }
     if (config?.onPermissionRequest === "auto") this.requireGoalConfigEdit();
     if (config?.leadInterventions) this.requireGoalLeadInterventions();
+    if (config?.limits?.userWaitMinutes !== undefined) this.requireGoalUserWait();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.create.response">({
       requestId: options.requestId,
       message: {
@@ -7469,6 +7470,7 @@ export class DaemonClient {
   }): Promise<GoalMutationPayload> {
     this.requireGoalConfigEdit();
     if (options.changes.leadInterventions) this.requireGoalLeadInterventions();
+    if (options.changes.limits?.userWaitMinutes !== undefined) this.requireGoalUserWait();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.update_config.response">({
       requestId: options.requestId,
       message: {
@@ -7489,6 +7491,18 @@ export class DaemonClient {
     if (!this.supportsGoalLeadInterventions()) {
       // An older daemon would drop the setting and never wake the Lead.
       throw new Error("Update the host to let the Lead decide about failing tasks.");
+    }
+  }
+
+  /** The goal setting limits.userWaitMinutes, the wait.* events and goals' `waits`. */
+  supportsGoalUserWait(): boolean {
+    return this.lastServerInfoMessage?.features?.goalUserWait === true;
+  }
+
+  private requireGoalUserWait(): void {
+    if (!this.supportsGoalUserWait()) {
+      // An older daemon would drop the setting and count waiting toward the time limits.
+      throw new Error("Update the host to limit how long a goal waits for an answer.");
     }
   }
 

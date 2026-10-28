@@ -45,6 +45,7 @@ export interface GoalCreateOptions extends GoalCommandOptions {
   maxRuns?: string;
   runTimeout?: string;
   goalTimeout?: string;
+  userWait?: string;
   retryBackoff?: string;
   onPermission?: string;
   allowProvider?: string[];
@@ -71,6 +72,7 @@ function buildLimits(options: GoalCreateOptions): GoalConfig["limits"] {
     maxRuns: intOption(options.maxRuns, "--max-runs"),
     runTimeoutMinutes: intOption(options.runTimeout, "--run-timeout"),
     goalTimeoutMinutes: intOption(options.goalTimeout, "--goal-timeout"),
+    userWaitMinutes: intOption(options.userWait, "--user-wait"),
     retryBackoffSeconds: intOption(options.retryBackoff, "--retry-backoff"),
     maxTotalTokens: intOption(options.maxTokens, "--max-tokens"),
     maxCostUsd: numberOption(options.maxCost, "--max-cost"),

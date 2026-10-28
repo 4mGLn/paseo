@@ -157,6 +157,7 @@ export const DEFAULT_CLIENT_CAPABILITIES = {
   [CLIENT_CAPS.goalLeadInterventions]: true,
   [CLIENT_CAPS.goalRecovery]: true,
   [CLIENT_CAPS.goalAccept]: true,
+  [CLIENT_CAPS.goalUserWait]: true,
 } satisfies Record<Exclude<ClientCapability, typeof CLIENT_CAPS.browserHost>, true>;
 
 /** Calling releases demand; ready waits for membership, or local attachment on broadcast hosts. */
