@@ -168,6 +168,20 @@ describe("the Lead's decisions, check-ins, plan changes and recoveries", () => {
     expect(
       describeLead({
         type: "intervention.requested",
+        interventionId: "t7-a1",
+        taskId: "t7",
+        runId: "t7-a1",
+        trigger: "worker_blocked",
+        error: "Worker reported it was blocked: disk full",
+      }),
+    ).toEqual({
+      key: "leadDeciding_worker_blocked",
+      tone: "warning",
+      subject: "Capture screenshots",
+    });
+    expect(
+      describeLead({
+        type: "intervention.requested",
         interventionId: "x",
         taskId: "t7",
         trigger: "something_new",
@@ -331,9 +345,13 @@ describe("the Lead's decisions, check-ins, plan changes and recoveries", () => {
       "checkInRequested_near_timeout",
       "checkInRequested_stall",
       "recoveryStarted",
-      ...["timeout", "repeated_failure", "attempts_exhausted", "lead_stopped"].map(
-        (trigger) => `leadDeciding_${trigger}`,
-      ),
+      ...[
+        "timeout",
+        "repeated_failure",
+        "attempts_exhausted",
+        "worker_blocked",
+        "lead_stopped",
+      ].map((trigger) => `leadDeciding_${trigger}`),
       ...["continue", "give_up", "expired", "lead_unavailable", "unknown"].map(
         (outcome) => `leadDecided_${outcome}`,
       ),
@@ -465,6 +483,30 @@ describe("one-line details", () => {
       summary: "UV-02 fails in updater_module.c:1301-1310.",
       canExpand: true,
     });
+  });
+
+  it("tells a goal you accepted as is, with how many it waived and your note", () => {
+    const note = "Good enough for the release. UV-02 moves to the next goal.";
+    const [entry] = buildGoalEventFeed(
+      [
+        event({
+          type: "goal.accepted",
+          criterionIds: ["k1", "k2"],
+          note,
+          acceptedFrom: "Acceptance criteria not met: k1, k2",
+          client: "app",
+        }),
+      ],
+      goal,
+    );
+    expect(entry).toMatchObject({
+      key: "goalAccepted",
+      tone: "success",
+      subjects: ["2"],
+      detail: note,
+    });
+    expect(en.goals.events.goalAccepted).toContain("{{subject}}");
+    expect(reasonPreview(entry?.detail ?? "").summary).toBe("Good enough for the release.");
   });
 
   it("has the hint the expandable lines read out", () => {

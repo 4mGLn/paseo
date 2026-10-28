@@ -371,6 +371,15 @@ function DiagnosisCard({
         {view.tasks.map((task) => (
           <DiagnosisTaskRow key={task.taskId} task={task} />
         ))}
+        {view.unchanged.length > 0 ? (
+          <View style={settingsStyles.row} testID="goal-diagnosis-unchanged">
+            <View style={settingsStyles.rowContent}>
+              <Text style={styles.meta}>
+                {t("goals.diagnosis.unchanged", { titles: view.unchanged.join(", ") })}
+              </Text>
+            </View>
+          </View>
+        ) : null}
         {view.limits.map((limit) => (
           <View
             key={limit.limit}
@@ -431,6 +440,11 @@ function DiagnosisTaskRow({ task }: { task: DiagnosisTaskView }): ReactElement {
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle}>{task.title}</Text>
         <Text style={settingsStyles.rowHint}>{meta.join(" · ")}</Text>
+        {task.cause === "worker_blocked" ? (
+          <Text style={settingsStyles.rowHint}>
+            {t("goals.diagnosis.causeRemedy.worker_blocked")}
+          </Text>
+        ) : null}
         {task.lastError ? (
           <Text style={settingsStyles.rowError} numberOfLines={3}>
             {task.lastError}

@@ -3,6 +3,7 @@ import type { GoalRetainedResource } from "@getpaseo/protocol/goal/rpc-schemas";
 import type { Goal, GoalPriority, GoalStatus } from "@getpaseo/protocol/goal/types";
 import type { StatusBadgeVariant } from "@/components/ui/status-badge";
 import { formatDuration } from "@/utils/time";
+import { acceptedWaivedCount } from "./goal-accept";
 import { goalAttention } from "./goal-attention";
 import { GOAL_STATUS_BADGE, isGoalTerminal } from "./goal-derivation";
 import { formatUsd, type GoalEstimate } from "./goal-progress";
@@ -47,7 +48,10 @@ export interface GoalBadge {
 /** The status pill for a goal: what it waits on when it waits on you, else its status. */
 export function goalBadge(
   t: TFunction,
-  goal: Pick<Goal, "status" | "changeSets" | "pausedAt" | "planRevisions" | "recovery">,
+  goal: Pick<
+    Goal,
+    "status" | "changeSets" | "pausedAt" | "planRevisions" | "recovery" | "accepted" | "criteria"
+  >,
 ): GoalBadge {
   const attention = goalAttention(goal);
   if (attention === "change_review") {
@@ -64,6 +68,12 @@ export function goalBadge(
   // A paused goal is still "executing" in its status; the person sees it as stopped.
   if (goal.pausedAt && !isGoalTerminal(status)) {
     return { label: t("goals.status.paused"), variant: "warning" };
+  }
+  // A person accepted it with criteria unverified: completed, and how many it waived. An accept
+  // that waived nothing reads as a plain completion.
+  const waived = status === "completed" ? acceptedWaivedCount(goal) : null;
+  if (waived !== null && waived > 0) {
+    return { label: t("goals.accept.completedWaived", { n: waived }), variant: "success" };
   }
   return { label: t(`goals.status.${status}`), variant: GOAL_STATUS_BADGE[status] };
 }
