@@ -73,19 +73,31 @@ export function goalRevisionRows(goal: Pick<Goal, "planRevisions">): GoalRevisio
   }));
 }
 
-/** The task table, then the plan revisions when the goal has any. */
+/** Set once a recovery added work after verification had started, or null. */
+export function verificationRoundLine(goal: Pick<Goal, "verificationRound">): string | null {
+  return goal.verificationRound
+    ? `Verification round ${goal.verificationRound}: a recovery added work, so every criterion is verified again.`
+    : null;
+}
+
+/** The task table, then the plan revisions and the verification round when the goal has them. */
 function renderTasksAndRevisions(
   tasks: ListResult<GoalTaskRow>,
-  revisions: GoalRevisionRow[],
+  goal: Pick<Goal, "planRevisions" | "verificationRound">,
   options: OutputOptions,
 ): string {
-  const table = renderTable<GoalTaskRow>({ ...tasks, schema: taskSchema }, options);
-  if (revisions.length === 0) return table;
-  const revisionTable = renderTable<GoalRevisionRow>(
-    { type: "list", data: revisions, schema: revisionSchema },
-    options,
-  );
-  return `${table}\n\nPlan revisions:\n${revisionTable}`;
+  const sections = [renderTable<GoalTaskRow>({ ...tasks, schema: taskSchema }, options)];
+  const revisions = goalRevisionRows(goal);
+  if (revisions.length > 0) {
+    const revisionTable = renderTable<GoalRevisionRow>(
+      { type: "list", data: revisions, schema: revisionSchema },
+      options,
+    );
+    sections.push(`Plan revisions:\n${revisionTable}`);
+  }
+  const round = verificationRoundLine(goal);
+  if (round) sections.push(round);
+  return sections.join("\n\n");
 }
 
 /** What the task's last run started with, else what the goal asks for, else "-". */
@@ -169,11 +181,7 @@ export async function runInspectCommand(
       schema: {
         ...taskSchema,
         renderHuman: (result, outputOptions) =>
-          renderTasksAndRevisions(
-            result as ListResult<GoalTaskRow>,
-            goalRevisionRows(goal),
-            outputOptions,
-          ),
+          renderTasksAndRevisions(result as ListResult<GoalTaskRow>, goal, outputOptions),
         // JSON output carries the full goal and its event history.
         serialize: () => ({ goal, events: payload.events }),
       },
