@@ -1151,6 +1151,10 @@ test("advertises client capabilities in hello", async () => {
       goal_management_events: true,
       goal_config_edit: true,
       goal_usage_breakdown: true,
+      goal_integration_retry: true,
+      goal_plan_revision: true,
+      goal_lead_interventions: true,
+      goal_recovery: true,
       hello_rejection: true,
       background_agents: true,
       browser_host: {
@@ -1528,6 +1532,110 @@ test("waits for the daemon to acknowledge push token revocation", async () => {
   );
 
   await revocation;
+});
+
+test("a retry's time mode is sent only to a host with goalTimeBase", async () => {
+  for (const timeBase of [false, true]) {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: `clsk_goal_time_base_${timeBase}`,
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connectPromise = client.connect();
+    mock.triggerOpen({ features: { goalControls: true, goalTimeBase: timeBase } });
+    await connectPromise;
+    const sentBefore = mock.sent.length;
+
+    const retry = client.goalRetry({ goalId: "g1", timeMode: "fresh" });
+    if (!timeBase) {
+      await expect(retry).rejects.toThrow(
+        "Update the host to choose how a retried goal's time limit restarts.",
+      );
+      expect(mock.sent).toHaveLength(sentBefore);
+      continue;
+    }
+    const request = parseSentFrame(mock.sent.at(-1));
+    expect(request).toMatchObject({
+      type: "goal.retry.request",
+      goalId: "g1",
+      timeMode: "fresh",
+    });
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "goal.retry.response",
+        payload: { requestId: request.requestId, goal: null, error: "x" },
+      }),
+    );
+    await expect(retry).resolves.toMatchObject({ error: "x" });
+  }
+});
+
+test("recovery requests and a retry's guidance are sent only to a host with goalRecovery", async () => {
+  for (const recovery of [false, true]) {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: `clsk_goal_recovery_${recovery}`,
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connectPromise = client.connect();
+    mock.triggerOpen({
+      features: { goalControls: true, goalTimeBase: true, goalRecovery: recovery },
+    });
+    await connectPromise;
+    expect(client.supportsGoalRecovery()).toBe(recovery);
+    const sentBefore = mock.sent.length;
+
+    const calls = [
+      () =>
+        client.goalRecoveryStart({
+          goalId: "g1",
+          timeMode: "fresh",
+          guidance: { goal: "use screenshots", tasks: { t7: null } },
+        }),
+      () => client.goalRecoveryDecide({ goalId: "g1", recoveryId: "rec-9", approve: false }),
+      () => client.goalRecoveryCancel({ goalId: "g1", recoveryId: "rec-9" }),
+      () => client.goalRetry({ goalId: "g1", guidance: { tasks: { t3: "answer yes" } } }),
+    ];
+    if (!recovery) {
+      for (const call of calls) {
+        await expect(call()).rejects.toThrow(
+          "Update the host to recover a failed goal or give its workers guidance.",
+        );
+      }
+      expect(mock.sent).toHaveLength(sentBefore);
+      continue;
+    }
+    const expected = [
+      {
+        type: "goal.recovery.start.request",
+        goalId: "g1",
+        timeMode: "fresh",
+        guidance: { goal: "use screenshots", tasks: { t7: null } },
+      },
+      { type: "goal.recovery.decide.request", goalId: "g1", recoveryId: "rec-9", approve: false },
+      { type: "goal.recovery.cancel.request", goalId: "g1", recoveryId: "rec-9" },
+      { type: "goal.retry.request", goalId: "g1", guidance: { tasks: { t3: "answer yes" } } },
+    ];
+    for (const [index, call] of calls.entries()) {
+      const pending = call();
+      const request = parseSentFrame(mock.sent.at(-1));
+      expect(request).toEqual({ ...expected[index], requestId: request.requestId });
+      const responseType = String(request.type).replace(/\.request$/, ".response");
+      mock.triggerMessage(
+        wrapSessionMessage({
+          type: responseType,
+          payload: { requestId: request.requestId, goal: null, error: "refused" },
+        }),
+      );
+      await expect(pending).resolves.toMatchObject({ error: "refused" });
+    }
+  }
 });
 
 test("bounds the wait for push token revocation", async () => {

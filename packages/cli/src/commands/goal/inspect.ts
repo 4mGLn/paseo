@@ -1,7 +1,8 @@
 import type { Command } from "commander";
 import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { Goal, Task } from "@getpaseo/protocol/goal/types";
-import type { ListResult, OutputSchema } from "../../output/index.js";
+import type { ListResult, OutputOptions, OutputSchema } from "../../output/index.js";
+import { renderTable } from "../../output/table.js";
 import { formatDuration, formatUsage, taskTimes, taskUsage } from "./progress.js";
 import { connectGoalClient, toGoalCommandError, type GoalCommandOptions } from "./shared.js";
 import { goalUsageRows, goalUsageSchema, type GoalUsageRow } from "./usage.js";
@@ -41,6 +42,51 @@ const taskSchema: OutputSchema<GoalTaskRow> = {
     { header: "TITLE", field: "title", width: 36 },
   ],
 };
+
+interface GoalRevisionRow {
+  id: string;
+  source: string;
+  status: string;
+  decidedAt: string;
+  reason: string;
+}
+
+const revisionSchema: OutputSchema<GoalRevisionRow> = {
+  idField: "id",
+  columns: [
+    { header: "REVISION", field: "id", width: 42 },
+    { header: "SOURCE", field: "source", width: 7 },
+    { header: "STATUS", field: "status", width: 11 },
+    { header: "DECIDED", field: "decidedAt", width: 24 },
+    { header: "REASON", field: "reason", width: 60 },
+  ],
+};
+
+/** The goal's plan revisions, one line each, oldest first. */
+export function goalRevisionRows(goal: Pick<Goal, "planRevisions">): GoalRevisionRow[] {
+  return (goal.planRevisions ?? []).map((r) => ({
+    id: r.id,
+    source: r.source,
+    status: r.status,
+    decidedAt: r.decidedAt ?? "-",
+    reason: r.reason.split("\n")[0] ?? "",
+  }));
+}
+
+/** The task table, then the plan revisions when the goal has any. */
+function renderTasksAndRevisions(
+  tasks: ListResult<GoalTaskRow>,
+  revisions: GoalRevisionRow[],
+  options: OutputOptions,
+): string {
+  const table = renderTable<GoalTaskRow>({ ...tasks, schema: taskSchema }, options);
+  if (revisions.length === 0) return table;
+  const revisionTable = renderTable<GoalRevisionRow>(
+    { type: "list", data: revisions, schema: revisionSchema },
+    options,
+  );
+  return `${table}\n\nPlan revisions:\n${revisionTable}`;
+}
 
 /** What the task's last run started with, else what the goal asks for, else "-". */
 function taskThinking(goal: Goal, task: Task): string {
@@ -122,6 +168,12 @@ export async function runInspectCommand(
       }),
       schema: {
         ...taskSchema,
+        renderHuman: (result, outputOptions) =>
+          renderTasksAndRevisions(
+            result as ListResult<GoalTaskRow>,
+            goalRevisionRows(goal),
+            outputOptions,
+          ),
         // JSON output carries the full goal and its event history.
         serialize: () => ({ goal, events: payload.events }),
       },
