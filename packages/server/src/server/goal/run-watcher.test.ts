@@ -117,6 +117,32 @@ describe("RunWatcher", () => {
     expect(fired.get(21)).toEqual(["near_timeout", "stall"]);
   });
 
+  test("a run waiting for a person's answer is never stalled or near its limit; the wait does not count", () => {
+    const clock = new FakeClock();
+    const watcher = new RunWatcher();
+    const startedAtMs = clock.now();
+    const fired = new Map<number, string[]>();
+    // Waits from minute 10 to minute 100, with a still timeline throughout.
+    for (let minute = 1; minute <= 125; minute += 1) {
+      clock.advance(WATCH_POLL_MS);
+      const waiting = minute >= 10 && minute < 100;
+      const waitedMs = (Math.min(minute, 100) - Math.min(minute, 10)) * MINUTE;
+      const { triggers } = watcher.evaluate(
+        "g1:a-a1",
+        { startedAtMs, timeoutMs: 40 * MINUTE, cursor: still(), waitedMs, waiting },
+        clock.now(),
+      );
+      if (triggers.length > 0) fired.set(minute, triggers);
+      watcher.checkedIn("g1:a-a1", triggers);
+    }
+    // Stall counts from the end of the wait: 20 quiet minutes after minute 99. The 30 minutes
+    // of its limit (75% of 40) are reached at minute 120, leaving out the 90 minutes waited.
+    expect([...fired]).toEqual([
+      [99 + STALL_MS / MINUTE, ["stall"]],
+      [120, ["near_timeout"]],
+    ]);
+  });
+
   test("a run younger than one poll is not judged", () => {
     const clock = new FakeClock();
     const watcher = new RunWatcher();

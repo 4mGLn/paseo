@@ -12,6 +12,7 @@ import {
   type ManagerWorkspacePort,
   type TurnPermission,
   type TurnResult,
+  type TurnWaitChange,
 } from "./goal-manager.js";
 import type { CapturedChange, CommandOutcome, GitPort, MergeOutcome } from "./git-ops.js";
 import { GoalService } from "./goal-service.js";
@@ -49,6 +50,8 @@ export interface Turn {
   prompt: string;
   provider: string;
   resolve(result: TurnResult): void;
+  /** Tell the Manager a request started or stopped waiting for a person, as settleTurn does. */
+  onWait?: (change: TurnWaitChange) => void;
 }
 
 /** Fake ports. Turns resolve through `respond`, or wait to be resolved by hand. */
@@ -265,6 +268,7 @@ export class Harness {
         let settled = false;
         this.turns.push({
           ...base,
+          ...(options?.onWait ? { onWait: options.onWait } : {}),
           // Resolving twice is a no-op, as when a cancel and a reply race.
           resolve: (result) => {
             if (settled) return;

@@ -34,6 +34,8 @@ export interface GoalSessionHost {
   supportsGoalRecovery?(): boolean;
   /** Whether the client parses goal.accepted and the waived fields. Assumed when absent. */
   supportsGoalAccept?(): boolean;
+  /** Whether the client parses the wait.* events. Assumed when absent. */
+  supportsGoalUserWait?(): boolean;
 }
 
 // COMPAT(goalControlEvents): added in v0.13.0, remove after 2027-04-26.
@@ -88,6 +90,14 @@ const GOAL_RECOVERY_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 // COMPAT(goalAccept): added in v0.13.14, remove after 2027-04-28.
 const GOAL_ACCEPT_EVENT_TYPES: ReadonlySet<string> = new Set(["goal.accepted"]);
+
+// COMPAT(goalUserWait): added in v0.13.14, remove after 2027-04-28.
+const GOAL_USER_WAIT_EVENT_TYPES: ReadonlySet<string> = new Set(["wait.started", "wait.ended"]);
+
+// COMPAT(goalUserWait): added in v0.13.14, remove after 2027-04-28.
+function withoutUserWaitEvents(events: GoalEvent[], hide: boolean): GoalEvent[] {
+  return hide ? events.filter((e) => !GOAL_USER_WAIT_EVENT_TYPES.has(e.type)) : events;
+}
 
 // COMPAT(goalAccept): added in v0.13.14, remove after 2027-04-28.
 function withoutAcceptEvents(events: GoalEvent[], hide: boolean): GoalEvent[] {
@@ -647,7 +657,9 @@ export class GoalSession {
                 !(hideRecovery && isRecoveryRequest(e)),
             )
           : events;
-      const shown = withoutAcceptEvents(visible, this.host.supportsGoalAccept?.() === false);
+      const shown = this.withoutUnparsedWaits(
+        withoutAcceptEvents(visible, this.host.supportsGoalAccept?.() === false),
+      );
       this.host.emit({
         type: "goal.inspect.response",
         payload: {
@@ -660,6 +672,11 @@ export class GoalSession {
     } catch (error) {
       this.emitError(requestId, "goal.inspect.request", error);
     }
+  }
+
+  // COMPAT(goalUserWait): added in v0.13.14, remove after 2027-04-28.
+  private withoutUnparsedWaits(events: GoalEvent[]): GoalEvent[] {
+    return withoutUserWaitEvents(events, this.host.supportsGoalUserWait?.() === false);
   }
 
   private forClient(goal: Goal): Goal {
