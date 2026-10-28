@@ -29,6 +29,25 @@ export function isPendingRequestFailure(error: string | null | undefined): boole
   );
 }
 
+/**
+ * Start of the error a run fails with when a person did not answer one of its agent's requests
+ * within `limits.userWaitMinutes`: `No answer within <n> minutes: <the request>`.
+ */
+export const NO_ANSWER_PREFIX = "No answer within";
+
+/** True for a run that failed because nobody answered its agent's request in time. */
+export function isNoAnswerFailure(error: string | null | undefined): boolean {
+  return !!error && error.startsWith(NO_ANSWER_PREFIX);
+}
+
+/**
+ * True for a text that quotes a no-answer error anywhere, as a reviewer's, verifier's or
+ * planning Lead's failure does: `Review failed: Reviewer did not finish (failed: No answer …)`.
+ */
+export function mentionsNoAnswer(text: string | null | undefined): boolean {
+  return !!text && text.includes(`${NO_ANSWER_PREFIX} `);
+}
+
 /** Goal failure reasons the deadline timer writes: `Time limit of <n> minutes reached`. */
 export const TIME_LIMIT_REACHED_PREFIX = "Time limit of";
 /** `Deadline <deadlineAt> reached`. */
@@ -194,7 +213,7 @@ export function workerBlockedReason(error: string | null | undefined): string | 
  * place a new kind of such failure is added.
  */
 export function needsPerson(error: string | null | undefined): boolean {
-  return isPendingRequestFailure(error) || isWorkerBlocked(error);
+  return isPendingRequestFailure(error) || isWorkerBlocked(error) || isNoAnswerFailure(error);
 }
 
 /**
