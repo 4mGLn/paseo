@@ -649,6 +649,8 @@ export const zhCN: TranslationResources = {
       noEvents: "还没有活动",
       verified: "已验证",
       unverified: "未验证",
+      verificationRoundPending: "修复任务完成后将重新开始验证（第 {{round}} 轮）。",
+      verificationRoundStarted: "第 {{round}} 轮验证会重新检查所有验收标准。",
       dependsOn: "依赖于 {{ids}}",
       loadFailed: "无法加载目标",
       notFound: "未找到目标",
@@ -706,6 +708,7 @@ export const zhCN: TranslationResources = {
     },
     events: {
       repeated: "×{{n}}",
+      expandHint: "显示或隐藏全文",
       goalCreated: "目标已创建",
       leadStarted: "Lead 已启动",
       planProposed: "Lead 提出了包含 {{subject}} 个任务的计划",
@@ -721,6 +724,7 @@ export const zhCN: TranslationResources = {
       reworkAdded_conflict: "合并冲突后正在返工 {{subject}}",
       reworkAdded_tests: "测试失败后正在返工 {{subject}}",
       criterionVerified: "已验证：{{subject}}",
+      criterionVerifiedRound: "第 {{round}} 轮已验证：{{subject}}",
       integrationPrepared: "已创建分支：{{subject}}",
       changeSetCaptured: "已捕获 {{subject}} 的变更",
       captureSkipped: "{{subject}} 没有变更",
@@ -813,6 +817,28 @@ export const zhCN: TranslationResources = {
       rejectPlaceholder: "给 Lead 的留言（可选）",
       rejectSend: "拒绝变更",
     },
+    failure: {
+      needsYouTitle: "恢复需要你来处理",
+      showDetails: "显示详情",
+      hideDetails: "隐藏详情",
+      leadSaid: "Lead 的说明：{{text}}",
+      originalFailure: "最初的失败：{{text}}",
+      unmetCriteria: "未验证的验收标准",
+      listItem: "• {{text}}",
+      more: "更多",
+      less: "收起",
+      recoverAgain: "再次恢复",
+      recoveriesLeft: "剩余恢复次数：{{left}} / {{max}}",
+      noRecoveriesLeft: "没有剩余的恢复次数（已用 {{used}} / {{max}}）。",
+      noRecoveriesLeftFollowUp:
+        "没有剩余的恢复次数（已用 {{used}} / {{max}}）。请改为启动后续目标。",
+      followUp: "启动后续目标",
+      followUpTitle: "{{title}} — 后续",
+      followUpObjective: "这是失败目标“{{title}}”的后续。",
+      followUpUnmet: "以下验收标准未通过验证：",
+      verificationFix:
+        "恢复时，Lead 可以为未满足的验收标准添加修复任务。修复任务合并后，会重新验证所有验收标准。",
+    },
     recovery: {
       sheetExplain:
         "一个新的 Lead 会阅读目标失败的原因和你的指示，然后重试失败的任务、修改计划，或说明需要人做什么。",
@@ -875,6 +901,7 @@ export const zhCN: TranslationResources = {
         budget: "预算已用完",
         run_limit: "运行次数上限已用完",
         integration_failed: "合并失败",
+        rework_failed: "返工失败",
         verification: "有验收标准未通过验证",
         stuck: "有任务最终失败",
         capture: "无法收集任务的工作",
@@ -888,7 +915,15 @@ export const zhCN: TranslationResources = {
         budget: "在设置中调高令牌或费用上限，然后恢复。",
         run_limit: "在设置中调高运行次数上限，然后恢复。",
         integration_failed: "恢复会重新合并。请先清理错误中提到的集成工作树里未提交的已跟踪文件。",
-        verification: "所有任务都已成功。恢复会重新验证；现在计划只能移除任务。",
+        rework_failed:
+          "重试或恢复会在原工作树中重新运行返工。请查看下方返工任务的原因；如果它停在某个请求上，请先在设置中更改权限策略。",
+        verification:
+          "所有任务都已成功，但有验收标准未满足。恢复时 Lead 可以添加修复任务，合并后会重新验证所有验收标准。",
+        verification_last:
+          "所有任务都已成功，但有验收标准未满足。恢复时 Lead 可以添加修复任务，合并后会重新验证所有验收标准。这是最后一次恢复。",
+        verification_none_left:
+          "所有任务都已成功，但有验收标准未满足，且恢复次数已用完。请从它的集成分支开始一个后续目标。",
+        verification_legacy: "所有任务都已成功。恢复会重新验证；现在计划只能移除任务。",
         stuck: "请查看下方每个任务的原因。带着指示恢复，或让 Lead 修改计划。",
         capture: "恢复以重试。如果任务的工作树已不存在，需要把它的工作作为新任务重新添加。",
         recovery_failed: "恢复以重试。",
@@ -969,6 +1004,9 @@ export const zhCN: TranslationResources = {
       create: "创建目标",
       managedLabel: "由 Agent 执行",
       postsBack: "结果会发回此聊天。",
+      buildsOn: "基于“{{title}}”的提交 {{commit}}",
+      buildsOnBranch: "基于“{{title}}”在 {{branch}} 上的提交 {{commit}}",
+      startFromHead: "改为从项目的 HEAD 开始",
       cwdLabel: "工作目录",
       hostLabel: "Host",
       projectLabel: "Project",

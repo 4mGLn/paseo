@@ -224,16 +224,25 @@ export function isIntegrationFailedChangeSet(changeSet: Goal["changeSets"][numbe
 }
 
 /**
+ * A rejected change set whose rework task failed for good. A host with `goalReworkRetry` reworks
+ * it again when a retry or recovery reopens the goal.
+ */
+export function isReworkFailedChangeSet(changeSet: Goal["changeSets"][number]): boolean {
+  return changeSet.status === "rejected" && changeSet.rejectionReason === "rework_failed";
+}
+
+/**
  * Which controls to offer: only on hosts with goal controls, only for managed goals, and only in
  * the states the daemon accepts them in. A goal that failed while planning has no tasks; only a
  * host with `goalConfigEdit` reopens it, an older one refuses the retry. A change set rejected
  * by review keeps a failed goal from reopening; one whose merge failed does not on a host with
- * `goalIntegrationRetry`, which merges it again.
+ * `goalIntegrationRetry`, which merges it again, nor one whose rework failed on a host with
+ * `goalReworkRetry`, which reworks it again.
  */
 export function goalControlsAvailable(
   goal: Goal,
   hostHasControls: boolean,
-  host: { configEdit?: boolean; integrationRetry?: boolean } = {},
+  host: { configEdit?: boolean; integrationRetry?: boolean; reworkRetry?: boolean } = {},
 ): GoalControls {
   if (!hostHasControls || !goal.config) {
     return NO_CONTROLS;
@@ -243,8 +252,11 @@ export function goalControlsAvailable(
   const rejections = goal.planRejections?.length ?? 0;
   const remergeable = (changeSet: Goal["changeSets"][number]) =>
     host.integrationRetry === true && isIntegrationFailedChangeSet(changeSet);
+  const reworkable = (changeSet: Goal["changeSets"][number]) =>
+    host.reworkRetry === true && isReworkFailedChangeSet(changeSet);
   const hasRejectedChange = goal.changeSets.some(
-    (changeSet) => changeSet.status === "rejected" && !remergeable(changeSet),
+    (changeSet) =>
+      changeSet.status === "rejected" && !remergeable(changeSet) && !reworkable(changeSet),
   );
   // The daemon reopens an archived failed goal only after it is unarchived, and refuses a retry
   // while a recovery is open.

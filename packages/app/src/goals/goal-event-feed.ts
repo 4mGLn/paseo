@@ -15,6 +15,8 @@ export interface GoalFeedEntry {
   subjects: string[];
   detail: string | null;
   count: number;
+  /** The verification round of a criterion verified after a recovery added work; null otherwise. */
+  round: number | null;
   /** The newest event folded into this line. */
   at: string;
   events: GoalEvent[];
@@ -27,6 +29,23 @@ interface Described {
   tone: GoalFeedTone;
   subject: string | null;
   detail?: string | null;
+  round?: number;
+}
+
+type CriterionVerified = Extract<GoalEvent, { type: "criterion.verified" }>;
+
+/**
+ * The round a criterion was verified in, from its event id: round 0 keeps
+ * `<goal>:verified:<criterion>`, a later round adds `:v<round>`. The log keeps every round's
+ * event, so one criterion can be verified more than once.
+ */
+export function verifiedRound(event: CriterionVerified): number {
+  const prefix = `${event.goalId}:verified:${event.criterionId}:v`;
+  if (!event.id.startsWith(prefix)) {
+    return 0;
+  }
+  const round = Number(event.id.slice(prefix.length));
+  return Number.isInteger(round) && round > 0 ? round : 0;
 }
 
 const CHANGE_SET_KEYS: Partial<Record<ChangeSetStatus, Described["key"]>> = {
@@ -121,11 +140,12 @@ function describeOutcomeEvent(event: GoalEvent, goal: FeedGoal): Described | nul
   switch (event.type) {
     case "criterion.verified": {
       const criterion = goal.criteria.find((candidate) => candidate.id === event.criterionId);
-      return {
-        key: "criterionVerified",
-        tone: "success",
-        subject: criterion?.text ?? event.criterionId,
-      };
+      const subject = criterion?.text ?? event.criterionId;
+      const round = verifiedRound(event);
+      if (round > 0) {
+        return { key: "criterionVerifiedRound", tone: "success", subject, round };
+      }
+      return { key: "criterionVerified", tone: "success", subject };
     }
     case "integration.prepared":
       return { key: "integrationPrepared", tone: "default", subject: event.branch };
@@ -383,7 +403,8 @@ export function buildGoalEventFeed(events: readonly GoalEvent[], goal: FeedGoal)
     }
     const last = entries[entries.length - 1];
     const detail = described.detail ?? null;
-    if (last && last.key === described.key && last.detail === detail) {
+    const round = described.round ?? null;
+    if (last && last.key === described.key && last.detail === detail && last.round === round) {
       if (described.subject && !last.subjects.includes(described.subject)) {
         last.subjects.push(described.subject);
       }
@@ -399,6 +420,7 @@ export function buildGoalEventFeed(events: readonly GoalEvent[], goal: FeedGoal)
       subjects: described.subject ? [described.subject] : [],
       detail,
       count: 1,
+      round,
       at: event.at,
       events: [event],
     });

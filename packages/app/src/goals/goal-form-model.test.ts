@@ -223,6 +223,56 @@ describe("openGoalForm", () => {
     });
   });
 
+  it("builds on a given commit, and drops it when the goal moves to another host", () => {
+    const model = openGoalForm({
+      serverId: "host-a",
+      prefill: {
+        ...MANAGED,
+        cwd: "/repo",
+        baseCommit: { commit: "abc1234def", goalTitle: "Old goal", branch: "paseo-goal/g1" },
+      },
+    });
+    expect(model.getState().baseCommit).toEqual({
+      commit: "abc1234def",
+      goalTitle: "Old goal",
+      branch: "paseo-goal/g1",
+    });
+    expect(model.getState().createInput?.config?.baseCommit).toBe("abc1234def");
+    // The commit lives in this host's repository; another host does not have it.
+    model.setHost("host-b");
+    expect(model.getState().baseCommit).toBeNull();
+  });
+
+  it("drops the base commit when you pick another project or start from HEAD", () => {
+    const prefill = {
+      ...MANAGED,
+      cwd: "/repo",
+      baseCommit: { commit: "abc1234def", goalTitle: "Old goal", branch: null },
+    };
+    const moved = openGoalForm({ prefill });
+    moved.chooseFolder("/repo");
+    expect(moved.getState().baseCommit).not.toBeNull();
+    moved.chooseFolder("/other");
+    expect(moved.getState().baseCommit).toBeNull();
+    expect(moved.getState().createInput?.config).not.toHaveProperty("baseCommit");
+
+    const cleared = openGoalForm({ prefill });
+    cleared.clearBaseCommit();
+    expect(cleared.getState().baseCommit).toBeNull();
+    expect(cleared.getState().createInput?.config).not.toHaveProperty("baseCommit");
+  });
+
+  it("sends no base commit by default, nor an empty one", () => {
+    expect(openGoalForm({ prefill: MANAGED }).getState().createInput?.config).not.toHaveProperty(
+      "baseCommit",
+    );
+    const blank = openGoalForm({
+      prefill: { ...MANAGED, baseCommit: { commit: " ", goalTitle: "x", branch: null } },
+    });
+    expect(blank.getState().baseCommit).toBeNull();
+    expect(blank.getState().createInput?.config).not.toHaveProperty("baseCommit");
+  });
+
   it("starts from a preset, then the prefilled settings, then your own, then the defaults", () => {
     const mine = { ...GOAL_PRESETS.turbo, maxParallel: 6 };
     expect(openGoalForm({ prefill: { preset: "careful" } }).getState().settingsChoice).toBe(

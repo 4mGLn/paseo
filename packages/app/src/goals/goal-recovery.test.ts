@@ -1,20 +1,31 @@
 import type { GoalDiagnosis } from "@getpaseo/protocol/goal/diagnosis";
+import { MAX_RECOVERIES } from "@getpaseo/protocol/goal/interventions";
 import type { Recovery } from "@getpaseo/protocol/goal/types";
 import { describe, expect, it } from "vitest";
 import { en } from "@/i18n/resources/en";
+import { canStartFollowUp } from "./goal-follow-up";
 import {
-  MAX_RECOVERIES,
   buildRecoverRequest,
+  canAddFixTasks,
+  defaultRecoverTimeMode,
+  diagnosisRemedyKey,
   diagnosisView,
   endedRecovery,
   goalDiagnosisView,
+  goalFailureView,
   goalRecoveryControls,
   guidanceTextCut,
   isTimeLimitRefusal,
   liveRecovery,
+  previousLeadReason,
+  reasonPreview,
+  recoverAgainView,
   recoverBlockingLimits,
   recoverNeedsTimeMode,
+  summarizeReason,
   taskGuidance,
+  verificationRoundView,
+  unmetCriteria,
   type RecoverRules,
 } from "./goal-recovery";
 import { FIXTURE_AT, makeChangeSet, makeGoal, makeTask } from "./test-utils/goal-fixture";
@@ -71,6 +82,15 @@ describe("goalRecoveryControls", () => {
     const mergeFailed = { ...rejected, rejectionReason: "integration_failed" };
     expect(goalRecoveryControls({ ...failed, changeSets: [mergeFailed] }, true).canRecover).toBe(
       true,
+    );
+    // A failed rework is reworked again only by a host with goalReworkRetry.
+    const reworkFailed = { ...rejected, rejectionReason: "rework_failed" };
+    const withRework = { ...failed, changeSets: [reworkFailed] };
+    expect(goalRecoveryControls(withRework, true).canRecover).toBe(false);
+    expect(goalRecoveryControls(withRework, true, true).canRecover).toBe(true);
+    const limited = { ...rejected, rejectionReason: "rework_limit" };
+    expect(goalRecoveryControls({ ...failed, changeSets: [limited] }, true, true).canRecover).toBe(
+      false,
     );
   });
 
@@ -423,5 +443,319 @@ describe("guidanceTextCut", () => {
       guidanceTextCut(makeGoal({ guidance: { goal: "short", truncated: true } }), "short"),
     ).toBe(false);
     expect(guidanceTextCut(makeGoal({ guidance: { goal: cut } }), cut)).toBe(false);
+  });
+});
+
+describe("summarizeReason", () => {
+  it("keeps a path with dots and line numbers whole", () => {
+    expect(summarizeReason("Fails in updater_module.c:1301-1310 when v1.2.3 is set")).toBe(
+      "Fails in updater_module.c:1301-1310 when v1.2.3 is set",
+    );
+    expect(summarizeReason("See src/a.b/c.test.ts.")).toBe("See src/a.b/c.test.ts.");
+  });
+
+  it("ends at the first sentence or the first line", () => {
+    expect(summarizeReason("UV-02 is not met. The fix needs a schema change.")).toBe(
+      "UV-02 is not met.",
+    );
+    expect(summarizeReason("\n  First line\nSecond line. More")).toBe("First line");
+    expect(summarizeReason("Line one\r\nLine two")).toBe("Line one");
+  });
+
+  it("cuts a long sentence at the limit with an ellipsis", () => {
+    const long = "a".repeat(200);
+    const summary = summarizeReason(long);
+    expect(summary).toHaveLength(160);
+    expect(summary.endsWith("…")).toBe(true);
+    expect(summarizeReason("abcdef", 4)).toBe("abc…");
+    expect(summarizeReason("")).toBe("");
+  });
+});
+
+describe("reasonPreview", () => {
+  it("expands only when there is more than the collapsed line shows", () => {
+    expect(reasonPreview("Short reason").canExpand).toBe(false);
+    expect(reasonPreview("First. Second").canExpand).toBe(true);
+    expect(reasonPreview("x".repeat(100)).canExpand).toBe(true);
+    expect(reasonPreview("  padded  ")).toEqual({
+      full: "padded",
+      summary: "padded",
+      canExpand: false,
+    });
+  });
+});
+
+describe("unmetCriteria", () => {
+  it("lists the criteria no verifier confirmed", () => {
+    const goal = makeGoal({
+      criteria: [
+        { id: "c1", text: "Fast", verifiedAt: null, evidence: null },
+        { id: "c2", text: "Correct", verifiedAt: FIXTURE_AT, evidence: "ok" },
+      ],
+    });
+    expect(unmetCriteria(goal).map((criterion) => criterion.id)).toEqual(["c1"]);
+  });
+});
+
+describe("goalFailureView", () => {
+  const at = "2026-10-21T02:00:00.000Z";
+  const criteria = [
+    { id: "c1", text: "UV-02 passes", verifiedAt: null, evidence: null },
+    { id: "c2", text: "Build is green", verifiedAt: FIXTURE_AT, evidence: "ok" },
+  ];
+  const leadReason =
+    "UV-02 still fails in updater_module.c:1301-1310. A person must decide the schema.";
+  const needsPerson = {
+    ...failed,
+    criteria,
+    failedAt: at,
+    failureReason: `Recovery needs a person: ${leadReason}`,
+    recoveries: 1,
+    recovery: recovery("ended", {
+      outcome: "needs_person",
+      resolvedAt: at,
+      reason: leadReason,
+      failureReason: "Acceptance criteria not met: c1",
+      decision: { decision: "needs_person", reason: leadReason },
+    }),
+  };
+
+  it("says a recovery that needs you once: the Lead's first sentence, the rest under details", () => {
+    const view = goalFailureView(needsPerson);
+    expect(view).toEqual({
+      recoveryNeedsYou: true,
+      summary: "UV-02 still fails in updater_module.c:1301-1310.",
+      fullReason: leadReason,
+      fullReasonIsLead: true,
+      originalFailure: "Acceptance criteria not met: c1",
+      unmet: [criteria[0]],
+      hasDetails: true,
+    });
+    // The prefix the host adds is not repeated in the summary.
+    expect(view?.summary).not.toContain("Recovery needs a person");
+  });
+
+  it("shows a plain failure's reason without Lead wording or an original failure", () => {
+    const view = goalFailureView({ ...failed, failureReason: "Task t7 failed" });
+    expect(view).toMatchObject({
+      recoveryNeedsYou: false,
+      summary: "Task t7 failed",
+      fullReason: null,
+      fullReasonIsLead: false,
+      originalFailure: null,
+      hasDetails: false,
+    });
+  });
+
+  it("leaves out the unmet criteria of a goal that failed before it had a plan", () => {
+    const view = goalFailureView({ ...failed, tasks: [], criteria, failureReason: "No plan" });
+    expect(view?.unmet).toEqual([]);
+  });
+
+  it("ignores a recovery that ended before a later failure", () => {
+    const view = goalFailureView({
+      ...needsPerson,
+      failedAt: "2026-10-22T00:00:00.000Z",
+      failureReason: "Task t7 failed",
+    });
+    expect(view).toMatchObject({ recoveryNeedsYou: false, summary: "Task t7 failed" });
+    expect(view?.originalFailure).toBeNull();
+  });
+
+  it("is null for a goal that has not failed", () => {
+    expect(goalFailureView({ ...failed, status: "executing" })).toBeNull();
+  });
+
+  it("gives the Recover sheet the Lead's reason as context, never anything else", () => {
+    expect(previousLeadReason(needsPerson)).toBe(leadReason);
+    expect(previousLeadReason({ ...failed, failureReason: "Task t7 failed" })).toBeNull();
+  });
+});
+
+describe("recoverAgainView", () => {
+  it("offers Recover, then Recover again with the recoveries left", () => {
+    expect(recoverAgainView(failed, true)).toEqual({
+      kind: "available",
+      again: false,
+      left: MAX_RECOVERIES,
+      max: MAX_RECOVERIES,
+    });
+    expect(recoverAgainView({ ...failed, recoveries: 2 }, true)).toEqual({
+      kind: "available",
+      again: true,
+      left: 1,
+      max: MAX_RECOVERIES,
+    });
+  });
+
+  it("says again after a recovery that ended without counting", () => {
+    const cancelled = recovery("ended", { outcome: "cancelled", resolvedAt: FIXTURE_AT });
+    expect(recoverAgainView({ ...failed, recovery: cancelled }, true)).toMatchObject({
+      kind: "available",
+      again: true,
+      left: MAX_RECOVERIES,
+    });
+  });
+
+  it("is disabled, not hidden, once every recovery is used", () => {
+    expect(recoverAgainView({ ...failed, recoveries: MAX_RECOVERIES }, true)).toEqual({
+      kind: "exhausted",
+      used: MAX_RECOVERIES,
+      max: MAX_RECOVERIES,
+    });
+  });
+
+  it("hides when the goal could not recover anyway", () => {
+    expect(recoverAgainView(failed, false).kind).toBe("hidden");
+    expect(recoverAgainView({ ...failed, recoveries: MAX_RECOVERIES, tasks: [] }, true).kind).toBe(
+      "hidden",
+    );
+    expect(
+      recoverAgainView({ ...failed, archivedAt: FIXTURE_AT, recoveries: MAX_RECOVERIES }, true)
+        .kind,
+    ).toBe("hidden");
+    expect(recoverAgainView({ ...failed, status: "completed" }, true).kind).toBe("hidden");
+  });
+});
+
+describe("defaultRecoverTimeMode", () => {
+  it("keeps the time left when it is at least 30 minutes, else starts fresh", () => {
+    expect(defaultRecoverTimeMode(30 * 60_000)).toBe("remaining");
+    expect(defaultRecoverTimeMode(2 * 60 * 60_000)).toBe("remaining");
+    expect(defaultRecoverTimeMode(30 * 60_000 - 1)).toBe("fresh");
+    expect(defaultRecoverTimeMode(0)).toBe("fresh");
+    expect(defaultRecoverTimeMode(null)).toBe("fresh");
+  });
+});
+
+describe("failure copy", () => {
+  it("has every sentence the failure banner and the Recover sheet use", () => {
+    const failure = en.goals.failure;
+    for (const key of [
+      "needsYouTitle",
+      "showDetails",
+      "hideDetails",
+      "leadSaid",
+      "originalFailure",
+      "unmetCriteria",
+      "recoverAgain",
+      "recoveriesLeft",
+      "noRecoveriesLeft",
+      "noRecoveriesLeftFollowUp",
+      "followUp",
+      "followUpTitle",
+      "followUpObjective",
+      "followUpUnmet",
+    ] as const) {
+      expect(failure[key]).toBeTruthy();
+    }
+  });
+});
+
+describe("a failed verification", () => {
+  const created = Date.parse(FIXTURE_AT);
+  const unverified = makeGoal({
+    status: "failed",
+    failedAt: new Date(created + 30 * 60_000).toISOString(),
+    failureReason: "Acceptance criteria not met: - UV-02 is fixed (open FAIL)",
+    tasks: [makeTask("t1", { status: "succeeded" }), makeTask("t6", { status: "succeeded" })],
+    criteria: [
+      { id: "c1", text: "UV-02 is fixed", verifiedAt: null, evidence: null },
+      { id: "c2", text: "Tests pass", verifiedAt: FIXTURE_AT, evidence: "green" },
+    ],
+    integration: {
+      branch: "paseo-goal/goal-1",
+      workspaceId: "ws-int",
+      cwd: "/repo/.paseo/worktrees/goal-1",
+      baseCommit: "base000",
+      headCommit: "head999",
+    },
+  });
+  const now = created + 40 * 60_000;
+  const finding = (recoveries: number) =>
+    goalDiagnosisView({ ...unverified, recoveries }, [], now).findings.find(
+      (candidate) => candidate.kind === "verification",
+    )!;
+
+  it("lets the Lead add fix tasks on a host that verifies every criterion again", () => {
+    expect(diagnosisRemedyKey(finding(0), { recoveries: 0 }, true)).toBe(
+      "goals.diagnosis.remedy.verification",
+    );
+    expect(diagnosisRemedyKey(finding(2), { recoveries: 2 }, true)).toBe(
+      "goals.diagnosis.remedy.verification_last",
+    );
+  });
+
+  it("keeps the old wording on an older host, where the plan can only lose tasks", () => {
+    expect(diagnosisRemedyKey(finding(0), { recoveries: 0 }, false)).toBe(
+      "goals.diagnosis.remedy.verification_legacy",
+    );
+    expect(en.goals.diagnosis.remedy.verification_legacy).toContain("only lose tasks");
+    expect(en.goals.diagnosis.remedy.verification).not.toContain("only lose tasks");
+  });
+
+  it("with no recovery left, needs you: Recover is disabled and the follow-up goal is offered", () => {
+    const spent = { ...unverified, recoveries: MAX_RECOVERIES };
+    expect(finding(MAX_RECOVERIES).personNeeded).toBe("yes");
+    expect(goalDiagnosisView(spent, [], now).personNeeded).toBe("yes");
+    for (const host of [true, false]) {
+      expect(diagnosisRemedyKey(finding(MAX_RECOVERIES), spent, host)).toBe(
+        "goals.diagnosis.remedy.verification_none_left",
+      );
+    }
+    expect(recoverAgainView(spent, true).kind).toBe("exhausted");
+    expect(canStartFollowUp(spent)).toBe(true);
+  });
+
+  it("words other findings by their kind", () => {
+    expect(diagnosisRemedyKey({ kind: "stuck", personNeeded: "depends" }, unverified, true)).toBe(
+      "goals.diagnosis.remedy.stuck",
+    );
+  });
+
+  it("has a sentence for each wording", () => {
+    const remedy: Record<string, string> = en.goals.diagnosis.remedy;
+    for (const key of [
+      "verification",
+      "verification_last",
+      "verification_none_left",
+      "verification_legacy",
+    ]) {
+      expect(remedy[key], key).toBeTypeOf("string");
+    }
+  });
+
+  it("offers fix tasks only when every task succeeded and a criterion is not verified", () => {
+    expect(canAddFixTasks(unverified)).toBe(true);
+    expect(canAddFixTasks({ ...unverified, status: "executing" })).toBe(false);
+    expect(
+      canAddFixTasks({
+        ...unverified,
+        tasks: [makeTask("t1", { status: "succeeded" }), makeTask("t6", { status: "failed" })],
+      }),
+    ).toBe(false);
+    expect(
+      canAddFixTasks({
+        ...unverified,
+        criteria: unverified.criteria.map((c) => ({ ...c, verifiedAt: FIXTURE_AT })),
+      }),
+    ).toBe(false);
+    expect(canAddFixTasks({ ...unverified, tasks: [] })).toBe(false);
+  });
+});
+
+describe("verificationRoundView", () => {
+  it("is absent in round 0", () => {
+    expect(verificationRoundView({})).toBeNull();
+  });
+
+  it("waits for the fix tasks, then checks every criterion again", () => {
+    expect(verificationRoundView({ verificationRound: 1 })).toEqual({ round: 1, started: false });
+    expect(verificationRoundView({ verificationRound: 2, verifyStartedAt: FIXTURE_AT })).toEqual({
+      round: 2,
+      started: true,
+    });
+    expect(en.goals.detail.verificationRoundPending).toContain("{{round}}");
+    expect(en.goals.detail.verificationRoundStarted).toContain("{{round}}");
   });
 });

@@ -97,6 +97,7 @@ export function useGoalActions(serverId: string, goal: Goal): GoalActions {
   const management = useHostFeature(serverId, "goalManagement");
   const configEdit = useHostFeature(serverId, "goalConfigEdit");
   const integrationRetry = useHostFeature(serverId, "goalIntegrationRetry");
+  const reworkRetry = useHostFeature(serverId, "goalReworkRetry");
   return useMemo(
     () =>
       goalAvailableActions(goal, {
@@ -105,8 +106,9 @@ export function useGoalActions(serverId: string, goal: Goal): GoalActions {
         management,
         configEdit,
         integrationRetry,
+        reworkRetry,
       }),
-    [acknowledge, configEdit, controls, goal, integrationRetry, management],
+    [acknowledge, configEdit, controls, goal, integrationRetry, management, reworkRetry],
   );
 }
 

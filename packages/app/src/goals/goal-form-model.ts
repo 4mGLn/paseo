@@ -102,6 +102,22 @@ export interface GoalFormPrefill {
   budget?: GoalBudget;
   /** The chat the goal is started from; the daemon posts the outcome back there. */
   originAgentId?: string;
+  /** The commit the goal builds on instead of the project's HEAD, such as a failed goal's result. */
+  baseCommit?: GoalFormBaseCommit;
+}
+
+/** A commit a new goal starts from, with what the form says about where it came from. */
+export interface GoalFormBaseCommit {
+  commit: string;
+  /** The goal whose work the commit holds. */
+  goalTitle: string;
+  /** That goal's integration branch, when it had one. */
+  branch: string | null;
+}
+
+/** The short form of a commit id the form shows. */
+export function shortCommit(commit: string): string {
+  return commit.slice(0, 7);
 }
 
 /** A connected host that runs goals. */
@@ -254,6 +270,7 @@ function buildGoalConfig(input: {
   originAgentId: string | null;
   budgetSupported: boolean;
   thinkingSupported: boolean;
+  baseCommit?: string | null;
 }): GoalConfig {
   const { values } = input;
   const reviewProvider = values.reviewProvider.trim()
@@ -279,6 +296,7 @@ function buildGoalConfig(input: {
       : {}),
     ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
     ...(input.thinkingSupported ? goalThinkingConfig(values) : {}),
+    ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
   };
 }
 
@@ -315,6 +333,7 @@ export function buildGoalCreateInput(
     budgetSupported?: boolean;
     thinkingSupported?: boolean;
     cwdCheck?: GoalCwdCheck | null;
+    baseCommit?: string | null;
   } = {},
 ): GoalCreateInput | null {
   if (validateGoalForm(values, { cwdCheck: options.cwdCheck }).length > 0) {
@@ -326,6 +345,7 @@ export function buildGoalCreateInput(
         originAgentId: options.originAgentId ?? null,
         budgetSupported: options.budgetSupported ?? false,
         thinkingSupported: options.thinkingSupported ?? false,
+        baseCommit: options.baseCommit ?? null,
       })
     : null;
   return {
@@ -475,6 +495,8 @@ export interface GoalFormState {
   /** The typed folder path is open. */
   folderInputVisible: boolean;
   originAgentId: string | null;
+  /** What the goal builds on instead of the project's HEAD; null for HEAD. */
+  baseCommit: GoalFormBaseCommit | null;
   /** Providers registered on the host; empty until the providers snapshot arrives. */
   providerOptions: GoalProviderOption[];
   advancedExpanded: boolean;
@@ -538,6 +560,8 @@ export interface GoalFormModel {
    */
   applyProviderOptions: (options: readonly GoalProviderOption[]) => void;
   setSubmitError: (message: string | null) => void;
+  /** Starts the goal from the project's HEAD instead of the prefilled commit. */
+  clearBaseCommit: () => void;
 }
 
 /** Each provider field and the model chosen for it. Changing the provider resets the model. */
@@ -650,6 +674,7 @@ function withDerived(input: BaseState): GoalFormState {
       budgetSupported: state.budgetSupported,
       thinkingSupported: state.thinkingSupported,
       cwdCheck: state.cwdCheck,
+      baseCommit: state.baseCommit?.commit ?? null,
     }),
     settingsChoice: matchGoalSettingsChoice(state.values.settings, state.personalSettings),
     summary: [
@@ -736,6 +761,8 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
   const opening = resolveOpeningPrefill(snapshot);
   const prefill = opening.prefill;
   const memoryByServer = snapshot.memoryByServer ?? {};
+  // The prefilled commit belongs to this directory's repository.
+  const baseCommitCwd = (prefill.cwd ?? "").trim();
   const listeners = new Set<() => void>();
   let closed = false;
   let state = withDerived({
@@ -748,6 +775,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
     cwdCheck: null,
     folderInputVisible: false,
     originAgentId: prefill.originAgentId ?? null,
+    baseCommit: prefill.baseCommit?.commit.trim() ? prefill.baseCommit : null,
     providerOptions: [],
     advancedExpanded: false,
     personalSettings: snapshot.personalSettings ?? null,
@@ -785,6 +813,8 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
       projectDisplay: projectDisplayFor(state.projectOptions, cwd),
       cwdSource: "manual",
       cwdCheck: state.cwdCheck?.cwd === cwd.trim() ? state.cwdCheck : null,
+      // Another project's repository need not have the commit; the goal then starts at its HEAD.
+      baseCommit: cwd.trim() === baseCommitCwd ? state.baseCommit : null,
       folderInputVisible,
       touched: touch("cwd"),
       submitError: null,
@@ -909,6 +939,8 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         },
         // The chat lives on the old host; the daemon cannot post back to it from here.
         originAgentId: null,
+        // So does the commit: another host's repository does not have it.
+        baseCommit: null,
         projectOptions: [],
         projectDisplay: projectDisplayFor([], cwd),
         cwdSource: cwd ? "memory" : "none",
@@ -972,6 +1004,9 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
     },
     setSubmitError(message) {
       publish({ ...state, submitError: message });
+    },
+    clearBaseCommit() {
+      publish({ ...state, baseCommit: null, submitError: null });
     },
   };
 }
