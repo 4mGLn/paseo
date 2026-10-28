@@ -1636,6 +1636,7 @@ export async function createPaseoDaemon(
     terminalManager,
     getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
     scheduleService,
+    goalService,
     providerSnapshotManager,
     daemonConfigStore,
     github,

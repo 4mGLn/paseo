@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
@@ -10,6 +11,7 @@ import type {
   AgentUsageTotals,
 } from "../agent/agent-sdk-types.js";
 import { usageTotalsSince } from "../agent/usage-totals.js";
+import { summarizeAgentActivity } from "../agent/activity-curator.js";
 import { startAgentRun } from "../agent/agent-prompt.js";
 import { markPaseoWorktreeFirstAgentBranchAutoNameAttempted } from "../../utils/worktree-metadata.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -24,6 +26,8 @@ import type {
   TurnResult,
 } from "./goal-manager.js";
 import type { GoalModelCatalog } from "./goal-thinking.js";
+import type { TimelineCursor } from "./run-watcher.js";
+import { capText } from "@getpaseo/protocol/goal/interventions";
 import { goalAutoModeId, type GoalModeCatalog } from "./goal-config-validation.js";
 import { setAgentModeCommand } from "../agent/lifecycle-command.js";
 import { MODE_APPLIES_NEXT_TURN_NOTICE } from "../agent/provider-notices.js";
@@ -358,6 +362,100 @@ async function waitForSetup(deps: GoalPortDeps, workspaceId: string): Promise<vo
   }
 }
 
+const IDLE_POLL_MS = 1000;
+
+/**
+ * Resolves when the agent has no run in flight: the same test streamAgent uses before it
+ * refuses a second run. Rejects when `signal` aborts.
+ */
+export function waitForNoRun(
+  agentManager: Pick<AgentManager, "hasInFlightRun" | "subscribe">,
+  agentId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let done = false;
+    let unsubscribe: (() => void) | null = null;
+    // Some state is cleared without an event (a run settling in its stream's finally), so the
+    // state is also read again on a slow poll.
+    let poll: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      if (done) return;
+      if (!agentManager.hasInFlightRun(agentId)) {
+        finish();
+        return;
+      }
+      clearTimeout(poll);
+      poll = setTimeout(check, IDLE_POLL_MS);
+    };
+    const finish = (error?: Error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(poll);
+      unsubscribe?.();
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => finish(new Error(`Waiting for agent ${agentId} to go idle was aborted`));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    unsubscribe = agentManager.subscribe(check, { agentId, replayState: false });
+    check();
+  });
+}
+
+/** Rows read from the end of a timeline for running tools and the last error. */
+const CURSOR_TAIL_ROWS = 20;
+const LAST_ERROR_CHARS = 500;
+
+/**
+ * Where the agent's timeline stands: the raw sequence number, which grows with every row even
+ * when rows merge for display, the last row's time, the tool calls still running in the latest
+ * turn (several may run at once, and a finished one can come after a running one), and the last
+ * error. Null for an agent not loaded.
+ */
+export function readTimelineCursor(
+  agentManager: Pick<AgentManager, "fetchTimeline">,
+  agentId: string,
+): TimelineCursor | null {
+  let fetched: ReturnType<AgentManager["fetchTimeline"]>;
+  try {
+    fetched = agentManager.fetchTimeline(agentId, { direction: "tail", limit: CURSOR_TAIL_ROWS });
+  } catch {
+    return null;
+  }
+  const last = fetched.rows.at(-1);
+  const runningTools: TimelineCursor["runningTools"] = [];
+  let lastError: string | undefined;
+  for (const row of fetched.rows) {
+    const { item } = row;
+    if (item.type === "error") lastError = item.message;
+    if (item.type !== "tool_call" || item.status !== "running") continue;
+    if (last?.turnId !== undefined && row.turnId !== last.turnId) continue;
+    runningTools.push({ callId: item.callId, name: item.name });
+  }
+  return {
+    nextSeq: fetched.window.nextSeq,
+    lastTimestamp: last?.timestamp ?? null,
+    runningTools,
+    ...(lastError === undefined ? {} : { lastError: capText(lastError, LAST_ERROR_CHARS) }),
+  };
+}
+
+/** The agent's curated recent activity, the newest kept when cut to `maxChars`. */
+export function readActivityDigest(
+  agentManager: Pick<AgentManager, "getTimeline">,
+  agentId: string,
+  maxChars: number,
+): string {
+  const { content } = summarizeAgentActivity(agentManager.getTimeline(agentId), 30);
+  return content.length <= maxChars ? content : `…${content.slice(content.length - maxChars + 1)}`;
+}
+
 export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
   const meter = createTurnUsageMeter();
   return {
@@ -396,6 +494,7 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
       const watcher = watchTurn((listener) => deps.agentManager.subscribe(listener, { agentId }));
       try {
         await startAgentRun(deps.agentManager, agentId, prompt, deps.logger);
+        options?.onStarted?.();
         const result = await settleTurn(
           () => deps.agentManager.waitForAgentEvent(agentId, { waitForActive: true }),
           options?.permission ?? "fail",
@@ -437,10 +536,51 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
 
     knownProviders: () => deps.agentManager.getRegisteredProviderIds(),
 
+    async findAgents(labels) {
+      const records = await deps.agentStorage.list();
+      return records
+        .filter(
+          (record) =>
+            !record.archivedAt &&
+            Object.entries(labels).every(([key, value]) => record.labels[key] === value),
+        )
+        .map((record) => ({ agentId: record.id, workspaceId: record.workspaceId ?? null }));
+    },
+
+    async isBusy(agentId) {
+      return deps.agentManager.hasInFlightRun(agentId);
+    },
+
+    async timelineCursor(agentId) {
+      return readTimelineCursor(deps.agentManager, agentId);
+    },
+
+    async activityDigest(agentId, maxChars) {
+      return readActivityDigest(deps.agentManager, agentId, maxChars);
+    },
+
+    async steer(agentId, text) {
+      // A client message id records the steer in the timeline as a user message.
+      const { status } = await deps.agentManager.steerActiveTurnOnly(agentId, text, {
+        clientMessageId: randomUUID(),
+      });
+      return status === "steered" ? "steered" : "unavailable";
+    },
+
     ...(deps.modelCatalog ? { modelCatalog: deps.modelCatalog } : {}),
 
     async cancel(agentId) {
       await deps.cancelAgentRun(agentId);
+    },
+
+    async waitUntilIdle(agentId, signal) {
+      // A Lead from before a restart is only on disk until something loads it.
+      await ensureAgentLoaded(agentId, {
+        agentManager: deps.agentManager,
+        agentStorage: deps.agentStorage,
+        logger: deps.logger,
+      });
+      await waitForNoRun(deps.agentManager, agentId, signal);
     },
 
     async notify(agentId, text) {

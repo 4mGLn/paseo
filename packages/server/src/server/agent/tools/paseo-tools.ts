@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { registerPluginTools } from "./plugin-tools.js";
 import type {
   FinishNotificationHold,
@@ -121,6 +122,10 @@ import {
   type PaseoToolResult,
 } from "./types.js";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
+import { PlanRevisionOpSchema, TaskSpecSchema } from "@getpaseo/protocol/goal/types";
+import { GoalNotFoundError, type GoalService } from "../../goal/goal-service.js";
+import { GoalTransitionError } from "../../goal/goal-reducer.js";
+import { PlanRevisionError } from "../../goal/plan-revision.js";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 import {
   AGENT_TEAM_LABEL,
@@ -146,6 +151,8 @@ export interface PaseoToolHostDependencies {
   terminalManager?: TerminalManager | null;
   getDaemonTcpPort?: () => number | null;
   scheduleService?: ScheduleService | null;
+  /** Lets a goal's Lead revise its running plan (goal_revise_plan). */
+  goalService?: Pick<GoalService, "revisePlan"> | null;
   providerSnapshotManager: ProviderSnapshotManager;
   daemonConfigStore?: Pick<DaemonConfigStore, "get">;
   github?: ForgeService;
@@ -2992,6 +2999,80 @@ function createToolCatalog(
       return {
         content: [],
         structuredContent: ensureValidJson(toScheduleSummary(schedule)),
+      };
+    },
+  );
+
+  registerTool(
+    "goal_revise_plan",
+    {
+      title: "Revise goal plan",
+      description:
+        "As a goal's Lead, change its running plan: replace or remove tasks that are pending, failed or cancelled, or add tasks with new ids. Give ops, or the desired plan as tasks with remove naming each pending, failed or cancelled task you leave out. Running and succeeded tasks cannot change, and a task id used before cannot be reused. The change waits for a person's approval unless the goal approves plans on its own.",
+      inputSchema: {
+        ops: z
+          .array(PlanRevisionOpSchema)
+          .optional()
+          .describe(
+            'Changes: {"op":"add","task":{...}}, {"op":"replace","task":{...}} (same id) or {"op":"remove","taskId":"t7"}.',
+          ),
+        tasks: z
+          .array(TaskSpecSchema)
+          .optional()
+          .describe("The desired plan instead of ops. Unchanged succeeded tasks may be left out."),
+        remove: z
+          .array(z.string().trim().min(1))
+          .optional()
+          .describe("With tasks: ids of pending, failed or cancelled tasks to drop."),
+        reason: z.string().trim().min(1, "reason is required").max(2000),
+      },
+      outputSchema: {
+        goalId: z.string(),
+        revisionId: z.string(),
+        status: z.string(),
+        decisionReason: z.string().optional(),
+        tasks: z.array(z.object({ id: z.string(), title: z.string(), status: z.string() })),
+      },
+    },
+    async ({ ops, tasks, remove, reason }) => {
+      if (!options.goalService) {
+        throw new Error("Goal service is not configured");
+      }
+      if (!callerAgentId) {
+        throw new PaseoToolInputError("goal_revise_plan requires an agent-scoped session");
+      }
+      // Agents cannot set paseo.* labels, so this names the goal the daemon started the caller for.
+      const goalId = (await loadAgentLabels(callerAgentId))?.["paseo.goal-id"];
+      if (!goalId) {
+        throw new PaseoToolInputError("goal_revise_plan is only for the Lead of a goal");
+      }
+      // The service refuses a caller that is not this goal's Lead. While the Manager waits on
+      // the Lead's decision about a failed task, the reducer refuses a revision from here and
+      // the Lead answers the decision prompt instead.
+      // An id per call, so the reply names this call's revision even when another lands too.
+      const eventId = randomUUID();
+      const goal = await options.goalService
+        .revisePlan(goalId, { ops, tasks, remove, reason, agentId: callerAgentId }, eventId)
+        .catch((error: unknown) => {
+          if (
+            error instanceof PlanRevisionError ||
+            error instanceof GoalTransitionError ||
+            error instanceof GoalNotFoundError
+          ) {
+            throw new PaseoToolInputError(error.message);
+          }
+          throw error;
+        });
+      const revision = goal.planRevisions?.find((r) => r.id === `rev-${eventId}`);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          goalId,
+          revisionId: revision?.id ?? "",
+          status: revision?.status ?? "unknown",
+          ...(revision?.decisionReason ? { decisionReason: revision.decisionReason } : {}),
+          tasks: goal.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status })),
+        }),
       };
     },
   );

@@ -6,6 +6,8 @@ import {
   MAX_USAGE_BREAKDOWN_ENTRIES,
   applyGoalEvent,
 } from "./goal-reducer.js";
+import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
+import { goalDeadlineMs } from "./goal-limits.js";
 import { CONFIG, createGoalTestEnv, task, type GoalTestEnv } from "./goal-test-env.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -322,6 +324,179 @@ describe("goal control events in the reducer", () => {
   });
 });
 
+describe("retry time modes in the reducer", () => {
+  const MIN = 60_000;
+  const after = (ms: number) => new Date(Date.parse(AT) + ms).toISOString();
+  const tenMinutes = { limits: { goalTimeoutMinutes: 10 } };
+  const reopen = (extra: Record<string, unknown> = {}) => ({
+    type: "goal.retried",
+    taskIds: ["a"],
+    reopen: true,
+    ...extra,
+  });
+  const retryAt = (goal: Goal, extra: Record<string, unknown>, ms: number) =>
+    applyGoalEvent(goal, ev(goal, reopen(extra), after(ms)));
+
+  test("within the time limit, a retry without a mode leaves the time base alone", () => {
+    const goal = retryAt(failedGoal(tenMinutes), {}, 5 * MIN);
+    expect(goal.status).toBe("executing");
+    expect(goal).not.toHaveProperty("timeBaseAt");
+    expect(goalDeadlineMs(goal)).toBe(Date.parse(after(10 * MIN)));
+  });
+
+  test("past the time limit, a retry must choose fresh or remaining", () => {
+    const failed = failedGoal(tenMinutes);
+    expect(() => retryAt(failed, {}, 20 * MIN)).toThrow(
+      /time limit has passed; choose time mode fresh .* or remaining/,
+    );
+    const fresh = retryAt(failed, { timeMode: "fresh" }, 20 * MIN);
+    expect(fresh.timeBaseAt).toBe(after(20 * MIN));
+    expect(goalDeadlineMs(fresh)).toBe(Date.parse(after(30 * MIN)));
+    const remaining = retryAt(failed, { timeMode: "remaining", activeMs: 4 * MIN }, 20 * MIN);
+    expect(remaining.timeBaseAt).toBe(after(16 * MIN));
+    expect(goalDeadlineMs(remaining)).toBe(Date.parse(after(26 * MIN)));
+    // Raising the limit later moves the deadline from the same base.
+    const raised = applyGoalEvent(
+      remaining,
+      ev(
+        remaining,
+        { type: "goal.config_updated", config: { ...CONFIG, limits: { goalTimeoutMinutes: 20 } } },
+        after(21 * MIN),
+      ),
+    );
+    expect(goalDeadlineMs(raised)).toBe(Date.parse(after(36 * MIN)));
+  });
+
+  test("a mode is honoured even before the time limit passes", () => {
+    const goal = retryAt(failedGoal(tenMinutes), { timeMode: "fresh" }, 5 * MIN);
+    expect(goal.timeBaseAt).toBe(after(5 * MIN));
+  });
+
+  test("remaining with no time left, without its running time, or an unknown mode is refused", () => {
+    const failed = failedGoal(tenMinutes);
+    expect(() => retryAt(failed, { timeMode: "remaining", activeMs: 10 * MIN }, 20 * MIN)).toThrow(
+      "no time is left; choose fresh or raise the limit",
+    );
+    expect(() => retryAt(failed, { timeMode: "remaining" }, 20 * MIN)).toThrow(/needs activeMs/);
+    expect(() => retryAt(failed, { timeMode: "remaining", activeMs: 21 * MIN }, 20 * MIN)).toThrow(
+      /longer than the goal has existed/,
+    );
+    expect(() => retryAt(failed, { timeMode: "later" }, 20 * MIN)).toThrow(
+      /unknown time mode later; expected fresh or remaining/,
+    );
+  });
+
+  test("a passed absolute deadline refuses every mode and says so", () => {
+    const deadlineAt = after(15 * MIN);
+    const failed = failedGoal({ limits: { goalTimeoutMinutes: 10, deadlineAt } });
+    for (const extra of [{}, { timeMode: "fresh" }, { timeMode: "remaining", activeMs: 0 }]) {
+      expect(() => retryAt(failed, extra, 20 * MIN)).toThrow(
+        `the goal's deadline ${deadlineAt} has passed; set a later deadline or clear it`,
+      );
+    }
+    // Before it, fresh restarts the limit but the deadline still caps it.
+    const fresh = retryAt(failed, { timeMode: "fresh" }, 12 * MIN);
+    expect(goalDeadlineMs(fresh)).toBe(Date.parse(deadlineAt));
+  });
+
+  test("reopening a planning failure takes the same modes", () => {
+    const planning = run([managed(tenMinutes), { type: "goal.failed", reason: "x" }]);
+    expect(() =>
+      applyGoalEvent(planning, ev(planning, { type: "goal.reopened" }, after(20 * MIN))),
+    ).toThrow(/choose time mode fresh/);
+    const replanned = applyGoalEvent(
+      planning,
+      ev(planning, { type: "goal.reopened", timeMode: "fresh" }, after(20 * MIN)),
+    );
+    expect(replanned).toMatchObject({ status: "planning", timeBaseAt: after(20 * MIN) });
+  });
+
+  test("a live goal's task retry takes a mode too", () => {
+    const live = run([
+      managed(tenMinutes),
+      proposed,
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.failed", taskId: "a", error: "boom" },
+    ]);
+    const retried = applyGoalEvent(
+      live,
+      ev(
+        live,
+        { type: "goal.retried", taskIds: ["a"], reopen: false, timeMode: "fresh" },
+        after(12 * MIN),
+      ),
+    );
+    expect(retried).toMatchObject({ status: "executing", timeBaseAt: after(12 * MIN) });
+  });
+});
+
+describe("the time a goal ran", () => {
+  const MIN = 60_000;
+  const at = (minutes: number) => new Date(Date.parse(AT) + minutes * MIN).toISOString();
+  const events = (list: [string, number, Record<string, unknown>?][]) =>
+    list.map(([type, minutes, extra]) => ({ type, at: at(minutes), ...extra }) as GoalEvent);
+
+  test("paused and failed time does not count; reopening and resuming start the clock", () => {
+    const log = events([
+      ["goal.created", 0],
+      ["goal.paused", 2],
+      ["goal.resumed", 5],
+      ["goal.failed", 6],
+      ["goal.retried", 30, { reopen: true }],
+      ["goal.failed", 31],
+    ]);
+    expect(goalActiveMs(log, Date.parse(at(100)))).toBe(4 * MIN);
+  });
+
+  test("a live goal counts up to the time asked about", () => {
+    expect(goalActiveMs(events([["goal.created", 0]]), Date.parse(at(3)))).toBe(3 * MIN);
+  });
+
+  test("a fresh restart starts the count again; remaining keeps it", () => {
+    const fresh = events([
+      ["goal.created", 0],
+      ["goal.failed", 4],
+      ["goal.retried", 10, { reopen: true, timeMode: "fresh" }],
+      ["goal.failed", 11],
+    ]);
+    expect(goalActiveMs(fresh, Date.parse(at(50)))).toBe(MIN);
+    const remaining = events([
+      ["goal.created", 0],
+      ["goal.failed", 4],
+      ["changeset.integration_retried", 10, { timeMode: "remaining", activeMs: 4 * MIN }],
+      ["goal.cancelled", 11],
+    ]);
+    expect(goalActiveMs(remaining, Date.parse(at(50)))).toBe(5 * MIN);
+  });
+
+  test("a fresh retry of a paused goal starts counting only when it is resumed", () => {
+    const log = events([
+      ["goal.created", 0],
+      ["goal.paused", 1],
+      ["goal.retried", 3, { reopen: false, timeMode: "fresh" }],
+      ["goal.resumed", 5],
+    ]);
+    expect(goalActiveMs(log, Date.parse(at(6)))).toBe(MIN);
+  });
+
+  test("an event whose time does not parse is skipped", () => {
+    const log = [...events([["goal.created", 0]]), { type: "goal.paused", at: "x" } as GoalEvent];
+    expect(goalActiveMs(log, Date.parse(at(2)))).toBe(2 * MIN);
+  });
+
+  test("a goal that failed while paused reopens paused and runs once resumed", () => {
+    const log = events([
+      ["goal.created", 0],
+      ["goal.paused", 1],
+      ["goal.failed", 2],
+      ["goal.reopened", 5],
+      ["goal.resumed", 6],
+    ]);
+    expect(goalActiveMs(log, Date.parse(at(8)))).toBe(3 * MIN);
+  });
+});
+
 describe("goal controls in the Manager", () => {
   let env: GoalTestEnv;
 
@@ -438,6 +613,34 @@ describe("goal controls in the Manager", () => {
     expect(toChat).toHaveLength(2);
     expect(toChat[0]).toMatch(/failed/);
     expect(toChat[1]).toMatch(/completed/);
+  });
+
+  test("a retry with remaining records the time the goal ran and counts the limit from it", async () => {
+    let failing = true;
+    env.script([task("a")], () =>
+      failing ? { outcome: "failed", error: "flaky" } : { outcome: "completed", text: "ok" },
+    );
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store);
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("failed");
+
+    failing = false;
+    const before = await env.readEvents();
+    await service.retry("g1", undefined, "retry-remaining", "remaining");
+    const events = await env.readEvents();
+    const retried = events.at(-1);
+    if (retried?.type !== "goal.retried") throw new Error("expected goal.retried");
+    // The goal stopped running when it failed, so the time it ran is fixed by the log.
+    expect(retried).toMatchObject({
+      timeMode: "remaining",
+      activeMs: goalActiveMs(before, Date.parse(retried.at)),
+    });
+    expect(env.goalOf(store).timeBaseAt).toBe(
+      new Date(Date.parse(retried.at) - (retried.activeMs ?? 0)).toISOString(),
+    );
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("completed");
   });
 
   test("a merge that failed is merged again by retry, and the goal finishes", async () => {
@@ -718,7 +921,13 @@ describe("config edits and reopening in the Manager", () => {
     env.script([task("a"), task("b")], () => "hold");
     const { store, manager, service } = await env.boot();
     await env.createGoal(store, { ...CONFIG, onPermissionRequest: "wait" });
-    await tick();
+    const started = Date.now();
+    while (
+      env.harness.agents.filter((a) => a.labels["paseo.goal-task"]).length < 2 &&
+      Date.now() - started < 5000
+    ) {
+      await tick(10);
+    }
     const lead = env.goalOf(store).leadAgentId;
     const workers = env.harness.agents
       .filter((a) => a.labels["paseo.goal-task"])
@@ -785,6 +994,18 @@ describe("config edits and reopening in the Manager", () => {
       config: CONFIG,
     });
     expect(created.config?.onPermissionRequest).toBe("wait");
+    // New goals get Lead interventions unless asked not to; a person can switch them off.
+    expect(created.config?.leadInterventions).toBe(true);
+    const declined = await service.create({
+      goalId: "g3",
+      title: "T",
+      objective: "O",
+      criteria: ["works"],
+      config: { ...CONFIG, leadInterventions: false },
+    });
+    expect(declined.config?.leadInterventions).toBe(false);
+    const switched = await service.updateConfig("g3", { leadInterventions: true });
+    expect(switched.config?.leadInterventions).toBe(true);
 
     const before = env.goalOf(store, "g2").lastSeq;
     // The current settings again, or no changes, record nothing.
@@ -811,5 +1032,408 @@ describe("config edits and reopening in the Manager", () => {
     );
     const manual = await service.create({ goalId: "m", title: "M", objective: "", criteria: [] });
     await expect(service.updateConfig(manual.id, { maxParallel: 3 })).rejects.toThrow(/manual/);
+  });
+});
+
+describe("plan revisions in the Manager", () => {
+  let env: GoalTestEnv;
+
+  beforeEach(async () => {
+    env = createGoalTestEnv();
+    await env.init();
+  });
+  afterEach(() => env.cleanup());
+
+  const tick = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** Wait for a state the Manager reaches asynchronously; a fixed sleep is too short on a loaded machine. */
+  const until = async (reached: () => boolean, timeoutMs = 5000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!reached() && Date.now() < deadline) await tick(10);
+  };
+
+  const failedTaskIds = (store: Parameters<typeof env.goalOf>[0]) =>
+    env
+      .goalOf(store)
+      .tasks.filter((t) => t.status === "failed")
+      .map((t) => t.id);
+
+  /** The task a worker turn runs, from its agent's labels. */
+  const taskOf = (agentId: string) =>
+    env.harness.agents.find((a) => a.agentId === agentId)?.labels["paseo.goal-task"];
+
+  /** Workers for `held` wait to be resolved, `failing` fail, the rest succeed. */
+  function workers(
+    tasks: unknown[],
+    options: { held?: string[]; failing?: string[] } = {},
+  ): { release(): void } {
+    const held = new Set(options.held ?? []);
+    const failing = new Set(options.failing ?? []);
+    env.script(tasks, (turn) => {
+      const id = taskOf(turn.agentId) ?? "";
+      if (held.has(id)) return "hold";
+      if (failing.has(id)) return { outcome: "failed", error: `${id} broke` };
+      return { outcome: "completed", text: `${id} done` };
+    });
+    return {
+      release: () => {
+        held.clear();
+        for (const turn of env.harness.turns) {
+          turn.resolve({ outcome: "completed", text: `${taskOf(turn.agentId)} done` });
+        }
+      },
+    };
+  }
+
+  const eventsOf = async (type: string) => (await env.readEvents()).filter((e) => e.type === type);
+
+  test("a person's revision applies at once: one approval, and the reply shows it", async () => {
+    const work = workers([task("a"), task("b", { dependsOn: ["a"] })], { held: ["a"] });
+    const { store, manager, service } = await env.boot();
+    service.attachActivityProbe(manager);
+    await env.createGoal(store);
+    await tick();
+
+    const goal = await service.revisePlan(
+      "g1",
+      {
+        ops: [
+          { op: "replace", task: { ...task("b", { dependsOn: ["a"] }), description: "do b well" } },
+          { op: "add", task: task("c") },
+        ] as never,
+        reason: "b needs more care; c was missing",
+      },
+      "rev-1",
+    );
+
+    expect(goal.planRevisions).toEqual([
+      expect.objectContaining({ id: "rev-rev-1", source: "person", status: "applied" }),
+    ]);
+    expect(goal.tasks.map((t) => [t.id, t.status])).toEqual([
+      ["a", "running"],
+      ["b", "pending"],
+      ["c", expect.any(String)],
+    ]);
+    // A resend with the same eventId returns the goal and records nothing.
+    const before = env.goalOf(store).lastSeq;
+    await service.revisePlan("g1", { ops: [{ op: "remove", taskId: "c" }], reason: "x" }, "rev-1");
+    expect(env.goalOf(store).lastSeq).toBe(before);
+
+    work.release();
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("completed");
+    expect(await eventsOf("plan.revision_approved")).toHaveLength(1);
+  });
+
+  test("the source is decided by the caller's agent id; specs are checked like a plan", async () => {
+    workers([task("a"), task("b", { dependsOn: ["a"] })], { held: ["a"] });
+    const { store, manager, service } = await env.boot();
+    service.attachActivityProbe(manager);
+    await env.createGoal(store);
+    await tick();
+    const remove = { ops: [{ op: "remove" as const, taskId: "b" }], reason: "not needed" };
+
+    await expect(service.revisePlan("g1", { ...remove, agentId: "someone-else" })).rejects.toThrow(
+      /Only the goal's Lead or a person/,
+    );
+    await expect(
+      service.revisePlan("g1", {
+        ops: [{ op: "add", task: task("c", { provider: "nope" }) }] as never,
+        reason: "x",
+      }),
+    ).rejects.toThrow(/unknown provider "nope"/);
+    await expect(
+      service.revisePlan("g1", { ops: [{ op: "remove", taskId: "a" }], reason: "x" }),
+    ).rejects.toThrow(/a is running and cannot change/);
+    await expect(
+      service.revisePlan("g1", { tasks: [task("c")] as never, reason: "x" }),
+    ).rejects.toThrow(/missing b/);
+
+    const leadAgentId = env.goalOf(store).leadAgentId ?? "";
+    const goal = await service.revisePlan("g1", { ...remove, agentId: leadAgentId });
+    // The goal auto-approves plans, so the Lead's revision applies too.
+    expect(goal.planRevisions?.[0]).toMatchObject({ source: "lead", status: "applied" });
+    expect(goal.tasks.map((t) => t.id)).toEqual(["a"]);
+  });
+
+  test("a Lead's revision waits for a person; its task does not start meanwhile", async () => {
+    const work = workers([task("a"), task("b", { dependsOn: ["a"] })], { held: ["a"] });
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, autoApprovePlan: false });
+    await env.settle(manager);
+    await service.approvePlan("g1");
+    await tick();
+
+    const leadAgentId = env.goalOf(store).leadAgentId ?? "";
+    const pending = await service.revisePlan("g1", {
+      ops: [
+        { op: "replace", task: { ...task("b", { dependsOn: ["a"] }), description: "do b2" } },
+      ] as never,
+      reason: "b changes",
+      agentId: leadAgentId,
+    });
+    const revisionId = pending.planRevisions?.[0]?.id ?? "";
+    expect(pending.planRevisions?.[0]).toMatchObject({ source: "lead", status: "pending" });
+    // Another Lead revision must wait for this one.
+    await expect(
+      service.revisePlan("g1", {
+        ops: [{ op: "add", task: task("c") }] as never,
+        reason: "more",
+        agentId: leadAgentId,
+      }),
+    ).rejects.toThrow(/still pending/);
+
+    work.release();
+    await env.settle(manager);
+    // a finished and b is ready, but the pending revision holds it, and the goal does not end.
+    const waiting = env.goalOf(store);
+    expect(waiting.status).toBe("executing");
+    expect(waiting.tasks.map((t) => t.status)).toEqual(["succeeded", "pending"]);
+    expect(env.harness.agents.some((a) => a.labels["paseo.goal-task"] === "b")).toBe(false);
+    await expect(
+      store.dispatch("g1", { id: "forced", goalId: "g1", type: "task.started", taskId: "b" }),
+    ).rejects.toThrow(/changed by pending revision/);
+
+    await service.approvePlanRevision("g1", revisionId, "approve-1");
+    await service.approvePlanRevision("g1", revisionId, "approve-1");
+    await env.settle(manager);
+    const done = env.goalOf(store);
+    expect(done.status).toBe("completed");
+    expect(done.tasks.find((t) => t.id === "b")?.description).toBe("do b2");
+    expect(await eventsOf("plan.revision_approved")).toHaveLength(1);
+  });
+
+  test("a pending revision holds a goal that would fail; its rejection lets it fail", async () => {
+    const work = workers([task("a"), task("b")], { held: ["a"], failing: ["b"] });
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, autoApprovePlan: false });
+    await env.settle(manager);
+    await service.approvePlan("g1");
+    await until(() => failedTaskIds(store).length > 0);
+    expect(env.goalOf(store).tasks.map((t) => t.status)).toEqual(["running", "failed"]);
+
+    const leadAgentId = env.goalOf(store).leadAgentId ?? "";
+    const pending = await service.revisePlan("g1", {
+      ops: [{ op: "replace", task: { ...task("b"), description: "do b differently" } }] as never,
+      reason: "b keeps failing",
+      agentId: leadAgentId,
+    });
+    work.release();
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("executing");
+
+    await service.rejectPlanRevision("g1", pending.planRevisions?.[0]?.id ?? "", "no");
+    await env.settle(manager);
+    const goal = env.goalOf(store);
+    expect(goal.planRevisions?.[0]).toMatchObject({ status: "rejected", decisionReason: "no" });
+    expect(goal.status).toBe("failed");
+    expect(goal.failureReason).toMatch(/Failed or blocked: b/);
+  });
+
+  test("an auto-approval the reducer refuses is recorded as the rejection", async () => {
+    const work = workers([task("a"), task("b", { dependsOn: ["a"] })], { held: ["a"] });
+    const { store, manager, service } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, autoApprovePlan: false });
+    await env.settle(manager);
+    await service.approvePlan("g1");
+    await tick();
+    const leadAgentId = env.goalOf(store).leadAgentId ?? "";
+    const pending = await service.revisePlan("g1", {
+      ops: [
+        { op: "replace", task: { ...task("b", { dependsOn: ["a"] }), description: "b2" } },
+      ] as never,
+      reason: "b changes",
+      agentId: leadAgentId,
+    });
+    const revisionId = pending.planRevisions?.[0]?.id ?? "";
+
+    // Turning on auto-approval approves the waiting revision, but the run limit is used up.
+    await service.updateConfig("g1", { autoApprovePlan: true, limits: { maxRuns: 1 } });
+    await tick();
+    const revision = env.goalOf(store).planRevisions?.[0];
+    expect(revision).toMatchObject({ status: "rejected" });
+    expect(revision?.decisionReason).toMatch(/run limit of 1 is used up/);
+    const rejected = await eventsOf("plan.revision_rejected");
+    expect(rejected.map((e) => e.id)).toEqual([`g1:revision-reject:${revisionId}`]);
+
+    work.release();
+    await env.settle(manager);
+    // The goal is not left waiting: b cannot run within the limit, so it fails.
+    expect(env.goalOf(store).status).toBe("failed");
+  });
+
+  test("a revision proposed just before a restart is approved after it", async () => {
+    workers([task("a"), task("b", { dependsOn: ["a"] })], { held: ["a"] });
+    const first = await env.boot();
+    await env.createGoal(first.store);
+    await tick();
+    first.manager.stop();
+    // The Manager was not listening, as when the daemon stopped right after the proposal.
+    await first.store.dispatch("g1", {
+      id: "crash-proposal",
+      goalId: "g1",
+      type: "plan.revision_proposed",
+      revisionId: "rev-crash",
+      source: "person",
+      reason: "add c",
+      ops: [{ op: "add", task: task("c") as never }],
+    });
+
+    workers([task("a"), task("b", { dependsOn: ["a"] })]);
+    const second = await env.boot();
+    await env.settle(second.manager);
+    const goal = env.goalOf(second.store);
+    expect(goal.planRevisions?.[0]).toMatchObject({ id: "rev-crash", status: "applied" });
+    expect(goal.status).toBe("completed");
+    expect((await eventsOf("plan.revision_approved")).map((e) => e.id)).toEqual([
+      "g1:revision-approve:rev-crash",
+    ]);
+  });
+
+  test("a task that failed for good is split by the Lead and the goal completes", async () => {
+    // The shape of goal aff07ea6: t7 used up its attempts while other work still ran.
+    const work = workers([task("t1"), task("t7"), task("t8", { dependsOn: ["t7"] })], {
+      held: ["t1"],
+      failing: ["t7"],
+    });
+    const { store, manager, service } = await env.boot();
+    service.attachActivityProbe(manager);
+    await env.createGoal(store);
+    await until(() => failedTaskIds(store).includes("t7"));
+    expect(env.goalOf(store).tasks.map((t) => [t.id, t.status])).toEqual([
+      ["t1", "running"],
+      ["t7", "failed"],
+      ["t8", "pending"],
+    ]);
+
+    const leadAgentId = env.goalOf(store).leadAgentId ?? "";
+    const revised = await service.revisePlan("g1", {
+      tasks: [task("t7a"), task("t7b"), task("t8", { dependsOn: ["t7a", "t7b"] })] as never,
+      remove: ["t7"],
+      reason: "t7 was too large; split it",
+      agentId: leadAgentId,
+    });
+    expect(revised.planRevisions?.[0]).toMatchObject({ source: "lead", status: "applied" });
+    expect(revised.tasks.map((t) => t.id)).toEqual(["t1", "t8", "t7a", "t7b"]);
+    // The removed id stays taken while the goal runs: its runs and events derive from it.
+    await expect(
+      service.revisePlan("g1", { ops: [{ op: "add", task: task("t7") }] as never, reason: "x" }),
+    ).rejects.toThrow(/Task id t7 was used earlier in this goal/);
+
+    work.release();
+    await env.settle(manager);
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("completed");
+    expect(goal.tasks.every((t) => t.status === "succeeded")).toBe(true);
+  });
+
+  test("a task's own run timeout can lower the goal's but not raise it", async () => {
+    env.script(
+      [task("short", { runTimeoutMinutes: 1 }), task("long", { runTimeoutMinutes: 120 })],
+      () => "hold",
+    );
+    const { store } = await env.boot();
+    await env.createGoal(store, {
+      ...CONFIG,
+      maxAttempts: 1,
+      limits: { runTimeoutMinutes: 60, retryBackoffSeconds: 0 },
+    });
+    await tick();
+
+    env.clock.advance(60_001);
+    const runError = (taskId: string) =>
+      env.goalOf(store).runs.find((r) => r.taskId === taskId)?.error;
+    await until(() => Boolean(runError("short")));
+    expect(runError("short")).toBe("Turn timed out after 1 minutes");
+    expect(runError("long")).toBeNull();
+
+    env.clock.advance(59 * 60_000);
+    await tick();
+    expect(runError("long")).toBe("Turn timed out after 60 minutes");
+  });
+
+  test("a task changed while the pump starts another runs on its new spec", async () => {
+    workers([task("t1"), task("x")], { held: ["t1", "x"] });
+    const { store, service, manager } = await env.boot();
+    service.attachActivityProbe(manager);
+    // The pump picked t1 and x together. While t1 starts, a person moves x to another provider;
+    // the revision is applied before x's turn to start comes.
+    let injected = false;
+    store.subscribe((_goal, event) => {
+      if (injected || event.type !== "task.started" || event.taskId !== "t1") return;
+      injected = true;
+      void store.dispatch("g1", {
+        id: "mid-pump",
+        goalId: "g1",
+        type: "plan.revision_proposed",
+        revisionId: "rev-mid",
+        source: "person",
+        reason: "x on opencode",
+        ops: [{ op: "replace", task: task("x", { provider: "opencode" }) as never }],
+      });
+    });
+    await env.createGoal(store);
+    await tick();
+
+    const goal = env.goalOf(store);
+    expect(goal.planRevisions?.[0]).toMatchObject({ id: "rev-mid", status: "applied" });
+    expect(goal.runs.find((r) => r.taskId === "x")?.provider).toBe("opencode");
+    expect(env.harness.agents.find((a) => a.labels["paseo.goal-task"] === "x")?.provider).toBe(
+      "opencode",
+    );
+  });
+
+  test("a failed pipeline reaction does not lose the approval", async () => {
+    const work = workers([task("a"), task("b", { dependsOn: ["a"] })], { held: ["a"] });
+    const { store, manager, service } = await env.boot();
+    service.attachActivityProbe(manager);
+    const pipeline = Reflect.get(manager, "pipeline") as { onEvent(...args: unknown[]): void };
+    const onEvent = pipeline.onEvent.bind(pipeline);
+    pipeline.onEvent = (goal, event) => {
+      if ((event as GoalEvent).type === "plan.revision_proposed") throw new Error("pipeline bug");
+      onEvent(goal, event);
+    };
+    await env.createGoal(store);
+    await tick();
+
+    const goal = await service.revisePlan("g1", {
+      ops: [{ op: "add", task: task("c") }] as never,
+      reason: "c",
+    });
+    expect(goal.planRevisions?.[0]?.status).toBe("applied");
+    work.release();
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("completed");
+  });
+
+  test("an automatic approval that failed is retried before the reply, or reported", async () => {
+    workers([task("a"), task("b", { dependsOn: ["a"] })], { held: ["a"] });
+    const { store, manager, service } = await env.boot();
+    service.attachActivityProbe(manager);
+    await env.createGoal(store);
+    await tick();
+    const dispatchOrElse = store.dispatchOrElse.bind(store);
+    let failures = 1;
+    store.dispatchOrElse = (...args) => {
+      if (failures > 0) {
+        failures -= 1;
+        return Promise.reject(new Error("disk full"));
+      }
+      return dispatchOrElse(...args);
+    };
+
+    // The Manager's own approval fails; the service asks once more and it applies.
+    const applied = await service.revisePlan("g1", {
+      ops: [{ op: "add", task: task("c") }] as never,
+      reason: "c",
+    });
+    expect(applied.planRevisions?.[0]?.status).toBe("applied");
+
+    // Both attempts fail: the reply is an error, not a success for a change not applied.
+    failures = 2;
+    await expect(
+      service.revisePlan("g1", { ops: [{ op: "add", task: task("d") }] as never, reason: "d" }),
+    ).rejects.toThrow(/disk full/);
+    expect(env.goalOf(store).planRevisions?.[1]?.status).toBe("pending");
   });
 });

@@ -32,6 +32,8 @@ export interface GitPort {
   }): Promise<CapturedChange | null>;
   /** True when the worktree has no uncommitted or untracked changes. */
   isClean(cwd: string): Promise<boolean>;
+  /** `git status --porcelain` lines of tracked files with uncommitted changes; empty when none. */
+  trackedChanges(cwd: string): Promise<string>;
   head(cwd: string): Promise<string>;
   currentBranch(cwd: string): Promise<string>;
   /**
@@ -51,9 +53,74 @@ export interface GitPort {
   }): Promise<CommandOutcome>;
   /** Kill running commands for a key, or all of them. Their results report a signal exit. */
   killCommands(key?: string): void;
+  /**
+   * What a worktree holds compared with `baseCommit`, for the Lead to read: the diff stat, the
+   * status of tracked files and a count of untracked ones, capped at 4000 characters. Never
+   * takes git's index lock, so it is safe while an agent still works there. Never throws: a
+   * failure or the time limit gives a line saying the summary is unavailable.
+   */
+  workSummary(input: { cwd: string; baseCommit?: string; timeoutMs?: number }): Promise<string>;
 }
 
 const OUTPUT_TAIL_CHARS = 4000;
+const WORK_SUMMARY_CHARS = 4000;
+const WORK_SUMMARY_TIMEOUT_MS = 10_000;
+/** Untracked files counted at most; a tree with more says "at least". */
+const UNTRACKED_COUNT_CAP = 10_000;
+const WORK_SUMMARY_ERROR_CHARS = 300;
+
+/** The work summary of a worktree; see GitPort.workSummary. */
+async function readWorkSummary(input: {
+  cwd: string;
+  baseCommit?: string;
+  timeoutMs?: number;
+}): Promise<string> {
+  // One deadline for all three commands, so the summary never takes longer than asked.
+  const deadline = Date.now() + (input.timeoutMs ?? WORK_SUMMARY_TIMEOUT_MS);
+  const run = (args: string[], maxOutputBytes = WORK_SUMMARY_CHARS * 2) => {
+    const timeout = deadline - Date.now();
+    if (timeout <= 0) throw new Error("timed out");
+    return runGitCommand(["--no-optional-locks", ...args], {
+      cwd: input.cwd,
+      timeout,
+      maxOutputBytes,
+    });
+  };
+  const base = input.baseCommit ?? "HEAD";
+  try {
+    const stat = await run(["diff", "--stat", base, "--"]);
+    const status = await run(["status", "--short", "-uno"]);
+    // Each path is at most a few hundred bytes; the cap stops reading a huge tree early.
+    const untracked = await run(
+      ["ls-files", "--others", "--exclude-standard"],
+      UNTRACKED_COUNT_CAP * 64,
+    );
+    const lines = untracked.stdout.split("\n").filter((line) => line.length > 0).length;
+    const count = Math.min(lines, UNTRACKED_COUNT_CAP);
+    const untrackedLine =
+      untracked.truncated || lines > UNTRACKED_COUNT_CAP
+        ? `Untracked files: at least ${count}`
+        : `Untracked files: ${count}`;
+    const text = [
+      `Changes since ${base}:`,
+      stat.stdout.trim() || "(none)",
+      "",
+      "Uncommitted changes to tracked files:",
+      status.stdout.trim() || "(none)",
+      "",
+      untrackedLine,
+    ].join("\n");
+    return text.length <= WORK_SUMMARY_CHARS
+      ? text
+      : `${text.slice(0, WORK_SUMMARY_CHARS - 12)}\n[truncated]`;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const shown = /timed out/.test(reason)
+      ? "timed out"
+      : reason.slice(0, WORK_SUMMARY_ERROR_CHARS);
+    return `(work summary unavailable: ${shown})`;
+  }
+}
 
 // Commits the Manager makes itself carry an explicit author instead of relying on
 // whatever identity the machine has configured.
@@ -120,6 +187,10 @@ export function createGitPort(): GitPort {
 
     async isClean(cwd) {
       return (await git(cwd, ["status", "--porcelain"])).stdout.trim().length === 0;
+    },
+
+    async trackedChanges(cwd) {
+      return (await git(cwd, ["status", "--porcelain", "--untracked-files=no"])).stdout.trimEnd();
     },
 
     async currentBranch(cwd) {
@@ -213,5 +284,7 @@ export function createGitPort(): GitPort {
         for (const stop of stops) stop();
       }
     },
+
+    workSummary: readWorkSummary,
   };
 }

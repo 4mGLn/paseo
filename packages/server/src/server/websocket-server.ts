@@ -17,7 +17,7 @@ import { DaemonLinkEndpoint, VirtualHostSocket } from "./connected-hosts/index.j
 import { ConnectedHosts } from "./connected-hosts/index.js";
 import type { GoalService } from "./goal/goal-service.js";
 import { GoalUpdatePublisher } from "./goal/goal-update-publisher.js";
-import { withoutAutoPolicy, withoutUsageBreakdown } from "./session/goal/goal-session.js";
+import { publishGoalUpdate } from "./session/goal/goal-session.js";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -1045,23 +1045,7 @@ export class VoiceAssistantWebSocketServer {
     return new GoalUpdatePublisher({
       subscribe: (listener) => goalService.subscribe(listener),
       subscribeRemoved: (listener) => goalService.subscribeRemoved(listener),
-      publish: (goal, options) => {
-        const payload = options?.deleted ? { goal, deleted: true } : { goal };
-        // COMPAT(goalConfigEdit, goalUsageBreakdown): added in v0.13.3, remove after 2027-04-27.
-        const variants = new Map<string, typeof payload>();
-        for (const session of this.listSessions()) {
-          const configEdit = session.supports(CLIENT_CAPS.goalConfigEdit);
-          const breakdown = session.supports(CLIENT_CAPS.goalUsageBreakdown);
-          const key = `${configEdit}:${breakdown}`;
-          let variant = variants.get(key);
-          if (!variant) {
-            const policy = configEdit ? goal : withoutAutoPolicy(goal);
-            variant = { ...payload, goal: breakdown ? policy : withoutUsageBreakdown(policy) };
-            variants.set(key, variant);
-          }
-          session.publish({ type: "goal.update", payload: variant });
-        }
-      },
+      publish: (goal, options) => publishGoalUpdate(this.listSessions(), goal, options),
     });
   }
 
@@ -2068,6 +2052,14 @@ export class VoiceAssistantWebSocketServer {
               goalUsageBreakdown: true,
               // COMPAT(goalIntegrationRetry): added in v0.13.10, remove gate after 2027-10-27.
               goalIntegrationRetry: true,
+              // COMPAT(goalPlanRevision): added in v0.13.13, remove gate after 2027-10-28.
+              goalPlanRevision: true,
+              // COMPAT(goalLeadInterventions): added in v0.13.13, remove gate after 2027-10-28.
+              goalLeadInterventions: true,
+              // COMPAT(goalTimeBase): added in v0.13.13, remove gate after 2027-10-28.
+              goalTimeBase: true,
+              // COMPAT(goalRecovery): added in v0.13.13, remove gate after 2027-10-28.
+              goalRecovery: true,
               // COMPAT(goalConcurrencyConfig): added in v0.13.9, remove gate after 2027-10-27.
               goalConcurrencyConfig: true,
             }
