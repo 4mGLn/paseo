@@ -7,6 +7,7 @@ import { runInspectCommand, runInspectUsageCommand, type GoalInspectOptions } fr
 import { runLsCommand } from "./ls.js";
 import { runChangesCommand } from "./changes.js";
 import { runNotificationsCommand } from "./notifications.js";
+import { runDiagnoseCommand, runRecoverCommand } from "./recover.js";
 import {
   runArchiveCommand,
   runDeleteCommand,
@@ -21,8 +22,11 @@ import {
   runCancelCommand,
   runPauseCommand,
   runPlanCommand,
+  runApproveRevisionCommand,
   runRejectPlanCommand,
+  runRejectRevisionCommand,
   runRequestChangesCommand,
+  runReviseCommand,
   runResumeCommand,
   runRetryCommand,
 } from "./transition.js";
@@ -54,6 +58,11 @@ export function createGoalCommand(): Command {
       .option("--max-attempts <n>", "Attempts per task before it fails for good (1-5, default 2)")
       .option("--auto-approve", "Run the Lead's plan without waiting for approval")
       .option("--no-notify-lead", "Do not message the Lead about failures or completion")
+      .option(
+        "--lead-interventions",
+        "Ask the Lead what to do when a task times out, keeps failing or uses its last attempt (default)",
+      )
+      .option("--no-lead-interventions", "Retry failed tasks without asking the Lead")
       .option(
         "--review-provider <provider[/model]>",
         "Provider, optionally with a model, for the reviewer and verifier (default: the Lead's)",
@@ -147,6 +156,11 @@ export function createGoalCommand(): Command {
       .option("--on-permission <policy>", "fail, wait or auto")
       .option("--notify-lead", "Message the Lead about failures and completion")
       .option("--no-notify-lead", "Do not message the Lead")
+      .option(
+        "--lead-interventions",
+        "Ask the Lead what to do when a task times out, keeps failing or uses its last attempt",
+      )
+      .option("--no-lead-interventions", "Retry failed tasks without asking the Lead")
       .option("--auto-approve", "Run a proposed plan without waiting for approval")
       .option("--no-auto-approve", "Wait for plan approval")
       .option("--require-approval", "Hold every reviewed change until you approve it")
@@ -192,7 +206,9 @@ export function createGoalCommand(): Command {
   addJsonAndDaemonHostOptions(
     goal
       .command("inspect")
-      .description("Show a goal's tasks (full goal and event history with --json)")
+      .description(
+        "Show a goal's tasks and plan revisions (full goal and event history with --json)",
+      )
       .argument("<id>", "Goal ID")
       .option("--usage", "Show usage per agent and role, with the goal's total, instead of tasks"),
   ).action((id: string, options: GoalInspectOptions, command: Command) =>
@@ -223,13 +239,93 @@ export function createGoalCommand(): Command {
 
   addJsonAndDaemonHostOptions(
     goal
+      .command("revise")
+      .description(
+        "Change a running goal's plan from a JSON file: an ops array, {ops}, or the desired plan as {tasks, remove}. Sends PASEO_AGENT_ID when set: the goal's Lead's change waits for approval unless the goal auto-approves plans, any other agent is refused (use --as-person). Prints the revision's status; exits 1 when it was rejected",
+      )
+      .argument("<id>", "Goal ID")
+      .requiredOption("--file <path>", "JSON file with the revision")
+      .option("--reason <text>", "Why the plan changes (overrides a reason in the file)")
+      .option(
+        "--as-person",
+        "Revise as a person even when PASEO_AGENT_ID is set (it applies at once); for a person working in an agent's shell",
+      ),
+  ).action(withOutput(runReviseCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("approve-revision")
+      .description("Approve a plan revision the Lead proposed")
+      .argument("<id>", "Goal ID")
+      .option("--revision <revisionId>", "Revision to approve (default: the pending one)"),
+  ).action(withOutput(runApproveRevisionCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("reject-revision")
+      .description("Reject a plan revision the Lead proposed; the plan stays as it was")
+      .argument("<id>", "Goal ID")
+      .option("--revision <revisionId>", "Revision to reject (default: the pending one)")
+      .option("--message <text>", "Why it was rejected"),
+  ).action(withOutput(runRejectRevisionCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
       .command("retry")
       .description(
         "Retry failed or cancelled tasks with fresh attempts; reopens a failed goal (retries all of them, merges again change sets whose merge failed, or starts a fresh Lead when it failed while planning). A change set rejected by review is not retried",
       )
       .argument("<id>", "Goal ID")
-      .option("--task <taskId>", "Retry only this task (a live goal only)"),
+      .option("--task <taskId>", "Retry only this task (a live goal only)")
+      .option(
+        "--time <mode>",
+        "How the time limit restarts: fresh (the full limit from now) or remaining (the limit minus the time the goal ran). Needed once the time limit has passed; asked on a terminal",
+      )
+      .option(
+        "--prompt <text>",
+        "Your instruction for every worker of the goal from now on; an empty text clears it. Refused when PASEO_AGENT_ID is set",
+      )
+      .option(
+        "--task-prompt <taskId=text>",
+        "Your instruction for one task's worker (repeatable); <taskId>= clears it. Refused when PASEO_AGENT_ID is set",
+        repeatable,
+      ),
   ).action(withOutput(runRetryCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("diagnose")
+      .description(
+        "Explain why a failed goal stopped: per-task causes, what blocks it, the limits it needs raised (with the smallest values) and what a person must do",
+      )
+      .argument("<id>", "Goal ID"),
+  ).action(withOutput(runDiagnoseCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("recover")
+      .description(
+        "Ask a fresh Lead to decide how a failed goal continues where it stopped: retry with advice for the workers, revise the plan, or hand it back to you. Succeeded and merged work stays. Limits are never raised: change them with goal config first (goal diagnose shows the smallest values). Refused when PASEO_AGENT_ID is set",
+      )
+      .argument("<id>", "Goal ID")
+      .option(
+        "--prompt <text>",
+        "Your instruction for the Lead and every worker; an empty text clears it",
+      )
+      .option(
+        "--task <taskId=text>",
+        "Your instruction for one task's worker (repeatable); <taskId>= clears it",
+        repeatable,
+      )
+      .option(
+        "--time <mode>",
+        "How the time limit restarts when the recovery is applied: fresh or remaining. Needed once the time limit has passed; asked on a terminal",
+      )
+      .option("--cancel", "Stop the recovery while its Lead decides or while it waits for you")
+      .option("--approve", "Apply the Lead's plan change that waits for you")
+      .option("--reject", "Turn down the Lead's plan change; the goal stays failed")
+      .option("--message <text>", "Why you rejected it (with --reject)"),
+  ).action(withOutput(runRecoverCommand));
 
   addJsonAndDaemonHostOptions(
     goal

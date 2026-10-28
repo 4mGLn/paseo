@@ -27,6 +27,7 @@ export interface GoalCreateOptions extends GoalCommandOptions {
   maxAttempts?: string;
   autoApprove?: boolean;
   notifyLead?: boolean;
+  leadInterventions?: boolean;
   reviewProvider?: string;
   verifyProvider?: string;
   leadThinking?: string;
@@ -96,6 +97,8 @@ function buildConfig(options: GoalCreateOptions): GoalConfig | undefined {
       intOption(options.maxAttempts, "--max-attempts") ?? GOAL_CONFIG_BOUNDS.maxAttempts.default,
     autoApprovePlan: options.autoApprove === true,
     notifyLead: options.notifyLead !== false,
+    // Undefined is not sent, and the daemon turns it on for a new goal.
+    leadInterventions: options.leadInterventions,
     ...(options.reviewProvider ? { reviewProvider: options.reviewProvider } : {}),
     ...(options.verifyProvider ? { verifyProvider: options.verifyProvider } : {}),
     ...(options.leadThinking ? { leadThinking: options.leadThinking } : {}),

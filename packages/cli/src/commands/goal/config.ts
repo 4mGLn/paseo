@@ -17,6 +17,7 @@ const CLEAR = "none";
 export interface GoalConfigOptions extends GoalCommandOptions {
   onPermission?: string;
   notifyLead?: boolean;
+  leadInterventions?: boolean;
   autoApprove?: boolean;
   requireApproval?: boolean;
   testCommand?: string;
@@ -86,6 +87,7 @@ export function buildConfigChanges(options: GoalConfigOptions): GoalConfigChange
         ? undefined
         : parseEnum(GoalPermissionPolicySchema, options.onPermission, "--on-permission"),
     notifyLead: options.notifyLead,
+    leadInterventions: options.leadInterventions,
     autoApprovePlan: options.autoApprove,
     requireHumanApproval: options.requireApproval,
     testCommand: textChange(options.testCommand),
