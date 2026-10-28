@@ -26,7 +26,14 @@ import {
   RESUME_FAILED_PREFIX,
   RUN_CANCELED_TEXT,
   TIME_LIMIT_REACHED_PREFIX,
+  WORKER_BLOCKED_PREFIX,
   isPendingRequestFailure,
+  isWorkerBlocked,
+  needsPerson,
+  personDecides,
+  withoutWorkerStatus,
+  workerBlockedFailureText,
+  workerStatus,
 } from "@getpaseo/protocol/goal/failure-wording";
 import {
   budgetExceeded,
@@ -710,15 +717,7 @@ export class GoalManager {
         this.track(this.plan(goal.id));
         break;
       case "plan.proposed":
-        if (goal.config.autoApprovePlan) {
-          this.track(
-            this.dispatch(goal.id, {
-              id: `${goal.id}:auto-approve:${event.id}`,
-              goalId: goal.id,
-              type: "plan.approved",
-            }),
-          );
-        }
+        this.autoApprovePlan(goal, event);
         break;
       case "plan.approved":
       case "task.added":
@@ -731,6 +730,19 @@ export class GoalManager {
       case "goal.completed":
         this.clearDeadline(goal.id);
         this.track(this.notifyOrigin(goal, "completed"));
+        break;
+      case "goal.accepted":
+        // The goal's work already stopped when it failed, and its Lead with it, so only the
+        // chat that started it is told. The key is its own: the failure notice at this
+        // `reopens` already used the goal-ended one.
+        this.clearDeadline(goal.id);
+        this.track(
+          this.notifyOrigin(
+            goal,
+            `completed: accepted as is by a person (criteria waived: ${event.criterionIds.length})`,
+            `goal-accepted-r${goal.reopens ?? 0}`,
+          ),
+        );
         break;
       case "goal.cancelled":
       case "goal.failed": {
@@ -753,6 +765,17 @@ export class GoalManager {
         this.onControlEvent(goal, event, previousPolicy);
         break;
     }
+  }
+
+  private autoApprovePlan(goal: Goal, event: GoalEvent): void {
+    if (!goal.config?.autoApprovePlan) return;
+    this.track(
+      this.dispatch(goal.id, {
+        id: `${goal.id}:auto-approve:${event.id}`,
+        goalId: goal.id,
+        type: "plan.approved",
+      }),
+    );
   }
 
   /** Reactions to a person's controls and to recorded usage. */
@@ -985,13 +1008,14 @@ export class GoalManager {
       intervention.outcome === "lead_unavailable" ||
       intervention.outcome === "revision_rejected";
     if (!goesOn || !intervention.taskId || !intervention.runId) return;
+    // Only the Lead's continue retries a blocked worker; without its answer a person decides.
     this.track(
       this.continueAfterFailure(
         goal.id,
         intervention.taskId,
         intervention.runId,
         intervention.error,
-        false,
+        intervention.outcome !== "continue" && personDecides(intervention.error, false),
       ),
     );
   }
@@ -1043,7 +1067,15 @@ export class GoalManager {
       if (wake === "woken") continue;
       if (wake === null) {
         if (continueOthers && run) {
-          this.track(this.continueAfterFailure(goal.id, task.id, run.id, error, waitsForPerson));
+          this.track(
+            this.continueAfterFailure(
+              goal.id,
+              task.id,
+              run.id,
+              error,
+              personDecides(error, waitsForPerson),
+            ),
+          );
         }
         continue;
       }
@@ -1088,7 +1120,8 @@ export class GoalManager {
       this.refusedWakeUps.add(key);
       this.logger.warn({ goalId, taskId: task.id, reason: refusal }, "Lead wake-up refused");
     }
-    await this.continueAfterFailure(goalId, task.id, run.id, error, false);
+    // A wake-up is due only for a run that does not wait on a request under its policy.
+    await this.continueAfterFailure(goalId, task.id, run.id, error, personDecides(error, false));
   }
 
   /** A failed task's last error, and whether it waits for a person rather than the Lead. */
@@ -1800,9 +1833,7 @@ export class GoalManager {
 
       if (result.outcome === "completed") {
         await this.settleLateNudge(live, agentId);
-        // The task is settled first: a crash after this point leaves a run that
-        // recovery closes as succeeded, not a finished task that gets re-run.
-        await this.completeRun(goalId, task, runId, live, result.text);
+        await this.finishCompletedRun(goalId, task, runId, live, result.text);
         return;
       }
       const policy = goalPermissionPolicy(this.store.get(goalId)?.config);
@@ -1817,6 +1848,28 @@ export class GoalManager {
       if (this.stopped) return;
       await this.failRun(goalId, taskId, runId, live, withLeadStop(live, errorMessage(error)));
     }
+  }
+
+  /**
+   * A worker's turn completed. A blocked status line is the worker's own claim that something
+   * outside the task stopped it, and fails the run; without a status line the run is judged as
+   * it always was.
+   */
+  private async finishCompletedRun(
+    goalId: string,
+    task: Task,
+    runId: string,
+    live: LiveRun,
+    text: string,
+  ): Promise<void> {
+    const status = workerStatus(text);
+    if (status?.status === "blocked") {
+      await this.failRun(goalId, task.id, runId, live, `${WORKER_BLOCKED_PREFIX} ${status.reason}`);
+      return;
+    }
+    // The task is settled first: a crash after this point leaves a run that
+    // recovery closes as succeeded, not a finished task that gets re-run.
+    await this.completeRun(goalId, task, runId, live, withoutWorkerStatus(text));
   }
 
   /**
@@ -1970,7 +2023,14 @@ export class GoalManager {
     const wake = goal ? this.wakeUpFor(goal, taskId, waitsForPerson) : null;
     const task = goal?.tasks.find((t) => t.id === taskId);
     if (wake === null) {
-      await this.continueAfterFailure(goalId, taskId, runId, error, waitsForPerson);
+      // A blocked worker is not retried blindly: without the Lead, a person decides.
+      await this.continueAfterFailure(
+        goalId,
+        taskId,
+        runId,
+        error,
+        personDecides(error, waitsForPerson),
+      );
     } else if (typeof wake === "object" && task) {
       // Read before the worktree is archived below; the Lead sees what the run left.
       const workSummary = live.cwd
@@ -2091,9 +2151,14 @@ export class GoalManager {
       const request = asking
         ? `. Task ${asking.id} stopped on a request (needs_permission): ${asking.error}`
         : "";
+      // A worker's blocked claim opens the reason, quoted, so the person reads it first.
+      const claim = failed
+        .map((t) => ({ id: t.id, error: lastRunError(goal, t.id) ?? "" }))
+        .find((t) => isWorkerBlocked(t.error));
+      const opening = claim ? `${workerBlockedFailureText(claim.id, claim.error)} ` : "";
       await this.failGoal(
         goal.id,
-        `No task can make progress. Failed or blocked: ${ids}${request}${gaveUpText(goal, failed)}`,
+        `${opening}No task can make progress. Failed or blocked: ${ids}${request}${gaveUpText(goal, failed)}`,
       );
     }
   }
@@ -2279,12 +2344,13 @@ export class GoalManager {
       // An interrupted run says nothing about the provider, so it is always retried.
       // A task left failed is retried only while failed attempts remain.
       const interrupted = task.status === "running";
-      // One that stopped on a request waits for a person, as it did before the restart.
+      // One that stopped on a request, or whose worker reported it was blocked, waits for a
+      // person, as it did before the restart, unless the Lead already said continue about it.
       const strandedFailure =
         task.status === "failed" &&
         goal !== undefined &&
         countedFailures(goal, task.id) < maxAttempts &&
-        !isPendingRequestFailure(lastRunError(goal, task.id)) &&
+        !(needsPerson(lastRunError(goal, task.id)) && !leadContinued(goal, task.id)) &&
         !this.awaitsLead(goal, task.id);
       if (!interrupted && !strandedFailure) continue;
       await this.dispatch(goalId, {
@@ -2603,6 +2669,14 @@ function describePendingRequest(
       ? "Change the policy to wait or auto, then retry."
       : "Retry and answer it in the agent's chat.";
   return `${PENDING_PERMISSION_PREFIX} to use ${request.tool}${quoted} and the goal's permission policy (${policy}) cannot grant it. ${advice}`;
+}
+
+/** The Lead answered continue about the latest run of the task, which retries even a blocked worker. */
+function leadContinued(goal: Goal, taskId: string): boolean {
+  const run = goal.runs.findLast((r) => r.taskId === taskId);
+  return (goal.interventions ?? []).some(
+    (i) => interventionClass(i) === "failure" && i.runId === run?.id && i.outcome === "continue",
+  );
 }
 
 /** The error of the task's latest failed run. */

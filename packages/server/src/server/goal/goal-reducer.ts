@@ -26,6 +26,7 @@ import {
   CHANGE_SET_REWORK_FAILED,
   GOAL_TIME_LIMIT_PASSED,
   GOAL_TIME_MODES,
+  MAX_ACCEPT_NOTE_CHARS,
 } from "@getpaseo/protocol/goal/types";
 import {
   LAST_ATTEMPT_TRIGGER,
@@ -40,6 +41,8 @@ import {
   capText,
   interventionClass,
 } from "@getpaseo/protocol/goal/interventions";
+import { acceptRefusal } from "@getpaseo/protocol/goal/acceptance";
+import { liveRecovery } from "@getpaseo/protocol/goal/recovery-state";
 import {
   absoluteDeadlineMs,
   budgetExceeded,
@@ -260,6 +263,7 @@ function allowedOnFailedGoal(goal: Goal, event: GoalEvent): boolean {
     case "recovery.started":
     case "recovery.decided":
     case "recovery.resolved":
+    case "goal.accepted":
       return true;
     case "usage.recorded":
       return event.role === "lead" && goal.recovery !== undefined;
@@ -272,18 +276,8 @@ function allowedOnFailedGoal(goal: Goal, event: GoalEvent): boolean {
   }
 }
 
-/** Recovery statuses during which the goal waits for its recovery and takes no other reopen. */
-const LIVE_RECOVERY_STATUSES: ReadonlySet<string> = new Set([
-  "deciding",
-  "decided",
-  "awaiting_approval",
-]);
-
-/** The recovery still deciding, being applied or waiting for approval, if any. */
-export function liveRecovery(goal: Pick<Goal, "recovery">): Recovery | null {
-  const recovery = goal.recovery;
-  return recovery && LIVE_RECOVERY_STATUSES.has(recovery.status) ? recovery : null;
-}
+// One definition, shared with the clients; re-exported for the daemon's other modules.
+export { liveRecovery };
 
 /** A retry, reopen or archive would race the recovery; the person cancels it first. */
 function refuseWhileRecovering(goal: Goal, event: GoalEvent): void {
@@ -384,6 +378,8 @@ function applyManagementEvent(goal: Goal, event: GoalEvent): Goal | null {
  */
 function withVerificationTimes(goal: Goal, event: GoalEvent): Goal {
   if (goal.status !== "executing" && goal.status !== "completed") return goal;
+  // An accept completes without verifying; stamping a stage time now would invent one.
+  if (event.type === "goal.accepted") return goal;
   let next = goal;
   if (!next.verifyStartedAt && readyToVerify(next)) {
     next = { ...next, verifyStartedAt: event.at };
@@ -1854,9 +1850,52 @@ function applyGoalLevelEvent(goal: Goal, event: GoalEvent): Goal {
     case "goal.reopened":
       return applyReopenPlanning(goal, event);
 
+    case "goal.accepted":
+      return acceptGoal(goal, event);
+
     default:
       throw new GoalTransitionError(event.type, "unexpected event for this handler");
   }
+}
+
+/**
+ * A person accepts a failed goal as is: it completes with every criterion still unverified
+ * waived. Only when all its work is done and merged, so the result is the integration branch as
+ * it stands, and only with every unverified criterion named, so nothing is waived by accident.
+ */
+function acceptGoal(goal: Goal, event: Extract<GoalEvent, { type: "goal.accepted" }>): Goal {
+  requireStatus(goal, event, "failed");
+  const refuse = (message: string): never => {
+    throw new GoalTransitionError(event.type, message);
+  };
+  // The clients offer the action with the same check (protocol goal/acceptance.ts).
+  const refusal = acceptRefusal(goal);
+  if (refusal) refuse(refusal);
+  const note = event.note.trim();
+  if (note.length === 0) refuse("a note saying why is required");
+  if (note.length > MAX_ACCEPT_NOTE_CHARS) {
+    refuse(`the note is longer than ${MAX_ACCEPT_NOTE_CHARS} characters`);
+  }
+  const unverified = goal.criteria.filter((c) => !c.verifiedAt).map((c) => c.id);
+  const named = new Set(event.criterionIds);
+  if (named.size !== event.criterionIds.length) refuse("a criterion is named twice");
+  const extra = event.criterionIds.filter((id) => !unverified.includes(id));
+  if (extra.length > 0) refuse(`not unverified criteria: ${extra.join(", ")}`);
+  const missing = unverified.filter((id) => !named.has(id));
+  if (missing.length > 0) {
+    refuse(`every unverified criterion must be waived; missing: ${missing.join(", ")}`);
+  }
+  const waived = { at: event.at, note };
+  return {
+    ...goal,
+    status: "completed",
+    failureReason: null,
+    accepted: { at: event.at, note, from: event.acceptedFrom, client: event.client },
+    criteria: goal.criteria.map((c) => (named.has(c.id) ? { ...c, waived } : c)),
+    // A goal paused when it failed is no longer paused once it is completed.
+    ...(goal.pausedAt ? { pausedAt: null } : {}),
+    ...endAppliedRecovery(goal),
+  };
 }
 
 /**

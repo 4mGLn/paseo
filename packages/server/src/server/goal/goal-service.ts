@@ -3,6 +3,7 @@ import type {
   GoalListArchivedFilter,
   GoalRetainedResource,
 } from "@getpaseo/protocol/goal/rpc-schemas";
+import { originalFailureReason } from "@getpaseo/protocol/goal/acceptance";
 import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
 import { DEFAULT_GOAL_PERMISSION_POLICY } from "@getpaseo/protocol/goal/config-bounds";
 import {
@@ -92,6 +93,18 @@ export interface GuidanceInput {
 export interface RecoveryStartInput extends GuidanceInput {
   /** How the time limit restarts when the recovery applies; see GOAL_TIME_MODES. */
   timeMode?: string;
+}
+
+/**
+ * A person accepts a failed goal as is. `criterionIds` names every criterion still unverified;
+ * `note` says why. `client` records where it came from ("app" or "cli"). `agentId` is set when an
+ * agent asks, which is refused.
+ */
+export interface AcceptGoalInput {
+  criterionIds: string[];
+  note: string;
+  client?: string;
+  agentId?: string;
 }
 
 export interface RecoveryDecisionInput {
@@ -801,6 +814,34 @@ export class GoalService {
     if (this.activity?.hasLiveWork(goalId)) {
       throw new Error(`The goal's agents are still stopping; ${verb} again in a moment`);
     }
+  }
+
+  /**
+   * A person accepts a failed goal as is: it completes with its unverified criteria waived. The
+   * reducer checks that all its work is done and merged and that every unverified criterion is
+   * named. The failure already stopped the goal's agents and timers; nothing is merged or moved,
+   * and the integration branch stays as it is.
+   */
+  async accept(goalId: string, input: AcceptGoalInput, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "goal.accepted", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    refuseAgent(input.agentId, "accept a goal as is");
+    const goal = this.requireManaged(goalId, "accept");
+    if (goal.status !== "failed") {
+      throw new Error(`Goal ${goalId} is ${goal.status}; only a failed goal can be accepted as is`);
+    }
+    refuseWhileRecovering(goal);
+    this.requireSettled(goalId, "accept");
+    return this.dispatch(goalId, eventId, {
+      type: "goal.accepted",
+      criterionIds: input.criterionIds,
+      note: input.note.trim(),
+      // The failure the goal stopped with, as the person saw it grouped; a recovery that ended
+      // for a person rewrote `failureReason`.
+      acceptedFrom: originalFailureReason(goal) ?? "",
+      client: input.client?.trim() || "unknown",
+    });
   }
 
   /**

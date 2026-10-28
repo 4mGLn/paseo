@@ -112,6 +112,28 @@ describe("diagnosis of real failed goals", () => {
     expect(diagnosis.recoverable).toBe(true);
   });
 
+  test("4fe24f94 with a rework whose worker reported it was blocked: the remedy is to fix the cause", () => {
+    const blocked = "Worker reported it was blocked: disk full";
+    const events = fixtureEvents("4fe24f94.jsonl");
+    for (const event of events) {
+      const e = event as GoalEvent & { taskId?: string; runId?: string; error?: string };
+      const ofRework = e.taskId === "t7-rw1" || e.runId?.startsWith("t7-rw1");
+      if (ofRework && typeof e.error === "string") e.error = blocked;
+    }
+    const goal = replayGoal(events);
+    if (!goal) throw new Error("empty fixture");
+    const diagnosis = diagnoseGoalFailure(goal, { now: Date.parse("2026-10-28T07:00:00.000Z") });
+    expect(diagnosis.findings[0]).toEqual({
+      kind: "rework_failed",
+      remedy:
+        "The worker of a rework reported it could not do the task. Fix the cause it names, then retry or recover; the rework runs again in its worktree.",
+      personNeeded: "yes",
+    });
+    expect(diagnosis.tasks).toEqual([
+      expect.objectContaining({ taskId: "t7-rw1", cause: "worker_blocked", lastError: blocked }),
+    ]);
+  });
+
   test("b195cf6f later: every task succeeded but c1 was not met; one recovery is left", () => {
     const goal = fixture("b195cf6f-verify.jsonl");
     const now = Date.parse("2026-10-28T08:00:00.000Z");
@@ -136,7 +158,7 @@ describe("diagnosis of real failed goals", () => {
     expect(diagnoseGoalFailure({ ...goal, recoveries: 3 }, { now }).findings[0]).toEqual({
       kind: "verification",
       remedy:
-        "Every task succeeded but a criterion was not met, and all 3 recoveries are used. Start a follow-up goal from its integration branch.",
+        "Every task succeeded but a criterion was not met, and all 3 recoveries are used. Accept the goal as is or start a follow-up goal from its integration branch.",
       personNeeded: "yes",
     });
   });
@@ -278,6 +300,7 @@ describe("diagnosis kinds", () => {
         "pending_request",
       ],
       ["Stopped by the Lead: stuck", "lead_stopped"],
+      ["Worker reported it was blocked: disk full", "worker_blocked"],
       ["Agent run was canceled", "canceled"],
       ["exit 1", "worker_error"],
     ] as const;
@@ -285,6 +308,42 @@ describe("diagnosis kinds", () => {
       const diagnosis = diagnoseGoalFailure(failedOn(error), { now: NOW });
       expect(diagnosis.tasks[0]).toMatchObject({ taskId: "a", cause, blockedDependents: ["b"] });
     }
+  });
+
+  test("a worker that reported it was blocked needs a person, who fixes what it names", () => {
+    const diagnosis = diagnoseGoalFailure(
+      failedOn(
+        "Worker reported it was blocked: disk full",
+        'Task a stopped: the worker reported it was blocked: "disk full". Fix what it names and retry. No task can make progress. Failed or blocked: a, b',
+      ),
+      { now: NOW },
+    );
+    expect(diagnosis.findings).toEqual([
+      {
+        kind: "stuck",
+        remedy:
+          "A worker reported it was blocked. Fix what it names, then retry; the claim is the worker's own.",
+        personNeeded: "yes",
+      },
+    ]);
+    expect(diagnosis.tasks[0]?.lastError).toBe("Worker reported it was blocked: disk full");
+  });
+
+  test("an implement task that succeeded without changes is listed for information only", () => {
+    const goal = build([
+      ...planned,
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+      { type: "run.finished", runId: "a-a1", outcome: "succeeded" },
+      { type: "task.succeeded", taskId: "a", summary: "nothing to change" },
+      { type: "capture.skipped", taskId: "a", runId: "a-a1" },
+      ...failRun("b", 1, "exit 1"),
+      { type: "goal.failed", reason: "No task can make progress" },
+    ]);
+    const diagnosis = diagnoseGoalFailure(goal, { now: NOW });
+    expect(diagnosis.unchanged).toEqual(["a"]);
+    expect(diagnosis.findings.map((f) => f.kind)).toEqual(["stuck"]);
+    expect(diagnoseGoalFailure(failedOn("exit 1"), { now: NOW }).unchanged).toEqual([]);
   });
 
   test("a task running when the goal ended reads as interrupted", () => {

@@ -1104,6 +1104,7 @@ export class Session {
         supportsGoalPlanRevision: () => this.supports(CLIENT_CAPS.goalPlanRevision),
         supportsGoalLeadInterventions: () => this.supports(CLIENT_CAPS.goalLeadInterventions),
         supportsGoalRecovery: () => this.supports(CLIENT_CAPS.goalRecovery),
+        supportsGoalAccept: () => this.supports(CLIENT_CAPS.goalAccept),
       },
       goalService,
       logger: this.sessionLogger,
