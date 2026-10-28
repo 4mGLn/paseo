@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { Goal } from "@getpaseo/protocol/goal/types";
 import { createGitPort } from "./git-ops.js";
+import { integrationProblem, shellQuote } from "./goal-recovery.js";
 
 const port = createGitPort();
 
@@ -55,6 +57,40 @@ describe("git ops against real repositories", () => {
     ]);
     expect(git(work, "status", "--porcelain")).toBe("");
     expect(git(work, "log", "-1", "--format=%an")).toBe("Paseo Goal Manager");
+  });
+
+  test("workSummary shows committed and uncommitted work and counts untracked files", async () => {
+    const base = git(work, "rev-parse", "HEAD");
+    await writeFile(join(work, "feature.txt"), "new\n");
+    git(work, "add", "feature.txt");
+    git(work, "-c", "commit.gpgsign=false", "commit", "-m", "feature");
+    await writeFile(join(work, "shared.txt"), "changed\n");
+    await writeFile(join(work, "notes.txt"), "scratch\n");
+
+    const summary = await port.workSummary({ cwd: work, baseCommit: base });
+    expect(summary).toContain(`Changes since ${base}:`);
+    expect(summary).toContain("feature.txt");
+    expect(summary).toMatch(/M shared\.txt/);
+    expect(summary).toContain("Untracked files: 1");
+    // Only tracked files are listed; the untracked one is counted, not named.
+    expect(summary).not.toContain("notes.txt");
+  });
+
+  test("workSummary is cut to 4000 characters", async () => {
+    const base = git(work, "rev-parse", "HEAD");
+    for (let i = 0; i < 200; i += 1) {
+      await writeFile(join(work, `a-rather-long-file-name-to-fill-the-summary-${i}.txt`), "x\n");
+    }
+    git(work, "add", "-A");
+    git(work, "-c", "commit.gpgsign=false", "commit", "-m", "many");
+    const summary = await port.workSummary({ cwd: work, baseCommit: base });
+    expect(summary.length).toBeLessThanOrEqual(4000);
+    expect(summary.endsWith("[truncated]")).toBe(true);
+  });
+
+  test("workSummary of a directory git cannot read says it is unavailable", async () => {
+    const summary = await port.workSummary({ cwd: join(root, "missing") });
+    expect(summary).toMatch(/^\(work summary unavailable: /);
   });
 
   test("capture keeps the agent's own commits and returns null when nothing changed", async () => {
@@ -230,5 +266,89 @@ describe("git ops against real repositories", () => {
     expect(await port.isClean(work)).toBe(true);
     await writeFile(join(work, "stray.txt"), "x\n");
     expect(await port.isClean(work)).toBe(false);
+  });
+
+  test("trackedChanges lists modified tracked files and ignores untracked ones", async () => {
+    expect(await port.trackedChanges(work)).toBe("");
+    await writeFile(join(work, "stray.txt"), "x\n");
+    expect(await port.trackedChanges(work)).toBe("");
+    await writeFile(join(work, "shared.txt"), "changed\n");
+    expect(await port.trackedChanges(work)).toBe(" M shared.txt");
+  });
+
+  describe("the integration check before a recovery", () => {
+    function goalAt(head = git(integration, "rev-parse", "HEAD")): Goal {
+      return {
+        config: { cwd: repo },
+        integration: {
+          branch: "goal/integration",
+          workspaceId: "ws-int",
+          cwd: integration,
+          baseCommit: head,
+          headCommit: head,
+        },
+      } as unknown as Goal;
+    }
+
+    test("a clean worktree, or one with only untracked files, passes", async () => {
+      expect(await integrationProblem(goalAt(), port)).toBeNull();
+      await writeFile(join(integration, "cache.tmp"), "x\n");
+      expect(await integrationProblem(goalAt(), port)).toBeNull();
+    });
+
+    test("a modified, staged or renamed tracked file is named", async () => {
+      await writeFile(join(integration, "shared.txt"), "changed\n");
+      expect(await integrationProblem(goalAt(), port)).toContain("\n M shared.txt\n");
+      git(integration, "add", "shared.txt");
+      expect(await integrationProblem(goalAt(), port)).toContain("\nM  shared.txt\n");
+      git(integration, "reset", "--hard");
+      git(integration, "mv", "shared.txt", "moved.txt");
+      expect(await integrationProblem(goalAt(), port)).toContain("R  shared.txt -> moved.txt");
+    });
+
+    test("a path git quotes keeps its non-ASCII letters readable", async () => {
+      // git's default core.quotePath would print octal escapes; the port reads paths verbatim.
+      git(repo, "config", "core.quotePath", "true");
+      await writeFile(join(integration, "naïve file.txt"), "a\n");
+      git(integration, "add", "-A");
+      git(integration, "-c", "commit.gpgsign=false", "commit", "-m", "add");
+      await writeFile(join(integration, "naïve file.txt"), "b\n");
+      expect(await integrationProblem(goalAt(), port)).toContain(' M "naïve file.txt"');
+    });
+
+    test("a submodule with changes inside it counts as a tracked change", async () => {
+      const sub = join(root, "sub");
+      execFileSync("git", ["init", "-b", "main", sub], { stdio: "pipe" });
+      git(sub, "config", "user.email", "test@example.com");
+      git(sub, "config", "user.name", "Test");
+      await writeFile(join(sub, "lib.txt"), "1\n");
+      git(sub, "add", "-A");
+      git(sub, "-c", "commit.gpgsign=false", "commit", "-m", "lib");
+      git(integration, "-c", "protocol.file.allow=always", "submodule", "add", sub, "vendor");
+      git(integration, "-c", "commit.gpgsign=false", "commit", "-m", "submodule");
+      await writeFile(join(integration, "vendor", "lib.txt"), "2\n");
+      expect(await integrationProblem(goalAt(), port)).toContain(" M vendor");
+    });
+
+    test("a head that moved names both commits; a missing worktree says how to recreate it", async () => {
+      const recorded = git(integration, "rev-parse", "HEAD");
+      await writeFile(join(integration, "extra.txt"), "x\n");
+      git(integration, "add", "-A");
+      git(integration, "-c", "commit.gpgsign=false", "commit", "-m", "extra");
+      const moved = git(integration, "rev-parse", "HEAD");
+      expect(await integrationProblem(goalAt(recorded), port)).toContain(
+        `is at ${moved}, but the goal recorded ${recorded} on goal/integration`,
+      );
+      await rm(integration, { recursive: true, force: true });
+      expect(await integrationProblem(goalAt(recorded), port)).toContain(
+        `The integration worktree ${integration} is missing. Recreate it on its branch: git -C ${repo} worktree prune && git -C ${repo} worktree add ${integration} goal/integration`,
+      );
+    });
+
+    test("paths with spaces or quotes are quoted in the commands", () => {
+      expect(shellQuote("/tmp/a b")).toBe("'/tmp/a b'");
+      expect(shellQuote("it's")).toBe("'it'\\''s'");
+      expect(shellQuote("/plain/path-1.2")).toBe("/plain/path-1.2");
+    });
   });
 });

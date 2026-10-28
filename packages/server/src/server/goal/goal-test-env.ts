@@ -10,12 +10,14 @@ import {
   type CreateGoalWorkspaceInput,
   type ManagerAgentPort,
   type ManagerWorkspacePort,
+  type TurnPermission,
   type TurnResult,
 } from "./goal-manager.js";
 import type { CapturedChange, CommandOutcome, GitPort, MergeOutcome } from "./git-ops.js";
 import { GoalService } from "./goal-service.js";
 import { GoalStore } from "./goal-store.js";
 import type { Clock } from "./goal-limits.js";
+import type { TimelineCursor } from "./run-watcher.js";
 
 export const CONFIG: GoalConfig = {
   cwd: "/repo",
@@ -125,9 +127,19 @@ export class FakeGit implements GitPort {
     }
     return !this.dirty;
   }
+  /** What trackedChanges reports, per working directory; absent is clean. */
+  tracked = new Map<string, string>();
+  async trackedChanges(cwd: string): Promise<string> {
+    return this.tracked.get(cwd) ?? "";
+  }
+  /** Working directories that are gone: git cannot read them. */
+  missing = new Set<string>();
   /** The simulated integration worktree head; a restarted test sets it to the recorded head. */
   headValue = "base0";
   async head(cwd?: string): Promise<string> {
+    if (cwd && this.missing.has(cwd)) {
+      throw new Error(`fatal: cannot change to '${cwd}': No such file or directory`);
+    }
     return (cwd ? this.heads.get(cwd) : undefined) ?? this.headValue;
   }
   async currentBranch(): Promise<string> {
@@ -156,6 +168,12 @@ export class FakeGit implements GitPort {
     this.commands.push(input);
     return this.commandQueue.shift() ?? { exitCode: 0, timedOut: false, output: "ok" };
   }
+  /** Worktrees whose work was summarized, in order. */
+  summarized: { cwd: string; baseCommit?: string }[] = [];
+  async workSummary(input: { cwd: string; baseCommit?: string }): Promise<string> {
+    this.summarized.push(input);
+    return `1 file changed in ${input.cwd}`;
+  }
 }
 
 export class Harness {
@@ -163,6 +181,8 @@ export class Harness {
   failNextCreate: Error | null = null;
   /** Simulate a provider that keeps running after it is told to stop. */
   ignoreCancel = false;
+  /** While set, every cancel waits for it before it returns. */
+  cancelHold: Promise<void> | null = null;
   git = new FakeGit();
   agents: (CreateGoalAgentInput & { agentId: string })[] = [];
   workspaces: (CreateGoalWorkspaceInput & { workspaceId: string })[] = [];
@@ -184,7 +204,34 @@ export class Harness {
   respond: ((turn: Omit<Turn, "resolve">) => TurnResult | "hold") | null = null;
   /** The thinking option the fake provider reports for an agent created without one. */
   providerThinking: string | null = null;
+  /** Agents busy with a turn of their own, as a Lead a person is chatting with. */
+  private readonly busy = new Set<string>();
+  private idleWaiters: { agentId: string; resolve(): void }[] = [];
+  /** Agents the Manager waited on before a turn, in order. */
+  idleWaits: string[] = [];
+  /** Each agent's timeline position, as a test moves it; absent reads as unreadable. */
+  cursors = new Map<string, TimelineCursor>();
+  /** Each agent's activity digest; absent reads as empty. */
+  activity = new Map<string, string>();
+  /** Messages steered into running turns, in order. */
+  steered: { agentId: string; text: string }[] = [];
+  /** How each agent's latest turn treats a permission request, as the Manager passed it. */
+  permissions = new Map<string, TurnPermission | (() => TurnPermission)>();
+  /** What the next steers report: steered unless the provider cannot take it. */
+  steerResult: "steered" | "unavailable" = "steered";
   private nextId = 1;
+
+  /** Mark an agent busy or idle; going idle releases whoever waits for it. */
+  setBusy(agentId: string, busy: boolean): void {
+    if (busy) {
+      this.busy.add(agentId);
+      return;
+    }
+    this.busy.delete(agentId);
+    const ready = this.idleWaiters.filter((w) => w.agentId === agentId);
+    this.idleWaiters = this.idleWaiters.filter((w) => w.agentId !== agentId);
+    for (const waiter of ready) waiter.resolve();
+  }
 
   agentPort: ManagerAgentPort = {
     createAgent: async (input) => {
@@ -198,7 +245,9 @@ export class Harness {
       const thinking = input.thinking ?? this.providerThinking;
       return { agentId, ...(thinking ? { thinking } : {}) };
     },
-    runTurn: (agentId, prompt) => {
+    runTurn: (agentId, prompt, options) => {
+      if (options?.permission) this.permissions.set(agentId, options.permission);
+      options?.onStarted?.();
       const provider = this.agents.find((a) => a.agentId === agentId)?.provider ?? "?";
       const base = { agentId, prompt, provider };
       const decided = this.respond?.(base) ?? "hold";
@@ -227,13 +276,52 @@ export class Harness {
       return { modeId: permission, nextTurn: provider.startsWith("codex") };
     },
     knownProviders: () => ["claude", "codex", "opencode", "claude-review"],
+    isBusy: async (agentId) => this.busy.has(agentId),
+    timelineCursor: async (agentId) => this.cursors.get(agentId) ?? null,
+    activityDigest: async (agentId, maxChars) => {
+      // As the real one: the newest text is kept.
+      const text = this.activity.get(agentId) ?? "";
+      return text.length <= maxChars ? text : text.slice(text.length - maxChars);
+    },
+    steer: async (agentId, text) => {
+      if (this.steerResult === "steered") this.steered.push({ agentId, text });
+      return this.steerResult;
+    },
+    // An agent counts as archived once its workspace is: archiving a workspace archives the
+    // agents recorded in it (workspace-archive-service.ts), which is what production filters on.
+    findAgents: async (labels) =>
+      this.agents
+        .filter(
+          (a) =>
+            Object.entries(labels).every(([key, value]) => a.labels[key] === value) &&
+            !this.archived.includes(a.workspaceId),
+        )
+        .map((a) => ({ agentId: a.agentId, workspaceId: a.workspaceId })),
     cancel: async (agentId) => {
       this.canceled.push(agentId);
+      // A slow agent layer: the cancel returns only once the test lets it.
+      if (this.cancelHold) await this.cancelHold;
       if (this.ignoreCancel) return;
       // Cancelling a running agent ends its turn.
       for (const turn of this.turns) {
         if (turn.agentId === agentId) turn.resolve({ outcome: "canceled" });
       }
+    },
+    waitUntilIdle: (agentId, signal) => {
+      this.idleWaits.push(agentId);
+      if (!this.busy.has(agentId)) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const waiter = { agentId, resolve };
+        this.idleWaiters.push(waiter);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            this.idleWaiters = this.idleWaiters.filter((w) => w !== waiter);
+            reject(new Error("wait aborted"));
+          },
+          { once: true },
+        );
+      });
     },
     notify: async (agentId, text) => {
       this.notifyAttempts += 1;
@@ -263,6 +351,8 @@ export function createGoalTestEnv() {
   const clock = new FakeClock();
   /** Extra GoalManager options for the next boot. */
   const managerOptions: Partial<ConstructorParameters<typeof GoalManager>[0]> = {};
+  /** Extra GoalEventLog options for the next boot, such as event times from `clock`. */
+  const logOptions: Partial<ConstructorParameters<typeof GoalEventLog>[0]> = {};
   const managers: GoalManager[] = [];
   let dir = "";
 
@@ -278,7 +368,7 @@ export function createGoalTestEnv() {
   async function boot(
     maxConcurrentRuns?: number,
   ): Promise<{ store: GoalStore; manager: GoalManager; service: GoalService }> {
-    const log = new GoalEventLog({ dir });
+    const log = new GoalEventLog({ dir, ...logOptions });
     const store = new GoalStore(log);
     await store.recover();
     const manager = new GoalManager({
@@ -293,7 +383,11 @@ export function createGoalTestEnv() {
     });
     managers.push(manager);
     await manager.start();
-    return { store, manager, service: new GoalService(store, log) };
+    return {
+      store,
+      manager,
+      service: new GoalService(store, log, undefined, undefined, () => clock.now()),
+    };
   }
 
   async function createGoal(
@@ -376,6 +470,7 @@ export function createGoalTestEnv() {
     harness,
     clock,
     managerOptions,
+    logOptions,
     init,
     cleanup,
     boot,

@@ -22,6 +22,9 @@ import { tmpdir } from "node:os";
 import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
+import { GoalEventLog } from "../goal/event-log.js";
+import { GoalService } from "../goal/goal-service.js";
+import { GoalStore } from "../goal/goal-store.js";
 import { createAgentMcpServer as createAgentMcpServerWithDependencies } from "./mcp-server.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
@@ -8084,5 +8087,131 @@ describe("TeamMessageLimiter", () => {
     now = 120_000;
     expect(limiter.admit({ senderId: "a", runId: "r" }).admitted).toBe(false);
     expect(limiter.admit({ senderId: "b", runId: "other" }).admitted).toBe(true);
+  });
+});
+
+describe("goal_revise_plan MCP tool", () => {
+  const logger = createTestLogger();
+  const spec = (id: string) => ({
+    id,
+    title: id,
+    description: "",
+    kind: "implement",
+    dependsOn: [],
+  });
+
+  async function goalService(
+    after: Record<string, unknown>[] = [],
+  ): Promise<{ service: GoalService; dir: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "paseo-goal-tool-"));
+    const at = new Date().toISOString();
+    const events = [
+      {
+        type: "goal.created",
+        title: "T",
+        objective: "o",
+        criteria: [{ id: "c1", text: "works" }],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "codex",
+          maxParallel: 2,
+          maxAttempts: 2,
+          autoApprovePlan: false,
+          notifyLead: false,
+          leadInterventions: true,
+        },
+      },
+      { type: "plan.proposed", tasks: [spec("a"), spec("b")] },
+      { type: "lead.attached", agentId: "lead-agent", workspaceId: "ws-lead" },
+      { type: "plan.approved" },
+      ...after,
+    ];
+    await writeFile(
+      join(dir, "g1.jsonl"),
+      `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+    );
+    const log = new GoalEventLog({ dir });
+    const service = new GoalService(new GoalStore(log), log);
+    await service.start();
+    return { service, dir };
+  }
+
+  async function toolFor(
+    callerAgentId: string,
+    labels: Record<string, string>,
+    after: Record<string, unknown>[] = [],
+  ) {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentManager.getAgent.mockImplementation((id: string) =>
+      id === callerAgentId ? { labels } : undefined,
+    );
+    const { service, dir } = await goalService(after);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      goalService: service,
+      callerAgentId,
+      logger,
+    });
+    return { tool: registeredTool(server, "goal_revise_plan"), service, dir };
+  }
+
+  it("records the goal's Lead as the source; its revision waits for approval", async () => {
+    const { tool, service, dir } = await toolFor("lead-agent", { "paseo.goal-id": "g1" });
+    try {
+      const result = await tool.handler({
+        ops: [{ op: "remove", taskId: "b" }],
+        reason: "b is not needed",
+      });
+      expect(result.structuredContent).toMatchObject({ goalId: "g1", status: "pending" });
+      const { goal } = await service.inspect("g1");
+      expect(goal.planRevisions?.[0]).toMatchObject({ source: "lead", status: "pending" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the Lead while it is asked to decide about a failed task", async () => {
+    const timeout = "Turn timed out after 90 minutes";
+    const { tool, service, dir } = await toolFor("lead-agent", { "paseo.goal-id": "g1" }, [
+      { type: "task.started", taskId: "a" },
+      { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+      { type: "run.finished", runId: "a-a1", outcome: "failed", error: timeout },
+      { type: "task.failed", taskId: "a", error: timeout },
+      {
+        type: "intervention.requested",
+        interventionId: "a-a1",
+        taskId: "a",
+        runId: "a-a1",
+        trigger: "timeout",
+        error: timeout,
+      },
+    ]);
+    try {
+      await expect(
+        tool.handler({ ops: [{ op: "remove", taskId: "b" }], reason: "b is not needed" }),
+      ).rejects.toThrow(/decide about task a; answer the decision prompt/);
+      const { goal } = await service.inspect("g1");
+      expect(goal.planRevisions).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a worker of the goal and an agent outside any goal", async () => {
+    const worker = await toolFor("worker-1", { "paseo.goal-id": "g1", "paseo.goal-task": "a" });
+    const outsider = await toolFor("chat-1", {});
+    try {
+      const input = { ops: [{ op: "remove", taskId: "b" }], reason: "x" };
+      await expect(worker.tool.handler(input)).rejects.toThrow(/Only the goal's Lead or a person/);
+      await expect(outsider.tool.handler(input)).rejects.toThrow(/only for the Lead of a goal/);
+      const { goal } = await worker.service.inspect("g1");
+      expect(goal.planRevisions).toBeUndefined();
+    } finally {
+      await rm(worker.dir, { recursive: true, force: true });
+      await rm(outsider.dir, { recursive: true, force: true });
+    }
   });
 });

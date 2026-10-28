@@ -1,6 +1,6 @@
 import type { Goal, GoalEvent, GoalEventInput } from "@getpaseo/protocol/goal/types";
 import type { GoalEventLog } from "./event-log.js";
-import { applyGoalEvent, replayGoal } from "./goal-reducer.js";
+import { GoalTransitionError, applyGoalEvent, replayGoal } from "./goal-reducer.js";
 
 export type GoalStoreListener = (goal: Goal, event: GoalEvent) => void;
 /** Called with the goal's last state once its log has been tombstoned. */
@@ -113,6 +113,31 @@ export class GoalStore {
     return this.serialized(goalId, () => this.dispatchNow(goalId, input));
   }
 
+  /**
+   * Dispatch `input`, or, when the reducer refuses it, the event `fallback` builds from the
+   * refusal's message. Both happen in one queue slot, so no other event lands in between and
+   * whenIdle() covers the outcome either way.
+   */
+  dispatchOrElse(
+    goalId: string,
+    input: GoalEventInput,
+    fallback: (reason: string) => GoalEventInput,
+  ): Promise<DispatchResult> {
+    return this.serialized(goalId, async () => {
+      try {
+        return await this.dispatchNow(goalId, input);
+      } catch (error) {
+        if (!(error instanceof GoalTransitionError)) throw error;
+        return this.dispatchNow(goalId, fallback(error.message));
+      }
+    });
+  }
+
+  /** Resolves once every event queued for the goal so far has been applied or refused. */
+  async whenIdle(goalId: string): Promise<void> {
+    await this.queues.get(goalId);
+  }
+
   private serialized<T>(goalId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(goalId) ?? Promise.resolve();
     const run = previous.then(task, task);
@@ -130,13 +155,14 @@ export class GoalStore {
     }
 
     // Validate against a provisional event before touching disk. The log
-    // assigns the real seq and timestamp, which the reducer only checks for
-    // contiguity, so a provisional seq of lastSeq + 1 is equivalent.
+    // assigns the real seq and timestamp; a provisional seq of lastSeq + 1 is
+    // equivalent, and the time comes from the log's clock, since the reducer
+    // checks retries against the time limit.
     applyGoalEvent(current, {
       ...input,
       goalId,
       seq: (current?.lastSeq ?? 0) + 1,
-      at: new Date().toISOString(),
+      at: this.log.timestamp(),
     });
 
     const { event, duplicate } = await this.log.append(goalId, input);
