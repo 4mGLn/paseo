@@ -7,8 +7,8 @@ import { buildConfigChanges } from "./config.js";
 import { createGoalCommand } from "./index.js";
 import { parseGoalListFilter } from "./ls.js";
 import { confirmGoalDelete, describeRetained } from "./manage.js";
-import type { Goal } from "@getpaseo/protocol/goal/types";
-import { goalRevisionRows, verificationRoundLine } from "./inspect.js";
+import type { Goal, GoalEvent } from "@getpaseo/protocol/goal/types";
+import { goalRevisionRows, goalWaitLines, verificationRoundLine } from "./inspect.js";
 import { describeBlockingLimits, runDiagnoseCommand, runRecoverCommand } from "./recover.js";
 import { connectGoalClient } from "./shared.js";
 import {
@@ -175,6 +175,101 @@ describe("goal lead interventions flags", () => {
       create?.parseOptions(args);
       expect(create?.opts().leadInterventions).toBe(expected);
     }
+  });
+});
+
+describe("goal user-wait flag", () => {
+  test("config sets the limit, or clears it with none", () => {
+    expect(buildConfigChanges({ userWait: "30" } as never)).toEqual({
+      limits: { userWaitMinutes: 30 },
+    });
+    expect(buildConfigChanges({ userWait: "none" } as never)).toEqual({
+      limits: { userWaitMinutes: null },
+    });
+    expect(() => buildConfigChanges({ userWait: "soon" } as never)).toThrow(
+      /--user-wait must be a number or none/,
+    );
+  });
+
+  test("create and config take --user-wait", () => {
+    for (const name of ["create", "config"]) {
+      const command = createGoalCommand().commands.find((c) => c.name() === name);
+      command?.parseOptions(["--user-wait", "45"]);
+      expect(command?.opts().userWait).toBe("45");
+    }
+  });
+});
+
+describe("waits in goal inspect", () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 28, 6, minute)).toISOString();
+  const event = (seq: number, minute: number, fields: Record<string, unknown>) =>
+    ({ id: `g1-${seq}`, goalId: "g1", seq, at: at(minute), ...fields }) as GoalEvent;
+
+  test("lists each wait, the daemon downtime inside one, and the time left out", () => {
+    const events = [
+      event(1, 0, { type: "wait.started", agentId: "w1", role: "worker", runId: "t5-a3" }),
+      event(2, 10, { type: "usage.recorded", role: "lead", agentId: "lead" }),
+      event(3, 70, {
+        id: "g1:wait:w1:2:restarted",
+        type: "wait.ended",
+        agentId: "w1",
+        outcome: "turn_ended",
+      }),
+      event(4, 80, { type: "wait.started", agentId: "lead", role: "lead" }),
+    ];
+    const goal = {
+      runs: [{ id: "t5-a3", taskId: "t5" }],
+      waits: { open: { lead: { since: at(80) } }, excludedMs: 70 * 60_000, since: at(80) },
+    } as unknown as Goal;
+    expect(goalWaitLines(goal, events, Date.parse(at(95)))).toEqual([
+      "Waited for an answer, t5 (t5-a3): 1h 10m (includes daemon downtime 1h 00m)",
+      "Waiting for an answer, lead: 15m 00s so far",
+      "Not counted toward the time limits: 1h 25m waiting for answers",
+    ]);
+  });
+
+  test("two waits closed at one restart both count the downtime from before the restart", () => {
+    const events = [
+      event(1, 0, { type: "wait.started", agentId: "w1", role: "worker", runId: "t5-a3" }),
+      event(2, 5, { type: "wait.started", agentId: "lead", role: "lead" }),
+      event(3, 70, {
+        id: "g1:wait:w1:2:restarted",
+        type: "wait.ended",
+        agentId: "w1",
+        outcome: "turn_ended",
+      }),
+      event(4, 70, {
+        id: "g1:wait:lead:3:restarted",
+        type: "wait.ended",
+        agentId: "lead",
+        outcome: "turn_ended",
+      }),
+    ];
+    const goal = { runs: [{ id: "t5-a3", taskId: "t5" }] } as unknown as Goal;
+    expect(goalWaitLines(goal, events, Date.parse(at(80)))).toEqual([
+      "Waited for an answer, t5 (t5-a3): 1h 10m (includes daemon downtime 1h 05m)",
+      "Waited for an answer, lead: 1h 05m (includes daemon downtime 1h 05m)",
+    ]);
+  });
+
+  test("an accepted goal closes its waits", () => {
+    const events = [
+      event(1, 0, { type: "wait.started", agentId: "lead", role: "lead" }),
+      event(2, 10, {
+        type: "goal.accepted",
+        criterionIds: [],
+        note: "n",
+        acceptedFrom: "r",
+        client: "cli",
+      }),
+    ];
+    expect(goalWaitLines({ runs: [] }, events, Date.parse(at(30)))).toEqual([
+      "Waited for an answer, lead: 10m 00s",
+    ]);
+  });
+
+  test("a goal that never waited shows nothing", () => {
+    expect(goalWaitLines({ runs: [] }, [], Date.now())).toEqual([]);
   });
 });
 
