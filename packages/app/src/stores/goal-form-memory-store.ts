@@ -8,6 +8,7 @@ import {
   migrateGoalFormMemory,
   type GoalFormMemory,
 } from "@/goals/goal-form-memory";
+import { DAEMON_GOAL_SETTINGS } from "@/goals/goal-settings";
 import { createValidatedPersistStorage } from "@/storage/validated-persist-storage";
 
 const GoalSettingsSchema = z.strictObject({
@@ -19,6 +20,8 @@ const GoalSettingsSchema = z.strictObject({
   runTimeoutMinutes: z.number(),
   goalTimeoutMinutes: z.number(),
   retryBackoffSeconds: z.number(),
+  // Absent from memory written before the wait limit existed.
+  userWaitMinutes: z.number().default(DAEMON_GOAL_SETTINGS.userWaitMinutes),
   autoApprovePlan: z.boolean(),
   requireHumanApproval: z.boolean(),
   onPermissionRequest: z.enum(GOAL_PERMISSION_POLICIES),
@@ -44,7 +47,7 @@ const GoalFormMemorySchema = z.strictObject({
     .optional(),
 }) satisfies z.ZodType<GoalFormMemory>;
 
-const GoalFormMemoryPersistedSchema = z.strictObject({
+export const GoalFormMemoryPersistedSchema = z.strictObject({
   byServer: z.record(z.string(), GoalFormMemorySchema),
 });
 

@@ -944,7 +944,7 @@ export const ko: TranslationResources = {
         integration_failed:
           "복구하면 다시 병합합니다. 먼저 오류가 가리키는 통합 워크트리의 커밋되지 않은 추적 파일을 정리하세요.",
         rework_failed:
-          "재시도하거나 복구하면 재작업이 같은 워크트리에서 다시 실행됩니다. 아래에서 재작업 작업의 원인을 확인하세요. 요청에서 멈췄다면 먼저 설정에서 권한 정책을 바꾸세요.",
+          "재시도하거나 복구하면 재작업이 같은 워크트리에서 다시 실행됩니다. 아래에서 재작업 작업의 원인을 확인하세요. 요청에서 멈췄다면 먼저 설정에서 권한 정책을 바꾸고, 제때 답변이 없었다면 더 빨리 답하거나 대기 한도를 늘리세요.",
         verification:
           "모든 작업이 성공했지만 충족되지 않은 수락 기준이 있습니다. 복구하면 Lead가 수정 작업을 추가할 수 있고, 수정 작업이 병합되면 모든 수락 기준을 다시 확인합니다.",
         verification_last:
@@ -969,6 +969,7 @@ export const ko: TranslationResources = {
         timeout: "시간 초과",
         pending_request: "아무도 답하지 않은 질문이나 권한 요청에서 멈춤",
         worker_blocked: "워커가 막혔다고 보고함",
+        no_answer: "제때 답변이 없었음",
         lead_stopped: "Lead가 멈춤",
         canceled: "실행 취소됨",
         worker_error: "워커 오류",
@@ -976,6 +977,8 @@ export const ko: TranslationResources = {
         cancelled: "실행 전에 취소됨",
       },
       causeRemedy: {
+        no_answer:
+          "답변이 오기 전에 대기 한도가 지났습니다. 더 빨리 답하거나 대기 한도를 늘린 뒤 다시 시도하세요.",
         worker_blocked: "워커 자신의 주장입니다. 워커가 말한 원인을 해결한 뒤 다시 시도하세요.",
       },
       unchanged: "변경 없이 끝남: {{titles}}",
@@ -1123,6 +1126,10 @@ export const ko: TranslationResources = {
         goalTimeoutMinutes: {
           label: "목표 전체",
           hint: "그때까지 끝나지 않으면 목표가 실패합니다",
+        },
+        userWaitMinutes: {
+          label: "답변을 기다리는 최대 시간",
+          hint: "대기한 시간은 시간 제한에 포함되지 않습니다",
         },
         retryBackoffSeconds: { label: "재시도 전 대기", hint: "시도할 때마다 늘어납니다" },
         maxTotalTokens: { label: "토큰", hint: "프로바이더가 이만큼 보고하면 목표가 중지됩니다" },

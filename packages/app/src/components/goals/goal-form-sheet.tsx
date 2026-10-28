@@ -66,12 +66,15 @@ export function GoalFormSheet({
   const thinkingSupported = useHostFeature(serverId, "goalThinking");
   // An older daemon's schema rejects `auto`, so it is offered only with `goalConfigEdit`.
   const autoPermissionSupported = useHostFeature(serverId, "goalConfigEdit");
+  // COMPAT(goalUserWait): added in v0.13.14, remove gate after 2027-10-28.
+  const userWaitSupported = useHostFeature(serverId, "goalUserWait");
   const [snapshot] = useState(() =>
     buildSnapshot({
       serverId,
       prefill,
       budgetSupported,
       thinkingSupported,
+      userWaitSupported,
       autoPermissionSupported,
     }),
   );
@@ -251,6 +254,7 @@ function buildSnapshot(input: {
   prefill: GoalFormPrefill | undefined;
   budgetSupported: boolean;
   thinkingSupported: boolean;
+  userWaitSupported: boolean;
   autoPermissionSupported: boolean;
 }): GoalFormSnapshot {
   // Read once: the form starts from your last goal and never rebuilds when memory changes.
@@ -262,6 +266,7 @@ function buildSnapshot(input: {
     personalSettings: memoryByServer[input.serverId]?.settings ?? null,
     budgetSupported: input.budgetSupported,
     thinkingSupported: input.thinkingSupported,
+    userWaitSupported: input.userWaitSupported,
     autoPermissionSupported: input.autoPermissionSupported,
   };
 }

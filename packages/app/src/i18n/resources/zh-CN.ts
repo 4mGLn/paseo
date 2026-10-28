@@ -932,7 +932,7 @@ export const zhCN: TranslationResources = {
         run_limit: "在设置中调高运行次数上限，然后恢复。",
         integration_failed: "恢复会重新合并。请先清理错误中提到的集成工作树里未提交的已跟踪文件。",
         rework_failed:
-          "重试或恢复会在原工作树中重新运行返工。请查看下方返工任务的原因；如果它停在某个请求上，请先在设置中更改权限策略。",
+          "重试或恢复会在原工作树中重新运行返工。请查看下方返工任务的原因；如果它停在某个请求上，请先在设置中更改权限策略；如果没有及时得到回答，请更早回答或调高等待上限。",
         verification:
           "所有任务都已成功，但有验收标准未满足。恢复时 Lead 可以添加修复任务，合并后会重新验证所有验收标准。",
         verification_last:
@@ -954,6 +954,7 @@ export const zhCN: TranslationResources = {
         timeout: "超时",
         pending_request: "因无人回答的问题或权限请求而停止",
         worker_blocked: "执行者报告受阻",
+        no_answer: "未在时限内得到回答",
         lead_stopped: "被 Lead 停止",
         canceled: "运行已取消",
         worker_error: "执行者出错",
@@ -961,6 +962,7 @@ export const zhCN: TranslationResources = {
         cancelled: "运行前已取消",
       },
       causeRemedy: {
+        no_answer: "在有人回答之前，等待上限已到。请更早回答或调高等待上限，然后重试。",
         worker_blocked: "这是执行者自己的说法。解决它指出的问题后重试。",
       },
       unchanged: "未做更改即完成：{{titles}}",
@@ -1101,6 +1103,7 @@ export const zhCN: TranslationResources = {
         },
         runTimeoutMinutes: { label: "每个 Agent 回合", hint: "超时的回合会被停止" },
         goalTimeoutMinutes: { label: "整个目标", hint: "若到时仍未完成，目标会失败" },
+        userWaitMinutes: { label: "等待回答的最长时间", hint: "等待的时间不计入时间限制" },
         retryBackoffSeconds: { label: "重试前的等待", hint: "每次尝试后递增" },
         maxTotalTokens: { label: "Token", hint: "Provider 报告达到此数量后，目标会停止" },
         maxCostUsd: { label: "费用", hint: "Provider 报告达到此金额后，目标会停止" },

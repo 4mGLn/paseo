@@ -61,6 +61,7 @@ export const GOAL_SETTING_FIELDS: Record<GoalNumberSetting, GoalNumberField> = {
   runTimeoutMinutes: durationField("runTimeoutMinutes", MINUTES),
   goalTimeoutMinutes: durationField("goalTimeoutMinutes", MINUTES),
   retryBackoffSeconds: durationField("retryBackoffSeconds", SECONDS),
+  userWaitMinutes: durationField("userWaitMinutes", MINUTES),
 };
 
 /** Caps walk the stepper's round values; below the smallest is no cap. */

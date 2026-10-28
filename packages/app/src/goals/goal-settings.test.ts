@@ -29,6 +29,7 @@ describe("GOAL_SETTING_RANGES", () => {
       runTimeoutMinutes: { min: 1, max: 1440 },
       goalTimeoutMinutes: { min: 1, max: 10080 },
       retryBackoffSeconds: { min: 0, max: 3600 },
+      userWaitMinutes: { min: 5, max: 10080 },
     });
   });
 
@@ -114,6 +115,24 @@ describe("goalSettingsToConfig", () => {
       limits: { maxTasks: 10, maxRuns: 20, runTimeoutMinutes: 30, goalTimeoutMinutes: 240 },
       onPermissionRequest: "wait",
     });
+  });
+});
+
+describe("goalSettingsToConfig userWaitMinutes", () => {
+  const changed = { ...DAEMON_GOAL_SETTINGS, userWaitMinutes: 60 };
+
+  it("sends a changed wait limit only to a host with goalUserWait", () => {
+    expect(goalSettingsToConfig(changed, { userWaitSupported: true }).limits).toEqual({
+      userWaitMinutes: 60,
+    });
+    expect(goalSettingsToConfig(changed).limits).toBeUndefined();
+    expect(goalSettingsToConfig(changed, { userWaitSupported: false }).limits).toBeUndefined();
+  });
+
+  it("leaves the daemon's default out", () => {
+    expect(
+      goalSettingsToConfig(DAEMON_GOAL_SETTINGS, { userWaitSupported: true }).limits,
+    ).toBeUndefined();
   });
 });
 

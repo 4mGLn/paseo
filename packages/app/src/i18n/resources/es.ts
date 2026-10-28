@@ -958,7 +958,7 @@ export const es: TranslationResources = {
         integration_failed:
           "Recuperar vuelve a fusionarlo. Antes, limpia los archivos rastreados sin confirmar que nombra el error en el worktree de integración.",
         rework_failed:
-          "Reintentar o recuperar vuelve a ejecutar la corrección en su worktree. Revisa abajo la causa de la tarea de corrección; si se detuvo en una solicitud, cambia antes la política de permisos en los ajustes.",
+          "Reintentar o recuperar vuelve a ejecutar la corrección en su worktree. Revisa abajo la causa de la tarea de corrección; si se detuvo en una solicitud, cambia antes la política de permisos en los ajustes; si nadie respondió a tiempo, responde antes o sube el límite de espera.",
         verification:
           "Todas las tareas tuvieron éxito, pero un criterio no se cumplió. Al recuperar, el Lead puede añadir tareas de corrección, y todos los criterios se verifican de nuevo cuando se fusionan.",
         verification_last:
@@ -983,6 +983,7 @@ export const es: TranslationResources = {
         timeout: "Se agotó el tiempo",
         pending_request: "Se detuvo en una pregunta o permiso que nadie respondió",
         worker_blocked: "El ejecutor informó que estaba bloqueado",
+        no_answer: "Nadie respondió a tiempo",
         lead_stopped: "Detenida por el Lead",
         canceled: "Ejecución cancelada",
         worker_error: "Error del ejecutor",
@@ -990,6 +991,8 @@ export const es: TranslationResources = {
         cancelled: "Cancelada antes de ejecutarse",
       },
       causeRemedy: {
+        no_answer:
+          "El límite de espera se agotó antes de que alguien respondiera. Responde antes o sube el límite de espera, y vuelve a intentarlo.",
         worker_blocked:
           "Es lo que afirma el propio ejecutor. Corrige lo que indica y vuelve a intentarlo.",
       },
@@ -1144,6 +1147,10 @@ export const es: TranslationResources = {
         goalTimeoutMinutes: {
           label: "Objetivo completo",
           hint: "El objetivo falla si no ha terminado para entonces",
+        },
+        userWaitMinutes: {
+          label: "Espera máxima por una respuesta",
+          hint: "El tiempo de espera no cuenta para los límites de tiempo",
         },
         retryBackoffSeconds: { label: "Pausa antes de reintentar", hint: "Crece con cada intento" },
         maxTotalTokens: {

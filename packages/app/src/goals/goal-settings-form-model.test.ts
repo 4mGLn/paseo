@@ -23,6 +23,7 @@ function open(config: GoalConfig = CONFIG, overrides: { autoPermissionSupported?
   return openGoalSettingsForm({
     config,
     budgetSupported: true,
+    userWaitSupported: true,
     autoPermissionSupported: overrides.autoPermissionSupported ?? true,
   });
 }
@@ -66,7 +67,9 @@ describe("goalConfigChanges", () => {
   });
 
   it("sends nothing when nothing changed", () => {
-    expect(goalConfigChanges(baseline, baseline, { budgetSupported: true })).toEqual({});
+    expect(
+      goalConfigChanges(baseline, baseline, { budgetSupported: true, userWaitSupported: true }),
+    ).toEqual({});
   });
 
   it("sends only the changed fields, limits nested", () => {
@@ -80,7 +83,9 @@ describe("goalConfigChanges", () => {
         notifyLead: false,
       },
     };
-    expect(goalConfigChanges(baseline, values, { budgetSupported: true })).toEqual({
+    expect(
+      goalConfigChanges(baseline, values, { budgetSupported: true, userWaitSupported: true }),
+    ).toEqual({
       maxParallel: 4,
       notifyLead: false,
       onPermissionRequest: "auto",
@@ -94,7 +99,9 @@ describe("goalConfigChanges", () => {
       budget: { maxTotalTokens: null, maxCostUsd: 5 },
       testCommand: "   ",
     };
-    expect(goalConfigChanges(baseline, values, { budgetSupported: true })).toEqual({
+    expect(
+      goalConfigChanges(baseline, values, { budgetSupported: true, userWaitSupported: true }),
+    ).toEqual({
       testCommand: null,
       limits: { maxTotalTokens: null, maxCostUsd: 5 },
     });
@@ -105,25 +112,53 @@ describe("goalConfigChanges", () => {
       goalConfigChanges(
         baseline,
         { ...baseline, testCommand: " npm test " },
-        {
-          budgetSupported: true,
-        },
+        { budgetSupported: true, userWaitSupported: true },
       ),
     ).toEqual({});
     expect(
       goalConfigChanges(
         baseline,
         { ...baseline, testCommand: " pnpm test " },
-        {
-          budgetSupported: true,
-        },
+        { budgetSupported: true, userWaitSupported: true },
       ),
     ).toEqual({ testCommand: "pnpm test" });
   });
 
   it("never sends a budget the host cannot enforce", () => {
     const values = { ...baseline, budget: { maxTotalTokens: null, maxCostUsd: 5 } };
-    expect(goalConfigChanges(baseline, values, { budgetSupported: false })).toEqual({});
+    expect(
+      goalConfigChanges(baseline, values, { budgetSupported: false, userWaitSupported: true }),
+    ).toEqual({});
+  });
+});
+
+describe("userWaitMinutes", () => {
+  const baseline = goalSettingsEditValues(CONFIG);
+  const values = { ...baseline, settings: { ...baseline.settings, userWaitMinutes: 60 } };
+
+  it("reads the goal's limit, else the daemon's default", () => {
+    expect(baseline.settings.userWaitMinutes).toBe(720);
+    expect(
+      goalSettingsEditValues({ ...CONFIG, limits: { userWaitMinutes: 90 } }).settings
+        .userWaitMinutes,
+    ).toBe(90);
+  });
+
+  it("is sent as a limit only to a host with goalUserWait", () => {
+    expect(
+      goalConfigChanges(baseline, values, { budgetSupported: true, userWaitSupported: true }),
+    ).toEqual({ limits: { userWaitMinutes: 60 } });
+    expect(
+      goalConfigChanges(baseline, values, { budgetSupported: true, userWaitSupported: false }),
+    ).toEqual({});
+  });
+
+  it("flags a value outside the protocol's bounds", () => {
+    const issues = validateGoalSettingsEdit({
+      ...baseline,
+      settings: { ...baseline.settings, userWaitMinutes: 1 },
+    });
+    expect(issues).toEqual([{ field: "userWaitMinutes", code: "range", min: 5, max: 10080 }]);
   });
 });
 

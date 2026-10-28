@@ -34,6 +34,7 @@ export function goalSettingsEditValues(config: GoalConfig): GoalSettingsEditValu
       runTimeoutMinutes: limits.runTimeoutMinutes ?? defaults.runTimeoutMinutes,
       goalTimeoutMinutes: limits.goalTimeoutMinutes ?? defaults.goalTimeoutMinutes,
       retryBackoffSeconds: limits.retryBackoffSeconds ?? defaults.retryBackoffSeconds,
+      userWaitMinutes: limits.userWaitMinutes ?? defaults.userWaitMinutes,
       autoApprovePlan: config.autoApprovePlan,
       requireHumanApproval: config.requireHumanApproval ?? false,
       // A goal stored without a policy runs as `fail`; show what it runs with.
@@ -61,12 +62,13 @@ const BUDGET_KEYS: readonly GoalBudgetKey[] = ["maxTotalTokens", "maxCostUsd"];
 
 /**
  * Only what differs from `baseline`, as `goal.update_config` takes it. A cleared budget or test
- * command is sent as null. Without `budgetSupported` the caps are never sent.
+ * command is sent as null. Without `budgetSupported` the caps are never sent, nor is the wait
+ * limit without `userWaitSupported`.
  */
 export function goalConfigChanges(
   baseline: GoalSettingsEditValues,
   values: GoalSettingsEditValues,
-  options: { budgetSupported: boolean },
+  options: { budgetSupported: boolean; userWaitSupported: boolean },
 ): GoalConfigChanges {
   const changes: GoalConfigChanges = {};
   const limits: NonNullable<GoalConfigChanges["limits"]> = {};
@@ -87,6 +89,12 @@ export function goalConfigChanges(
     if (values.settings[key] !== baseline.settings[key]) {
       limits[key] = values.settings[key];
     }
+  }
+  if (
+    options.userWaitSupported &&
+    values.settings.userWaitMinutes !== baseline.settings.userWaitMinutes
+  ) {
+    limits.userWaitMinutes = values.settings.userWaitMinutes;
   }
   if (options.budgetSupported) {
     for (const key of BUDGET_KEYS) {
@@ -148,6 +156,8 @@ export interface GoalSettingsFormSnapshot {
   budgetSupported: boolean;
   /** The host takes the `auto` policy (`goalConfigEdit`). */
   autoPermissionSupported: boolean;
+  /** The host takes `userWaitMinutes` (`goalUserWait`). */
+  userWaitSupported: boolean;
 }
 
 export interface GoalSettingsFormState {
@@ -155,6 +165,7 @@ export interface GoalSettingsFormState {
   /** The goal's settings as the host last reported them. */
   baseline: GoalSettingsEditValues;
   budgetSupported: boolean;
+  userWaitSupported: boolean;
   policyOptions: GoalPermissionPolicy[];
   changes: GoalConfigChanges;
   hasChanges: boolean;
@@ -181,12 +192,13 @@ export interface GoalSettingsFormModel {
 
 type BaseState = Pick<
   GoalSettingsFormState,
-  "values" | "baseline" | "budgetSupported" | "policyOptions" | "submitError"
+  "values" | "baseline" | "budgetSupported" | "userWaitSupported" | "policyOptions" | "submitError"
 >;
 
 function withDerived(state: BaseState): GoalSettingsFormState {
   const changes = goalConfigChanges(state.baseline, state.values, {
     budgetSupported: state.budgetSupported,
+    userWaitSupported: state.userWaitSupported,
   });
   const issues = validateGoalSettingsEdit(state.values);
   const hasChanges = Object.keys(changes).length > 0;
@@ -212,6 +224,7 @@ export function openGoalSettingsForm(snapshot: GoalSettingsFormSnapshot): GoalSe
     values: baseline,
     baseline,
     budgetSupported: snapshot.budgetSupported,
+    userWaitSupported: snapshot.userWaitSupported,
     policyOptions: goalPermissionPolicyOptions(snapshot.autoPermissionSupported),
     submitError: null,
   });
