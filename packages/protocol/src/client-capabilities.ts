@@ -97,6 +97,10 @@ export const CLIENT_CAPS = {
   // clients whose strict event union rejects the event. Such a client shows an accepted goal
   // as plain completed with its waived criteria unverified. Remove after 2027-04-28.
   goalAccept: "goal_accept",
+  // COMPAT(goalUserWait): added in v0.13.14. The daemon omits wait.started and wait.ended from
+  // goal.inspect events for older clients whose strict event union rejects them. Remove after
+  // 2027-04-28.
+  goalUserWait: "goal_user_wait",
   browserHost: "browser_host",
 } as const;
 

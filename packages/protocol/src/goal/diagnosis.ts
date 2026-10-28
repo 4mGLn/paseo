@@ -9,10 +9,13 @@ import {
   TURN_TIMEOUT_PREFIX,
   WORK_NOT_RECOVERED_PREFIX,
   isCriteriaNotMetFailure,
+  isNoAnswerFailure,
   isPendingRequestFailure,
+  mentionsNoAnswer,
   isWorkerBlocked,
 } from "./failure-wording.js";
 import { MAX_RECOVERIES, capText } from "./interventions.js";
+import { absoluteDeadlineMs, goalDeadlineMs, goalTimeoutMs, timeLimitEndMs } from "./time-limit.js";
 import {
   CHANGE_SET_INTEGRATION_FAILED,
   CHANGE_SET_REWORK_FAILED,
@@ -60,6 +63,8 @@ export interface GoalFailureFinding {
 export type TaskFailureCause =
   | "timeout"
   | "pending_request"
+  /** Nobody answered the agent's request within limits.userWaitMinutes. */
+  | "no_answer"
   /** The worker ended with `TASK_STATUS: blocked`: its own claim, quoted in lastError. */
   | "worker_blocked"
   | "lead_stopped"
@@ -136,26 +141,8 @@ export const MAX_DIAGNOSIS_ERROR_CHARS = 1000;
 const MINUTE = 60_000;
 const LIMITS = GOAL_CONFIG_BOUNDS.limits;
 
-function goalTimeoutMs(goal: Goal): number {
-  const minutes = goal.config?.limits?.goalTimeoutMinutes ?? LIMITS.goalTimeoutMinutes.default;
-  return minutes * MINUTE;
-}
-
-function absoluteDeadlineMs(goal: Goal): number | null {
-  const deadlineAt = goal.config?.limits?.deadlineAt;
-  const ms = deadlineAt ? Date.parse(deadlineAt) : Number.NaN;
-  return Number.isNaN(ms) ? null : ms;
-}
-
-function timeLimitEndMs(goal: Goal): number {
-  return Date.parse(goal.timeBaseAt ?? goal.createdAt) + goalTimeoutMs(goal);
-}
-
-function deadlineMs(goal: Goal): number {
-  const absolute = absoluteDeadlineMs(goal);
-  const byTimeout = timeLimitEndMs(goal);
-  return absolute === null ? byTimeout : Math.min(byTimeout, absolute);
-}
+/** What a person does about a request nobody answered within userWaitMinutes. */
+const ANSWER_SOONER = "Answer sooner, or raise userWaitMinutes.";
 
 function isIntegrationFailed(cs: ChangeSet): boolean {
   return cs.status === "rejected" && cs.rejectionReason === CHANGE_SET_INTEGRATION_FAILED;
@@ -168,6 +155,7 @@ function isReworkFailed(cs: ChangeSet): boolean {
 function causeOf(error: string): TaskFailureCause {
   if (error.startsWith(TURN_TIMEOUT_PREFIX)) return "timeout";
   if (isPendingRequestFailure(error)) return "pending_request";
+  if (isNoAnswerFailure(error)) return "no_answer";
   if (isWorkerBlocked(error)) return "worker_blocked";
   if (error.startsWith(LEAD_STOP_PREFIX)) return "lead_stopped";
   if (error.startsWith(RUN_CANCELED_TEXT)) return "canceled";
@@ -267,7 +255,8 @@ function underlyingFailure(goal: Goal): Failure {
 }
 
 function timeAtFailure(goal: Goal, failure: Failure): boolean | null {
-  if (failure.failedAt) return Date.parse(failure.failedAt) >= deadlineMs(goal);
+  if (failure.failedAt)
+    return Date.parse(failure.failedAt) >= goalDeadlineMs(goal, Date.parse(failure.failedAt));
   // COMPAT(goalFailedAt): goals from daemons without goalRecovery carry no failedAt; read the
   // reason the deadline timer wrote. Remove after 2027-10-28.
   const reason = failure.reason ?? "";
@@ -310,7 +299,7 @@ function timeLimits(goal: Goal, options: DiagnoseOptions): BlockingLimit[] {
       note: "the deadline has passed; set a later one or clear it before recovering",
     });
   }
-  if (now < timeLimitEndMs(goal) || timeMode === "fresh") return limits;
+  if (now < timeLimitEndMs(goal, now) || timeMode === "fresh") return limits;
   const nothingLeft = activeMs !== undefined && activeMs >= goalTimeoutMs(goal);
   if (timeMode === "remaining" && !nothingLeft) return limits;
   const blocking: BlockingLimit = {
@@ -386,25 +375,33 @@ function findingsOf(context: FindingContext): GoalFailureFinding[] {
   const { goal, reason, tasks, blocked } = context;
   const findings: GoalFailureFinding[] = [];
   // First: nothing else matters while the goal cannot complete in place.
-  if (
-    goal.changeSets.some(
-      (c) => c.status === "rejected" && !isIntegrationFailed(c) && !isReworkFailed(c),
-    )
-  ) {
+  const reviewRejected = goal.changeSets.filter(
+    (c) => c.status === "rejected" && !isIntegrationFailed(c) && !isReworkFailed(c),
+  );
+  if (reviewRejected.length > 0) {
     findings.push({
       kind: "review_rejected",
-      remedy:
-        "A change set was rejected by review, so this goal cannot complete. Start a new goal from its integration branch.",
+      remedy: reviewRejected.some((c) => mentionsNoAnswer(c.error))
+        ? `A reviewer waited longer than userWaitMinutes for a person's answer, so its change set was rejected and this goal cannot complete. ${ANSWER_SOONER} Start a new goal from its integration branch.`
+        : "A change set was rejected by review, so this goal cannot complete. Start a new goal from its integration branch.",
       personNeeded: "yes",
     });
   }
   if (goal.tasks.length === 0) {
-    findings.push({
-      kind: "planning",
-      remedy:
-        "The goal failed before it had a plan. Retry it with an instruction for the planning Lead, after changing the setting that stopped it.",
-      personNeeded: "depends",
-    });
+    findings.push(
+      mentionsNoAnswer(reason)
+        ? {
+            kind: "planning",
+            remedy: `The planning Lead waited longer than userWaitMinutes for a person's answer. ${ANSWER_SOONER} Then retry.`,
+            personNeeded: "yes",
+          }
+        : {
+            kind: "planning",
+            remedy:
+              "The goal failed before it had a plan. Retry it with an instruction for the planning Lead, after changing the setting that stopped it.",
+            personNeeded: "depends",
+          },
+    );
   }
   // Time next: once the limit passed, nothing else could have finished it.
   if (context.timePassedAtFailure === true) findings.push(timeFinding(context.timeMode));
@@ -448,7 +445,9 @@ function findingsOf(context: FindingContext): GoalFailureFinding[] {
         ? "A worker reported it was blocked. Fix what it names, then retry; the claim is the worker's own."
         : "A task failed for good. See each task's cause; recover with advice for it or a revised plan.",
       personNeeded:
-        workerBlocked || tasks.some((t) => t.cause === "pending_request") ? "yes" : "depends",
+        workerBlocked || tasks.some((t) => t.cause === "pending_request" || t.cause === "no_answer")
+          ? "yes"
+          : "depends",
     });
   }
   const byReason = reasonFinding(reason);
@@ -474,6 +473,13 @@ function verificationFinding(goal: Goal, reason: string | null): GoalFailureFind
     return {
       kind: "verification",
       remedy: `${what}, and all ${MAX_RECOVERIES} recoveries are used. Accept the goal as is or start a follow-up goal from its integration branch.`,
+      personNeeded: "yes",
+    };
+  }
+  if (mentionsNoAnswer(reason)) {
+    return {
+      kind: "verification",
+      remedy: `Every task succeeded but the verifier waited longer than userWaitMinutes for a person's answer. ${ANSWER_SOONER} Then recover with retry: the verifier is asked again.`,
       personNeeded: "yes",
     };
   }
@@ -503,6 +509,14 @@ function reworkFinding(
       kind: "rework_failed",
       remedy:
         "A rework stopped on a request nobody could answer. Change the permission policy or resolve what asks, then retry or recover; the rework runs again in its worktree.",
+      personNeeded: "yes",
+    };
+  }
+  if (causes.has("no_answer")) {
+    return {
+      kind: "rework_failed",
+      remedy:
+        "A rework waited longer than userWaitMinutes for a person's answer. Answer sooner or raise userWaitMinutes, then retry or recover; the rework runs again in its worktree.",
       personNeeded: "yes",
     };
   }
@@ -609,7 +623,7 @@ export function diagnoseGoalFailure(goal: Goal, options: DiagnoseOptions): GoalD
     findings,
     failedAt: failure.failedAt,
     timePassedAtFailure,
-    timePassedNow: options.now >= deadlineMs(goal),
+    timePassedNow: options.now >= goalDeadlineMs(goal, options.now),
     failureReason: reason,
     tasks,
     blocked: blocked.map((t) => t.id),

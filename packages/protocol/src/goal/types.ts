@@ -133,6 +133,10 @@ export const GoalConfigSchema = z.object({
       runTimeoutMinutes: boundedInt(B.limits.runTimeoutMinutes).optional(),
       // Wall-clock time from creation until the goal must be finished.
       goalTimeoutMinutes: boundedInt(B.limits.goalTimeoutMinutes).optional(),
+      // Longest one permission request or question may wait for a person's answer; past it
+      // the run fails. Time spent waiting does not count toward runTimeoutMinutes or
+      // goalTimeoutMinutes. Needs server_info.features.goalUserWait.
+      userWaitMinutes: boundedInt(B.limits.userWaitMinutes).optional(),
       // Pause before a failed task is retried, multiplied by the attempt number.
       retryBackoffSeconds: boundedInt(B.limits.retryBackoffSeconds).optional(),
       // Input plus output tokens the providers report over the goal's life.
@@ -145,8 +149,8 @@ export const GoalConfigSchema = z.object({
     .optional(),
   // What to do when an agent asks for a permission. `fail`: agents start in the provider's
   // unattended mode and a run that still asks fails. `wait`: agents start in the provider's
-  // default mode and requests stay pending in Paseo for a person (bounded by the run
-  // timeout). `auto`: like `wait`, but agents start in the provider's "auto" mode when it
+  // default mode and requests stay pending in Paseo for a person (bounded by
+  // limits.userWaitMinutes). `auto`: like `wait`, but agents start in the provider's "auto" mode when it
   // lists one. Absent means `fail` (goals stored before `wait` became the default);
   // read it with goalPermissionPolicy. `auto` needs server_info.features.goalConfigEdit.
   onPermissionRequest: GoalPermissionPolicySchema.optional(),
@@ -177,6 +181,7 @@ export const GoalConfigChangesSchema = z.object({
       maxRuns: boundedInt(B.limits.maxRuns).nullable().optional(),
       runTimeoutMinutes: boundedInt(B.limits.runTimeoutMinutes).nullable().optional(),
       goalTimeoutMinutes: boundedInt(B.limits.goalTimeoutMinutes).nullable().optional(),
+      userWaitMinutes: boundedInt(B.limits.userWaitMinutes).nullable().optional(),
       retryBackoffSeconds: boundedInt(B.limits.retryBackoffSeconds).nullable().optional(),
       maxTotalTokens: boundedInt(B.limits.maxTotalTokens).nullable().optional(),
       maxCostUsd: z
@@ -542,6 +547,17 @@ export const GuidanceChangesSchema = z.object({
 });
 export type GuidanceChanges = z.infer<typeof GuidanceChangesSchema>;
 
+// Agents of the goal waiting for a person to answer a permission request or a question, keyed
+// by agent id, and the waiting time the goal's time limit leaves out (see ./time-limit.ts).
+// `since` is when the current stretch of waiting began, null while no agent waits; overlapping
+// waits count once. `excludedMs` counts from the time base and is cleared when it moves.
+export const GoalWaitsSchema = z.object({
+  open: z.record(z.string(), z.object({ since: z.string(), runId: IdSchema.optional() })),
+  excludedMs: z.number().nonnegative(),
+  since: z.string().nullable(),
+});
+export type GoalWaits = z.infer<typeof GoalWaitsSchema>;
+
 export const GoalSchema = z.object({
   id: IdSchema,
   title: z.string().trim().min(1),
@@ -573,6 +589,9 @@ export const GoalSchema = z.object({
   // Where goalTimeoutMinutes counts from, set by a retry that chose a time mode; read absent
   // as createdAt. Absent from daemons without server_info.features.goalTimeBase.
   timeBaseAt: z.string().optional(),
+  // Waiting for a person's answer. Absent until an agent first waited, and from daemons without
+  // server_info.features.goalUserWait.
+  waits: GoalWaitsSchema.optional(),
   // The latest recovery, how many recoveries counted toward the limit, when the goal last
   // failed, and the guidance its workers get. Absent until first set, and from daemons
   // without server_info.features.goalRecovery.
@@ -651,6 +670,13 @@ const eventEnvelope = {
  */
 export const GOAL_TIME_MODES = ["fresh", "remaining"] as const;
 export type GoalTimeMode = (typeof GOAL_TIME_MODES)[number];
+
+/**
+ * How a wait for a person's answer ended: answered (or withdrawn), past
+ * `limits.userWaitMinutes`, or its turn ended another way (cancelled, a restart).
+ */
+export const WAIT_OUTCOMES = ["answered", "expired", "turn_ended"] as const;
+export type WaitOutcome = (typeof WAIT_OUTCOMES)[number];
 
 /** Part of the refusal of a retry whose time limit has passed and that chose no time mode. */
 export const GOAL_TIME_LIMIT_PASSED = "the goal's time limit has passed";
@@ -823,6 +849,26 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     // Change sets whose rework failed, reopened with it (see goal.retried). Absent from
     // daemons before v0.13.14.
     reworkChangeSetIds: z.array(IdSchema).optional(),
+  }),
+  // An agent of the goal waits for a person to answer a permission request or a question, and
+  // stops waiting: `outcome` is one of WAIT_OUTCOMES. Waiting time does not count toward the
+  // run or goal time limit. Absent from daemons without server_info.features.goalUserWait, and
+  // from goal.inspect for clients without the goal_user_wait capability.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("wait.started"),
+    agentId: z.string().min(1),
+    role: UsageRoleSchema,
+    runId: IdSchema.optional(),
+    request: z
+      .object({ kind: z.string(), tool: z.string(), text: z.string().optional() })
+      .optional(),
+  }),
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("wait.ended"),
+    agentId: z.string().min(1),
+    outcome: z.string(),
   }),
   z.object({ ...eventEnvelope, type: z.literal("goal.completed") }),
   z.object({ ...eventEnvelope, type: z.literal("goal.failed"), reason: z.string() }),
