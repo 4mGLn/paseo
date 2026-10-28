@@ -28,7 +28,11 @@ import {
   isTerminalGoalStatus,
   liveRecovery,
 } from "./goal-reducer.js";
-import { decisionNoLongerFits, recoveryTimeFields } from "./goal-recovery.js";
+import {
+  decisionNoLongerFits,
+  recoveryTimeFields,
+  reworkChangeSetFields,
+} from "./goal-recovery.js";
 import type { GoalRemovedListener, GoalStore, GoalStoreListener } from "./goal-store.js";
 import {
   PlanRevisionError,
@@ -70,6 +74,8 @@ export interface GoalActivityProbe {
   approveRevisionNow?(goalId: string, revisionId: string): Promise<void>;
   /** Why the goal's integration worktree cannot take a recovery now, or null. */
   integrationProblem?(goal: Goal): Promise<string | null>;
+  /** Why a change set whose rework failed cannot be reworked again (its worktree is gone), or null. */
+  reworkWorktreeProblem?(goal: Goal): Promise<string | null>;
 }
 
 /**
@@ -528,17 +534,19 @@ export class GoalService {
     }
     const retryable = retryableTaskIds(goal, taskId);
     const reopen = goal.status === "failed";
-    // A failed goal's change sets whose merge failed are merged again, oldest first, with
-    // every failed and cancelled task. Change sets rejected by review stay rejected.
+    // A failed goal's change sets whose merge failed are merged again, oldest first, and those
+    // whose rework failed are reworked again, with every failed and cancelled task. Change sets
+    // rejected by review stay rejected.
     const remerge = reopen ? goal.changeSets.filter(isIntegrationFailed).map((c) => c.id) : [];
     if (retryable.length === 0 && remerge.length === 0) {
       throw new Error(
         reopen
-          ? `Goal ${goalId} has no failed or cancelled task and no change set rejected by a failed integration to retry`
+          ? `Goal ${goalId} has no failed or cancelled task, no change set rejected by a failed integration and no failed rework to retry`
           : `Goal ${goalId} has no failed or cancelled task to retry`,
       );
     }
     if (reopen) this.requireSettled(goalId);
+    const rework = await this.reworkToReopen(goal, reopen);
     if (remerge.length > 0) {
       if (guidance) {
         throw new Error(
@@ -551,6 +559,7 @@ export class GoalService {
         taskIds: retryable,
         target: "",
         ...time,
+        ...rework,
       });
     }
     return this.dispatch(goalId, eventId, {
@@ -560,7 +569,35 @@ export class GoalService {
       target: taskId ?? "",
       ...time,
       ...(guidance ? { guidance } : {}),
+      ...rework,
     });
+  }
+
+  /**
+   * On a reopen, the change sets whose rework failed, to be reworked again. Refused while one's
+   * worktree is gone: the reducer cannot see the disk, and the rework would only fail again.
+   */
+  private async reworkToReopen(
+    goal: Goal,
+    reopen: boolean,
+  ): Promise<{ reworkChangeSetIds?: string[] }> {
+    const rework = reopen ? reworkChangeSetFields(goal) : {};
+    if (!rework.reworkChangeSetIds) return rework;
+    const problem = await this.reworkProblem(goal, "retry");
+    if (problem) throw new Error(problem);
+    return rework;
+  }
+
+  /**
+   * Why a change set whose rework failed cannot be reworked again, or null when there is none.
+   * Refused, not passed, while the Manager cannot check yet.
+   */
+  private async reworkProblem(goal: Goal, verb: string): Promise<string | null> {
+    if (!reworkChangeSetFields(goal).reworkChangeSetIds) return null;
+    if (!this.activity?.reworkWorktreeProblem) {
+      throw new Error(`The daemon cannot check the rework worktree yet; ${verb} again in a moment`);
+    }
+    return this.activity.reworkWorktreeProblem(goal);
   }
 
   /**
@@ -580,7 +617,9 @@ export class GoalService {
       this.requireSettled(goalId, "recover");
       // Checked before anything is recorded, so a broken worktree is refused, not counted as a
       // recovery that ended at once. The Manager checks again after a restart and before applying.
-      const problem = await this.activity?.integrationProblem?.(goal);
+      const problem =
+        (await this.activity?.integrationProblem?.(goal)) ??
+        (await this.reworkProblem(goal, "recover"));
       if (problem) throw new Error(problem);
     }
     const time = await this.retryTime(goalId, input.timeMode);
@@ -640,7 +679,9 @@ export class GoalService {
         "The daemon cannot check the integration worktree yet; approve again in a moment",
       );
     }
-    const problem = await this.activity.integrationProblem(this.requireGoal(goalId));
+    const problem =
+      (await this.activity.integrationProblem(this.requireGoal(goalId))) ??
+      (await this.reworkProblem(this.requireGoal(goalId), "approve"));
     if (problem) return this.refuseRecovery(goalId, recoveryId, problem, true, eventId);
     try {
       return await this.dispatch(goalId, eventId, {
@@ -648,6 +689,7 @@ export class GoalService {
         recoveryId,
         outcome: "applied",
         ...recoveryTimeFields(recovery),
+        ...reworkChangeSetFields(this.requireGoal(goalId)),
         target: recoveryId,
       });
     } catch (error) {

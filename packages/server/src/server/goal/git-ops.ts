@@ -35,6 +35,12 @@ export interface GitPort {
   /** `git status --porcelain` lines of tracked files with uncommitted changes; empty when none. */
   trackedChanges(cwd: string): Promise<string>;
   head(cwd: string): Promise<string>;
+  /**
+   * The full id of the commit `id` names in the repository at cwd, or null. Only a commit id
+   * of at least 7 hex digits counts: a branch or tag name, an ambiguous prefix, an option, or
+   * an object that is not a commit gives null, even when the name looks like hex.
+   */
+  resolveCommit(cwd: string, id: string): Promise<string | null>;
   currentBranch(cwd: string): Promise<string>;
   /**
    * Merge a commit into the branch checked out at cwd. A conflict is aborted and reported.
@@ -133,6 +139,9 @@ const COMMIT_IDENTITY = [
   "commit.gpgsign=false",
 ];
 
+/** A full or abbreviated SHA-1 or SHA-256 commit id, at least as long as git's usual short id. */
+const COMMIT_ID = /^[0-9a-f]{7,64}$/i;
+
 async function git(cwd: string, args: string[], accept?: number[]) {
   return runGitCommand(args, { cwd, ...(accept ? { acceptExitCodes: accept } : {}) });
 }
@@ -184,6 +193,20 @@ export function createGitPort(): GitPort {
     },
 
     head: (cwd) => rev(cwd, "HEAD"),
+
+    async resolveCommit(cwd, id) {
+      if (!COMMIT_ID.test(id)) return null;
+      // Git answers 1 or 128 for a name it cannot resolve to one commit.
+      const result = await git(
+        cwd,
+        ["rev-parse", "--verify", "--quiet", "--end-of-options", `${id}^{commit}`],
+        [0, 1, 128],
+      );
+      const resolved = result.exitCode === 0 ? result.stdout.trim().toLowerCase() : "";
+      // A ref whose name looks like hex resolves too; only an id that is a prefix of the commit's
+      // own counts, so a moving branch can never stand in for a fixed commit.
+      return resolved && resolved.startsWith(id.toLowerCase()) ? resolved : null;
+    },
 
     async isClean(cwd) {
       return (await git(cwd, ["status", "--porcelain"])).stdout.trim().length === 0;

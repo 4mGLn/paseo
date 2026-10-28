@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
@@ -7,6 +7,7 @@ import { goalPermissionPolicy } from "@getpaseo/protocol/goal/config-bounds";
 import { GoalSchema } from "@getpaseo/protocol/goal/types";
 import { GoalEventLog } from "./event-log.js";
 import { GoalManager } from "./goal-manager.js";
+import { reworkWorktreeProblem } from "./goal-recovery.js";
 import { GoalService } from "./goal-service.js";
 import { GoalStore } from "./goal-store.js";
 import { FakeClock, Harness } from "./goal-test-env.js";
@@ -743,6 +744,180 @@ describe("goal logs written by earlier phases", () => {
     expect(goal.failureReason).toBeNull();
     expect(goal.changeSets[0]?.status).toBe("approved");
     expect((await load()).get("i1")?.changeSets[0]?.status).toBe("approved");
+  });
+
+  test("goal 4fe24f94: a rework that failed before the reason was recorded is reworked again by retry", async () => {
+    // The real log, anonymised (test-fixtures): cs-t7-a1's rework t7-rw1 stopped on a Bash
+    // permission request under `fail`, and the change set was rejected with no reason.
+    const goalId = "4fe24f94-477b-4e3a-80e2-2c8a46fe8d00";
+    const fixture = await readFile(
+      join(import.meta.dirname, "test-fixtures", "4fe24f94.jsonl"),
+      "utf8",
+    );
+    await writeFile(join(dir, `${goalId}.jsonl`), fixture);
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    const failed = store.get(goalId);
+    expect(failed).toMatchObject({
+      status: "failed",
+      failureReason: "Rework t7-rw1 failed after 2 attempts.",
+    });
+    expect(GoalSchema.safeParse(failed).success).toBe(true);
+    const rejected = failed?.changeSets.find((c) => c.id === "cs-t7-a1");
+    expect(rejected).toMatchObject({ status: "rejected", rejectionReason: "rework_failed" });
+    expect(rejected?.error).toMatch(/^Rework t7-rw1 failed: Agent is waiting for permission/);
+    // The fallback derives the reason and nothing else: the same log written with the reason
+    // replays to the same goal.
+    const withReason = fixture.replace(
+      '"to": "rejected", "error"',
+      '"to": "rejected", "reason": "rework_failed", "error"',
+    );
+    await writeFile(join(dir, `${goalId}.jsonl`), withReason);
+    expect((await load()).get(goalId)).toEqual(failed);
+    const runs = failed?.runs.length ?? 0;
+    expect(runs).toBe(15);
+    expect(runs).toBeLessThan(failed?.config?.limits?.maxRuns ?? 0);
+
+    // The person turns away from `fail`, which would refuse the same `git commit` again.
+    const current = failed?.config;
+    if (!current) throw new Error("expected a managed goal");
+    await store.dispatch(goalId, {
+      id: "config",
+      goalId,
+      type: "goal.config_updated",
+      config: {
+        ...current,
+        onPermissionRequest: "wait",
+        limits: { ...current.limits, maxRuns: 40 },
+      },
+    });
+    const service = new GoalService(store, log);
+    // The rework's worktree is checked before it is reworked again; here it is still there.
+    service.attachActivityProbe({
+      hasLiveWork: () => false,
+      reworkWorktreeProblem: (failedGoal) =>
+        reworkWorktreeProblem(failedGoal, { head: async () => "head" }),
+    });
+    const goal = await service.retry(goalId, undefined, "retry", "fresh");
+    expect(goal.status).toBe("executing");
+    expect(goal.changeSets.find((c) => c.id === "cs-t7-a1")).toMatchObject({
+      status: "changes_requested",
+      round: 0,
+      error: null,
+      findings: "Finding.",
+      cwd: rejected?.cwd,
+    });
+    expect(goal.changeSets.find((c) => c.id === "cs-t7-a1")).not.toHaveProperty("rejectionReason");
+    expect(goal.tasks.find((t) => t.id === "t7-rw1")).toMatchObject({
+      status: "pending",
+      forgivenFailures: 1,
+    });
+    // A retry starts no run by itself; each run from here counts against the raised limit.
+    expect(goal.runs).toHaveLength(runs);
+    const events = await log.read(goalId);
+    expect(events.at(-1)).toMatchObject({
+      type: "goal.retried",
+      taskIds: ["t7-rw1"],
+      reopen: true,
+      reworkChangeSetIds: ["cs-t7-a1"],
+    });
+    expect((await load()).get(goalId)).toEqual(goal);
+  });
+
+  test("the other real goal logs gain no rejection reason from the rework fallback", async () => {
+    for (const name of ["aff07ea6.jsonl", "b195cf6f.jsonl"]) {
+      const text = await readFile(join(import.meta.dirname, "test-fixtures", name), "utf8");
+      const goalId: string = JSON.parse(text.slice(0, text.indexOf("\n"))).goalId;
+      await writeFile(join(dir, `${goalId}.jsonl`), text);
+    }
+    const store = await load();
+    const goals = store.list();
+    expect(goals).toHaveLength(2);
+    for (const goal of goals) {
+      expect(goal.changeSets.filter((c) => c.rejectionReason !== undefined)).toEqual([]);
+      expect(GoalSchema.safeParse(goal).success).toBe(true);
+    }
+  });
+
+  test("goal b195cf6f later: it replays with no verification round, and a recovery that adds a fix round-trips", async () => {
+    // The real log to seq 216, anonymised (test-fixtures): verification failed on c1 and two
+    // recoveries ended needs_person.
+    const goalId = "b195cf6f-6f1c-4889-aff8-3f689db7ab15";
+    await writeFile(
+      join(dir, `${goalId}.jsonl`),
+      await readFile(join(import.meta.dirname, "test-fixtures", "b195cf6f-verify.jsonl"), "utf8"),
+    );
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    const failed = store.get(goalId);
+    expect(failed).toMatchObject({ status: "failed", recoveries: 2, lastSeq: 216 });
+    expect(failed).not.toHaveProperty("verificationRound");
+    expect(failed?.criteria.filter((c) => c.verifiedAt).map((c) => c.id)).toEqual([
+      "c2",
+      "c3",
+      "c4",
+      "c5",
+      "c6",
+      "c7",
+      "c8",
+      "c9",
+      "c10",
+    ]);
+    expect(GoalSchema.safeParse(failed).success).toBe(true);
+
+    // A third recovery is accepted, and its Lead adds a fix task.
+    const service = new GoalService(store, log);
+    service.attachActivityProbe({ hasLiveWork: () => false });
+    const started = await service.startRecovery(goalId, { timeMode: "fresh" });
+    const recoveryId = started.recovery?.id ?? "";
+    const send = (event: Record<string, unknown>) =>
+      store.dispatch(goalId, { goalId, ...event } as Parameters<GoalStore["dispatch"]>[1]);
+    await send({ id: "lead", type: "lead.attached", agentId: "lead-3" });
+    await send({
+      id: "ask",
+      type: "intervention.requested",
+      interventionId: `recovery-${recoveryId}`,
+      trigger: "recovery",
+      error: "",
+    });
+    await send({
+      id: "decided",
+      type: "recovery.decided",
+      recoveryId,
+      decision: {
+        decision: "revise",
+        reason: "fix F-01",
+        ops: [{ op: "add", task: { ...spec("t7"), dependsOn: ["t5"] } }],
+      },
+    });
+    await send({
+      id: "applied",
+      type: "recovery.resolved",
+      recoveryId,
+      outcome: "applied",
+      timeMode: "fresh",
+    });
+    const applied = store.get(goalId);
+    expect(applied).toMatchObject({ status: "executing", recoveries: 3, verificationRound: 1 });
+    expect(applied?.criteria.every((c) => c.verifiedAt === null)).toBe(true);
+    expect(GoalSchema.safeParse(applied).success).toBe(true);
+    // The fixed id of round 0 is taken, so a round-1 result needs its own.
+    expect(
+      (await send({ id: `${goalId}:verified:c2`, type: "criterion.verified", criterionId: "c2" }))
+        .duplicate,
+    ).toBe(true);
+    // Verification runs only once t7 is merged; here the reducer takes a result directly.
+    await send({
+      id: `${goalId}:verified:c2:v1`,
+      type: "criterion.verified",
+      criterionId: "c2",
+      evidence: "round 1",
+    });
+    const current = store.get(goalId);
+    expect(current?.criteria.find((c) => c.id === "c2")).toMatchObject({ evidence: "round 1" });
+    expect((await load()).get(goalId)).toEqual(current);
   });
 
   test("an event carrying fields this version does not know is still accepted", async () => {

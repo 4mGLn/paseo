@@ -9,14 +9,23 @@ import type {
   Integration,
   Task,
 } from "@getpaseo/protocol/goal/types";
-import { CHANGE_SET_INTEGRATION_FAILED } from "@getpaseo/protocol/goal/types";
+import {
+  CHANGE_SET_INTEGRATION_FAILED,
+  CHANGE_SET_REWORK_FAILED,
+  CHANGE_SET_REWORK_LIMIT,
+} from "@getpaseo/protocol/goal/types";
 import {
   DEFAULT_GOAL_BRANCH_PREFIX,
   goalPermissionPolicy,
 } from "@getpaseo/protocol/goal/config-bounds";
-import { WORK_NOT_RECOVERED_PREFIX } from "@getpaseo/protocol/goal/failure-wording";
+import {
+  VERIFICATION_NOT_MET_PREFIX,
+  WORK_NOT_RECOVERED_PREFIX,
+  isPendingRequestFailure,
+} from "@getpaseo/protocol/goal/failure-wording";
 import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { GitPort } from "./git-ops.js";
+import { reworkReasonFor } from "./goal-reducer.js";
 import { thinkingInput } from "./goal-thinking.js";
 import type {
   ManagerAgentPort,
@@ -32,7 +41,6 @@ import {
   describeRework,
   parseVerdict,
   parseVerification,
-  reworkReasonFor,
 } from "./review.js";
 
 export type DispatchOutcome = "new" | "duplicate" | "rejected";
@@ -370,8 +378,16 @@ export class ChangeSetPipeline {
     });
   }
 
-  private async reject(goalId: string, changeSetId: string, error: string): Promise<void> {
-    await this.transition(goalId, changeSetId, "rejected", { error });
+  private async reject(
+    goalId: string,
+    changeSetId: string,
+    error: string,
+    reason?: string,
+  ): Promise<void> {
+    await this.transition(goalId, changeSetId, "rejected", {
+      error,
+      ...(reason ? { reason } : {}),
+    });
   }
 
   private trackAgent(goalId: string, agentId: string, add: boolean): void {
@@ -595,7 +611,12 @@ export class ChangeSetPipeline {
       if (!goal?.config || !cs || !reason || this.host.isStopped()) return;
       const round = cs.round + 1;
       if (round > (goal.config.maxReworkRounds ?? DEFAULT_MAX_REWORK_ROUNDS)) {
-        await this.reject(goalId, cs.id, `Rework limit reached after ${cs.round} rounds`);
+        await this.reject(
+          goalId,
+          cs.id,
+          `Rework limit reached after ${cs.round} rounds`,
+          CHANGE_SET_REWORK_LIMIT,
+        );
         await this.host.failGoal(
           goalId,
           `Change ${cs.id} still needs ${reason} fixes after ${cs.round} rework rounds.`,
@@ -633,15 +654,27 @@ export class ChangeSetPipeline {
     }
   }
 
-  /** A rework task failed for good: the change it was fixing can no longer be fixed. */
+  /**
+   * A rework task failed for good. The change set is rejected as `rework_failed`, which a retry
+   * or recovery that reopens the goal reopens, so the rework runs again in the same worktree.
+   */
   async reworkFailed(goalId: string, task: Task): Promise<void> {
     if (!task.rework) return;
+    const error = task.error ?? "unknown error";
     await this.reject(
       goalId,
       task.rework.changeSetId,
-      `Rework ${task.id} failed: ${task.error ?? "unknown error"}`,
+      `Rework ${task.id} failed: ${error}`,
+      CHANGE_SET_REWORK_FAILED,
     );
-    await this.host.failGoal(goalId, `Rework ${task.id} failed after ${task.attempts} attempts.`);
+    // `needs_permission` is what the app looks for, as in the Manager's stuck-goal reason.
+    const request = isPendingRequestFailure(task.error)
+      ? ` Task ${task.id} stopped on a request (needs_permission): ${error}`
+      : "";
+    await this.host.failGoal(
+      goalId,
+      `Rework ${task.id} failed after ${task.attempts} attempts.${request}`,
+    );
   }
 
   // ---- recovery ----------------------------------------------------------
@@ -733,7 +766,7 @@ export class ChangeSetPipeline {
       );
       if (unmet === null) return;
       if (unmet.length > 0) {
-        await this.host.failGoal(goalId, `Acceptance criteria not met: ${unmet.join("; ")}`);
+        await this.host.failGoal(goalId, `${VERIFICATION_NOT_MET_PREFIX} ${unmet.join("; ")}`);
         return;
       }
     }
@@ -833,12 +866,17 @@ export class ChangeSetPipeline {
         unmet.push(`${text} (${answer.evidence})`);
         continue;
       }
+      // A recovery that adds work starts a new round; round 0 keeps the id older logs carry.
+      // `goal` is the state the verifier was asked from, so a result from an earlier round is
+      // refused rather than counted in a later one.
+      const round = goal.verificationRound ?? 0;
       await this.host.dispatch(goalId, {
-        id: `${goalId}:verified:${answer.id}`,
+        id: `${goalId}:verified:${answer.id}${round > 0 ? `:v${round}` : ""}`,
         goalId,
         type: "criterion.verified",
         criterionId: answer.id,
         evidence: answer.evidence,
+        round,
       });
     }
     return unmet;

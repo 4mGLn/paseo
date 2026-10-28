@@ -268,6 +268,35 @@ describe("git ops against real repositories", () => {
     expect(await port.isClean(work)).toBe(false);
   });
 
+  test("resolveCommit gives the full id of a commit id, and null for refs and anything else", async () => {
+    await writeFile(join(integration, "merged.txt"), "x\n");
+    git(integration, "add", "-A");
+    git(integration, "-c", "commit.gpgsign=false", "commit", "-m", "integration work");
+    const head = git(integration, "rev-parse", "HEAD");
+    const tree = git(integration, "rev-parse", "HEAD^{tree}");
+    // A follow-up goal runs in the project checkout; it shares the integration worktree's objects.
+    expect(await port.resolveCommit(repo, head)).toBe(head);
+    expect(await port.resolveCommit(repo, head.slice(0, 12).toUpperCase())).toBe(head);
+    expect(await port.resolveCommit(repo, "0".repeat(40))).toBeNull();
+    // Too short, not a commit, a ref name and an option are never looked up as commits.
+    expect(await port.resolveCommit(repo, head.slice(0, 6))).toBeNull();
+    expect(await port.resolveCommit(repo, tree)).toBeNull();
+    expect(await port.resolveCommit(repo, "main")).toBeNull();
+    expect(await port.resolveCommit(repo, "--all")).toBeNull();
+    expect(await port.resolveCommit(repo, `${head} HEAD`)).toBeNull();
+  });
+
+  test("resolveCommit refuses a branch whose name looks like a commit id", async () => {
+    const initial = git(repo, "rev-parse", "HEAD");
+    // Hex names that are not a prefix of the commit they point at.
+    const names = ["abcd1234", "cafe1234", "2026102"].filter((name) => !initial.startsWith(name));
+    for (const name of names) {
+      git(repo, "branch", name, initial);
+      expect(await port.resolveCommit(repo, name)).toBeNull();
+    }
+    expect(names.length).toBeGreaterThan(0);
+  });
+
   test("trackedChanges lists modified tracked files and ignores untracked ones", async () => {
     expect(await port.trackedChanges(work)).toBe("");
     await writeFile(join(work, "stray.txt"), "x\n");

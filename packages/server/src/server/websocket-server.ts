@@ -2060,6 +2060,10 @@ export class VoiceAssistantWebSocketServer {
               goalTimeBase: true,
               // COMPAT(goalRecovery): added in v0.13.13, remove gate after 2027-10-28.
               goalRecovery: true,
+              // COMPAT(goalReworkRetry): added in v0.13.14, remove gate after 2027-10-28.
+              goalReworkRetry: true,
+              // COMPAT(goalVerificationRecovery): added in v0.13.14, remove gate after 2027-10-28.
+              goalVerificationRecovery: true,
               // COMPAT(goalConcurrencyConfig): added in v0.13.9, remove gate after 2027-10-27.
               goalConcurrencyConfig: true,
             }

@@ -76,19 +76,6 @@ export function buildReviewCorrectionPrompt(problem: string): string {
   return `Your reply could not be used: ${problem}\nReply again with one fenced \`\`\`json block in the format requested.`;
 }
 
-export function reworkReasonFor(status: ChangeSet["status"]): ReworkReason | null {
-  switch (status) {
-    case "changes_requested":
-      return "review";
-    case "conflicted":
-      return "conflict";
-    case "test_failed":
-      return "tests";
-    default:
-      return null;
-  }
-}
-
 /** Describes what needs fixing, for the rework task's description. */
 export function describeRework(changeSet: ChangeSet, reason: ReworkReason): string {
   switch (reason) {

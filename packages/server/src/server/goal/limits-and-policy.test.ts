@@ -4,7 +4,14 @@ import {
   createGoalConfigUpdateValidator,
   createGoalConfigValidator,
 } from "./goal-config-validation.js";
-import { CONFIG, createGoalTestEnv, planBlock, task, type GoalTestEnv } from "./goal-test-env.js";
+import {
+  CONFIG,
+  FakeGit,
+  createGoalTestEnv,
+  planBlock,
+  task,
+  type GoalTestEnv,
+} from "./goal-test-env.js";
 
 const tick = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -332,6 +339,7 @@ describe("limits and policies", () => {
           if (cwd === "/not-a-repo") throw new Error("fatal: not a git repository");
           return "abc";
         },
+        resolveCommit: async () => null,
       },
       knownProviders: () => ["claude", "codex"],
     });
@@ -362,7 +370,7 @@ describe("limits and policies", () => {
 
   test("config validation checks the verifier's provider and the absolute deadline", async () => {
     const validate = createGoalConfigValidator({
-      git: { head: async () => "abc" },
+      git: { head: async () => "abc", resolveCommit: async () => null },
       knownProviders: () => ["claude", "codex"],
       now: () => Date.parse("2026-06-01T00:00:00Z"),
     });
@@ -380,6 +388,28 @@ describe("limits and policies", () => {
     ).resolves.toBeDefined();
   });
 
+  test("config validation stores a given base commit in full, and only one the repository has", async () => {
+    const git = new FakeGit();
+    git.headValue = "abc";
+    git.commits.add("f00dfeed1234567890");
+    git.commits.add("f00dbeef0000000000");
+    const validate = createGoalConfigValidator({
+      git,
+      knownProviders: () => ["claude", "codex"],
+    });
+    // A follow-up goal starts from the failed goal's integration head, recorded as its full id.
+    await expect(validate({ ...CONFIG, baseCommit: "f00dfeed" })).resolves.toMatchObject({
+      baseCommit: "f00dfeed1234567890",
+    });
+    await expect(validate({ ...CONFIG, baseCommit: "deadbeef" })).rejects.toThrow(
+      /baseCommit "deadbeef" is not a commit in the repository/,
+    );
+    // A prefix two commits share names neither.
+    await expect(validate({ ...CONFIG, baseCommit: "f00d" })).rejects.toThrow(/is not a commit/);
+    // Without one, HEAD is recorded.
+    await expect(validate(CONFIG)).resolves.toMatchObject({ baseCommit: "abc" });
+  });
+
   test("the auto policy needs every role provider to list an auto mode", async () => {
     const modeCatalog = async (provider: string) => {
       if (provider === "opencode") throw new Error("catalog still loading");
@@ -388,7 +418,7 @@ describe("limits and policies", () => {
       );
     };
     const validate = createGoalConfigValidator({
-      git: { head: async () => "abc" },
+      git: { head: async () => "abc", resolveCommit: async () => null },
       knownProviders: () => ["claude", "codex", "opencode"],
       modeCatalog,
     });
@@ -430,7 +460,7 @@ describe("limits and policies", () => {
         id,
       }));
     const validate = createGoalConfigValidator({
-      git: { head: async () => "abc" },
+      git: { head: async () => "abc", resolveCommit: async () => null },
       knownProviders: () => ["claude", "codex"],
       modeCatalog,
     });
