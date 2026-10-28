@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Command } from "commander";
 import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
-import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
 import {
   diagnoseGoalFailure,
   type BlockingLimit,
   type GoalDiagnosis,
 } from "@getpaseo/protocol/goal/diagnosis";
 import { RECOVERY_DECISION_MS } from "@getpaseo/protocol/goal/interventions";
+import { goalTimeoutMs } from "@getpaseo/protocol/goal/time-limit";
 import type { Goal, GoalEvent, GoalTimeMode, Recovery } from "@getpaseo/protocol/goal/types";
 import type { CommandError, OutputSchema, SingleResult } from "../../output/index.js";
 import { formatDuration } from "./progress.js";
@@ -49,12 +49,6 @@ export function describeBlockingLimits(goalId: string, limits: readonly Blocking
 function activeMsOf(events: readonly GoalEvent[], now: number): number | undefined {
   const ms = Math.round(goalActiveMs(events, now));
   return Number.isFinite(ms) ? ms : undefined;
-}
-
-function goalTimeoutMs(goal: Goal): number {
-  const minutes =
-    goal.config?.limits?.goalTimeoutMinutes ?? GOAL_CONFIG_BOUNDS.limits.goalTimeoutMinutes.default;
-  return minutes * 60_000;
 }
 
 /** What a time mode means for this goal, in words. */

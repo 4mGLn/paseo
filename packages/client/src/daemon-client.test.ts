@@ -1118,6 +1118,7 @@ test("advertises client capabilities in hello", async () => {
       goal_lead_interventions: true,
       goal_recovery: true,
       goal_accept: true,
+      goal_user_wait: true,
       hello_rejection: true,
       browser_host: {
         supportedCommands: ["list_tabs"],
@@ -1597,6 +1598,59 @@ test("recovery requests and a retry's guidance are sent only to a host with goal
       );
       await expect(pending).resolves.toMatchObject({ error: "refused" });
     }
+  }
+});
+
+test("userWaitMinutes is sent only to a host with goalUserWait", async () => {
+  for (const userWait of [false, true]) {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: `clsk_goal_user_wait_${userWait}`,
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connectPromise = client.connect();
+    mock.triggerOpen({
+      features: { goals: true, goalConfigEdit: true, goalUserWait: userWait },
+    });
+    await connectPromise;
+    expect(client.supportsGoalUserWait()).toBe(userWait);
+    const sentBefore = mock.sent.length;
+    const created = client.goalCreate({
+      title: "T",
+      objective: "o",
+      criteria: ["c"],
+      config: {
+        cwd: "/repo",
+        leadProvider: "claude",
+        defaultProvider: "claude",
+        maxParallel: 2,
+        maxAttempts: 2,
+        autoApprovePlan: true,
+        notifyLead: false,
+        limits: { userWaitMinutes: 30 },
+      },
+    });
+    const changed = client.goalUpdateConfig({
+      goalId: "g1",
+      changes: { limits: { userWaitMinutes: null } },
+    });
+    if (!userWait) {
+      const refusal = "Update the host to limit how long a goal waits for an answer.";
+      await expect(created).rejects.toThrow(refusal);
+      await expect(changed).rejects.toThrow(refusal);
+      expect(mock.sent).toHaveLength(sentBefore);
+      continue;
+    }
+    created.catch(() => {});
+    changed.catch(() => {});
+    const types = mock.sent.slice(sentBefore).map((frame) => parseSentFrame(frame).type);
+    expect(types).toEqual(["goal.create.request", "goal.update_config.request"]);
+    expect(parseSentFrame(mock.sent.at(-1))).toMatchObject({
+      changes: { limits: { userWaitMinutes: null } },
+    });
   }
 });
 
