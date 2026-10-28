@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { ExternalLink, RotateCcw } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
-import type { Goal, Task } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalEvent, Task } from "@getpaseo/protocol/goal/types";
 import { SettingsCard, SettingsSection } from "@/components/settings";
 import { Button } from "@/components/ui/button";
 import { isGoalTerminal } from "@/goals/goal-derivation";
@@ -13,7 +13,6 @@ import {
   taskTokens,
   type TaskTimelineBar,
 } from "@/goals/goal-progress";
-import { useGoalMutations } from "@/hooks/use-goal-mutations";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import {
   groupGoalTasks,
@@ -21,34 +20,37 @@ import {
   latestTaskThinking,
   type GoalAgentTarget,
 } from "@/goals/goal-tasks";
+import { taskGuidance } from "@/goals/goal-recovery";
 import { settingsStyles } from "@/styles/settings";
 import { useRelativeTimeTick } from "@/usage/use-relative-time-tick";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { toErrorMessage } from "@/utils/error-messages";
 import { formatDuration } from "@/utils/time";
 import { GoalBar, type GoalBarSegment } from "./goal-bar";
+import { useRetryTimeChoice } from "./goal-retry-time-sheet";
 import { TaskStatusIcon } from "./task-status-icon";
 
 export function GoalTaskList({
   serverId,
   goal,
+  events,
   canRetryTasks,
 }: {
   serverId: string;
   goal: Goal;
+  events?: readonly GoalEvent[];
   canRetryTasks: boolean;
 }): ReactElement {
   const { t } = useTranslation();
-  const { retry, pendingRetryTaskId } = useGoalMutations({ serverId });
+  const retryChoice = useRetryTimeChoice({ serverId, goal, events });
+  const retryWithChoice = retryChoice.retry;
   const [retryError, setRetryError] = useState<string | null>(null);
   const handleRetry = useCallback(
     (taskId: string) => {
       setRetryError(null);
-      retry({ goalId: goal.id, taskId }).catch((error: unknown) =>
-        setRetryError(toErrorMessage(error)),
-      );
+      retryWithChoice(taskId).catch((error: unknown) => setRetryError(toErrorMessage(error)));
     },
-    [goal.id, retry],
+    [retryWithChoice],
   );
   const now = useRelativeTimeTick({ enabled: !isGoalTerminal(goal.status) });
   const groups = useMemo(() => groupGoalTasks(goal), [goal]);
@@ -86,7 +88,7 @@ export function GoalTaskList({
                 task={task}
                 bar={bars.get(task.id) ?? null}
                 onRetry={canRetryTasks && isRetryable(task) ? handleRetry : null}
-                isRetrying={pendingRetryTaskId === task.id}
+                isRetrying={retryChoice.pendingTaskId === task.id}
               />
             ))}
           </SettingsCard>
@@ -95,6 +97,7 @@ export function GoalTaskList({
           ) : null}
         </SettingsSection>
       ))}
+      {retryChoice.sheet}
     </>
   );
 }
@@ -178,6 +181,7 @@ function TaskRow({
             {task.error}
           </Text>
         ) : null}
+        <TaskGuidanceLines goal={goal} taskId={task.id} />
         {bar && (bar.width > 0 || bar.stages.length > 0) ? (
           <View style={styles.timeline}>
             <GoalBar
@@ -196,6 +200,43 @@ function TaskRow({
         {agent ? <OpenAgentButton serverId={serverId} agent={agent} taskId={task.id} /> : null}
       </View>
     </View>
+  );
+}
+
+/** Your instruction for this task's workers, and the advice a recovery's Lead left for them. */
+function TaskGuidanceLines({ goal, taskId }: { goal: Goal; taskId: string }): ReactElement | null {
+  const { t } = useTranslation();
+  const guidance = taskGuidance(goal, taskId);
+  if (!guidance) {
+    return null;
+  }
+  return (
+    <>
+      {/* Ahead of the text, so the line limit below never hides it. */}
+      {guidance.personCut ? (
+        <Text style={settingsStyles.rowHint} testID={`goal-task-${taskId}-guidance-cut`}>
+          {t("goals.detail.guidanceTruncated")}
+        </Text>
+      ) : null}
+      {guidance.person ? (
+        <Text
+          style={settingsStyles.rowHint}
+          numberOfLines={2}
+          testID={`goal-task-${taskId}-guidance`}
+        >
+          {t("goals.detail.yourInstruction", { text: guidance.person })}
+        </Text>
+      ) : null}
+      {guidance.lead ? (
+        <Text
+          style={settingsStyles.rowHint}
+          numberOfLines={2}
+          testID={`goal-task-${taskId}-lead-advice`}
+        >
+          {t("goals.detail.leadAdvice", { text: guidance.lead })}
+        </Text>
+      ) : null}
+    </>
   );
 }
 

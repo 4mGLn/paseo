@@ -3,6 +3,7 @@ import { canAcknowledgeGoal } from "./goal-attention";
 import { isGoalTerminal } from "./goal-derivation";
 import { goalControlsAvailable } from "./goal-phase";
 import { describeGoalProject, type GoalProjectOption } from "./goal-projects";
+import { liveRecovery } from "./goal-recovery";
 
 export const GOAL_PRIORITIES: readonly GoalPriority[] = ["high", "normal", "low"];
 
@@ -152,6 +153,8 @@ export function goalAvailableActions(goal: Goal, features: GoalActionFeatures): 
   });
   const ended = isGoalTerminal(goal.status);
   const archived = isGoalArchived(goal);
+  // A failed goal under recovery is ended but not settled: archive and delete wait for it.
+  const recovering = liveRecovery(goal) !== null;
   return {
     pause: controls.canPause,
     resume: controls.canResume,
@@ -162,9 +165,9 @@ export function goalAvailableActions(goal: Goal, features: GoalActionFeatures): 
     editSettings: features.configEdit && goal.config !== null && !archived,
     rename: features.management,
     priority: features.management,
-    archive: features.management && ended && !archived,
+    archive: features.management && ended && !archived && !recovering,
     unarchive: features.management && archived,
-    delete: features.management && ended,
+    delete: features.management && ended && !recovering,
     dismiss: features.acknowledge && canAcknowledgeGoal(goal),
   };
 }

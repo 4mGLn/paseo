@@ -6,6 +6,7 @@ import {
   countGoalsByFilter,
   findNewGoalAttention,
   goalAttention,
+  matchesGoalListFilter,
   snapshotGoalAttention,
 } from "./goal-attention";
 import { makeChangeSet, makeGoal } from "./test-utils/goal-fixture";
@@ -121,6 +122,113 @@ describe("goal list filters", () => {
     const sections = buildGoalListSections([running, completed, failed], "done");
     expect(sections.attention.map((goal) => goal.id)).toEqual(["failed"]);
     expect(sections.others.map((goal) => goal.id)).toEqual(["completed"]);
+  });
+});
+
+describe("plan changes and recoveries waiting for you", () => {
+  const revision = (id: string, status = "pending") => ({
+    id,
+    source: "lead",
+    reason: "",
+    ops: [],
+    status,
+    proposedAt: "2026-10-22T00:00:00Z",
+  });
+  const recovery = (status: string, id = "r1") => ({
+    id,
+    status,
+    startedAt: "2026-10-22T00:00:00Z",
+    startedBy: "person",
+    failureReason: "Task t7 failed",
+  });
+  const revising = makeGoal({
+    id: "revising",
+    status: "executing",
+    planRevisions: [revision("rev-1")],
+  });
+  const recoveryReview = makeGoal({
+    id: "recovery",
+    status: "failed",
+    recovery: recovery("awaiting_approval"),
+  });
+
+  it("names a plan change and a recovery's plan change as waiting on you", () => {
+    expect(goalAttention(revising)).toBe("revision_review");
+    expect(
+      goalAttention({ ...revising, planRevisions: [revision("rev-1", "applied")] }),
+    ).toBeNull();
+    expect(goalAttention(recoveryReview)).toBe("recovery_review");
+    // A dismissed failure still asks once a recovery waits for approval.
+    expect(goalAttention({ ...recoveryReview, acknowledgedAt: "2026-10-22T00:00:00Z" })).toBe(
+      "recovery_review",
+    );
+  });
+
+  it("stops asking about a failure while a recovery decides or applies, and asks again when it ends", () => {
+    expect(goalAttention({ ...failed, recovery: recovery("deciding") })).toBeNull();
+    expect(goalAttention({ ...failed, recovery: recovery("decided") })).toBeNull();
+    expect(goalAttention({ ...failed, recovery: recovery("ended") })).toBe("failed");
+  });
+
+  it("asks again about a dismissed failure once a recovery ended after the dismiss", () => {
+    const endedAt = "2026-10-23T00:00:00Z";
+    const endedRecovery = {
+      ...recovery("ended"),
+      outcome: "needs_person",
+      resolvedAt: endedAt,
+    };
+    const dismissedThenRecovered = {
+      ...failed,
+      failedAt: endedAt,
+      acknowledgedAt: "2026-10-22T12:00:00Z",
+      recovery: endedRecovery,
+    };
+    expect(goalAttention(dismissedThenRecovered)).toBe("failed");
+    // Dismissed after the recovery ended: it stays quiet.
+    expect(
+      goalAttention({ ...dismissedThenRecovered, acknowledgedAt: "2026-10-23T01:00:00Z" }),
+    ).toBeNull();
+    // A stale recovery (the goal failed again later) does not count as a new failure.
+    expect(
+      goalAttention({
+        ...dismissedThenRecovered,
+        failedAt: "2026-10-24T00:00:00Z",
+        acknowledgedAt: "2026-10-24T01:00:00Z",
+      }),
+    ).toBeNull();
+  });
+
+  it("offers no Dismiss while a recovery runs", () => {
+    expect(canAcknowledgeGoal({ ...failed, recovery: recovery("deciding") })).toBe(false);
+    expect(canAcknowledgeGoal({ ...failed, recovery: recovery("awaiting_approval") })).toBe(false);
+    expect(canAcknowledgeGoal({ ...failed, recovery: recovery("ended") })).toBe(true);
+  });
+
+  it("files a recovering goal under Running, not Done", () => {
+    const recovering = { ...failed, recovery: recovery("deciding") };
+    expect(matchesGoalListFilter(recovering, "running")).toBe(true);
+    expect(matchesGoalListFilter(recovering, "done")).toBe(false);
+    expect(matchesGoalListFilter({ ...failed, recovery: recovery("ended") }, "done")).toBe(true);
+  });
+
+  it("counts both in the badge", () => {
+    expect(countGoalsBlockedOnUser([revising, recoveryReview, failed, running])).toBe(2);
+  });
+
+  it("reports a later plan change on the same goal", () => {
+    const previous = snapshotGoalAttention([revising]);
+    expect(findNewGoalAttention(previous, [revising])).toEqual([]);
+    const next = { ...revising, planRevisions: [revision("rev-1", "rejected"), revision("rev-2")] };
+    expect(findNewGoalAttention(previous, [next]).map((entry) => entry.kind)).toEqual([
+      "revision_review",
+    ]);
+  });
+
+  it("reports a failed goal whose recovery starts waiting for approval", () => {
+    const previous = snapshotGoalAttention([{ ...recoveryReview, recovery: recovery("deciding") }]);
+    expect(findNewGoalAttention(previous, [recoveryReview]).map((entry) => entry.kind)).toEqual([
+      "recovery_review",
+    ]);
   });
 });
 

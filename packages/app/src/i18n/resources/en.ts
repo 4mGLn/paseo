@@ -412,6 +412,8 @@ export const en = {
       all: "No goals yet",
     },
     attention: {
+      revision_review: "Plan change waiting for your approval",
+      recovery_review: "Recovery waiting for your approval",
       plan_review: "Plan waiting for your approval",
       change_review: "Changes waiting for your approval",
       failed: "Failed",
@@ -421,6 +423,8 @@ export const en = {
       planning: "Waiting for the Lead's plan",
       manualPlan: "Waiting for a plan to be proposed",
       planApproval: "Waiting for your plan approval",
+      planRevisionApproval: "Waiting for your approval of a plan change",
+      leadDecision: "Waiting for the Lead's decision about {{ids}}",
       manualTasks: "Waiting for task updates recorded by hand",
       changeSetApproval: "Waiting for your approval of {{count}} changes: {{ids}}",
       changeSetApproval_one: "Waiting for your approval of {{ids}}",
@@ -443,6 +447,8 @@ export const en = {
       verification: "Verifying the acceptance criteria",
     },
     status: {
+      awaitingPlanChange: "Plan change to approve",
+      recovering: "Recovering",
       planning: "Planning",
       awaiting_plan_approval: "Awaiting approval",
       executing: "Running",
@@ -613,6 +619,15 @@ export const en = {
       retryGoal: "Retry failed tasks",
       retryPlanning: "Retry planning",
       retryMerge: "Retry merge",
+      retryTimeTitle: "The time limit has passed",
+      retryTimeMessage:
+        "Choose how the time limit restarts. Fresh gives the full limit again from now. Remaining keeps the time the goal already ran and gives it what is left. Token and cost budgets do not reset.",
+      retryTimeFresh: "Fresh",
+      retryTimeRemaining: "Remaining",
+      retryTimeRemainingLeft: "Remaining ({{time}} left)",
+      retryTimeNoneLeft:
+        "No running time is left. Choose Fresh, or raise the time limit in the settings.",
+      timeBase: "Time limit restarted, {{time}} left",
       mergeFailureHint:
         "Fix what the error names in the integration worktree ({{path}}), then Retry merge. The review and approval stand.",
       permissionFailureHint:
@@ -679,6 +694,9 @@ export const en = {
       thinkingDefault: "Default thinking",
       archivedAt: "Archived {{time}}",
       mergeTime: "Merge {{time}}",
+      yourInstruction: "Your instruction: {{text}}",
+      leadAdvice: "Lead's advice: {{text}}",
+      guidanceTruncated: "(shortened here)",
     },
     events: {
       repeated: "×{{n}}",
@@ -720,8 +738,202 @@ export const en = {
       goalConfigUpdated: "Settings changed",
       goalReopened: "Planning again",
       integrationRetried: "Merging again: {{subject}}",
+      revisionProposed_lead: "The Lead proposed a plan change: {{subject}}",
+      revisionProposed_person: "Plan change proposed: {{subject}}",
+      revisionApproved: "Plan change applied",
+      revisionRejected: "Plan change rejected",
+      leadDeciding: "The Lead is deciding what to do about {{subject}}",
+      leadDeciding_timeout: "The Lead is deciding what to do about {{subject}} (timed out)",
+      leadDeciding_repeated_failure:
+        "The Lead is deciding what to do about {{subject}} (failed again)",
+      leadDeciding_attempts_exhausted:
+        "The Lead is deciding what to do about {{subject}} (last attempt used)",
+      leadDeciding_lead_stopped:
+        "The Lead is deciding what to do about {{subject}} (run stopped by the Lead)",
+      leadDecided_continue: "Lead: continue with {{subject}}",
+      leadDecided_give_up: "Lead: give up on {{subject}}",
+      leadDecided_expired: "The Lead did not answer about {{subject}} in time; going on as planned",
+      leadDecided_lead_unavailable:
+        "The Lead could not be asked about {{subject}}; going on as planned",
+      leadDecided_unknown: "The Lead decided about {{subject}}",
+      leadAnswered: "The Lead answered",
+      checkInRequested: "The Lead is checking on {{subject}}",
+      checkInRequested_near_timeout: "The Lead is checking on {{subject}} (near its time limit)",
+      checkInRequested_stall: "The Lead is checking on {{subject}} (no progress)",
+      checkIn_ok: "Lead checked in on {{subject}}: ok",
+      checkIn_nudged: "Lead checked in on {{subject}}: sent the worker a message",
+      checkIn_stopped: "Lead checked in on {{subject}}: stopped the run",
+      checkIn_expired: "Check-in on {{subject}} ended without an answer",
+      checkIn_lead_unavailable: "Check-in on {{subject}} ended: the Lead was unavailable",
+      checkIn_unknown: "Lead checked in on {{subject}}",
+      recoveryStarted: "Recovery started: a Lead is analyzing the failure",
+      recoveryDecided_retry: "Recovery: the Lead chose to retry the failed tasks",
+      recoveryDecided_revise: "Recovery: the Lead proposed a plan change",
+      recoveryDecided_needs_person: "Recovery: the Lead says a person must act",
+      recoveryDecided_fallback:
+        "Recovery: no usable answer from the Lead, retrying with your instruction",
+      recoveryDecided_unknown: "Recovery: the Lead decided",
+      recoveryResolved_applied: "Recovery applied: the goal runs again",
+      recoveryResolved_rejected: "Recovery rejected",
+      recoveryResolved_needs_person: "Recovery ended: a person must act",
+      recoveryResolved_cancelled: "Recovery cancelled",
+      recoveryResolved_unknown: "Recovery ended",
+    },
+    revisions: {
+      title: "Plan changes",
+      proposedByLead: "Proposed by the Lead",
+      proposedByPerson: "Proposed by a person",
+      status: {
+        pending: "Waiting for you",
+        applied: "Applied",
+        rejected: "Rejected",
+        superseded: "Superseded",
+        abandoned: "Abandoned",
+      },
+      op: {
+        add: "Add {{id}}: {{title}}",
+        replace: "Change {{id}}: {{title}}",
+        remove: "Remove {{id}}: {{title}}",
+      },
+      renamed: "Was {{title}}",
+      changed: "Changes: {{fields}}",
+      fields: {
+        description: "description",
+        kind: "kind",
+        dependsOn: "dependencies",
+        provider: "provider",
+        thinking: "thinking",
+        runTimeoutMinutes: "run time limit",
+      },
+      approve: "Approve change",
+      reject: "Reject",
+      rejectTitle: "Reject the plan change",
+      rejectLabel: "Why, for the Lead",
+      rejectPlaceholder: "Optional message for the Lead",
+      rejectSend: "Reject change",
+    },
+    recovery: {
+      sheetExplain:
+        "A fresh Lead reads why the goal failed and your instructions, then retries the failed tasks, changes the plan or says what a person must do.",
+      tooLong: "Too long: keep it under 4000 characters",
+      rejectTitle: "Reject the plan change",
+      rejectSend: "Reject change",
+      title: "Recovery",
+      recover: "Recover",
+      sheetTitle: "Recover the goal",
+      goalInstruction: "Instruction for the goal",
+      instructionHint:
+        "The Lead and the workers get it as yours. It stays for later runs; empty a field to remove it.",
+      taskInstruction: "Instruction for {{title}}",
+      timeLabel: "Time limit",
+      timeHint:
+        "The limit has passed or passes while the Lead decides. It restarts when the recovery is applied.",
+      start: "Start recovery",
+      limitsFirst:
+        "These limits leave no room: {{limits}}. Raise them in the settings first, or the recovery ends without running anything.",
+      started: "Started {{time}}",
+      timeMode: {
+        fresh: "Time limit restarts in full",
+        remaining: "Time limit restarts with the time left",
+      },
+      state: {
+        deciding: "The Lead is analyzing the failure",
+        decided: "Applying the Lead's decision",
+        awaiting_approval: "The Lead's plan change waits for your approval",
+      },
+      ended: {
+        rejected: "Recovery rejected",
+        needs_person: "Recovery needs a person",
+        cancelled: "Recovery cancelled",
+        unknown: "Recovery ended",
+      },
+      decision: {
+        retry: "Retry the failed tasks",
+        revise: "Change the plan, then retry",
+        needs_person: "A person must act",
+        fallback:
+          "No usable answer from the Lead: the failed tasks run again with your instruction only",
+      },
+      hint: "Advice for {{title}}: {{hint}}",
+      approve: "Approve and continue",
+      reject: "Reject",
+      cancel: "Cancel recovery",
+      rejectLabel: "Why, for the record",
+      rejectPlaceholder: "Optional message",
+    },
+    diagnosis: {
+      failedRuns: "{{count}} failed runs",
+      failedRuns_one: "{{count}} failed run",
+      failedRuns_other: "{{count}} failed runs",
+      merged: "{{count}} change sets merged",
+      merged_one: "{{count}} change set merged",
+      merged_other: "{{count}} change sets merged",
+      runsUsed: "Runs used: {{used}} of {{max}}",
+      title: "Diagnosis",
+      kind: {
+        review_rejected: "A change set was rejected by review",
+        planning: "The goal failed before it had a plan",
+        time: "The time limit passed",
+        budget: "The budget is used up",
+        run_limit: "The run limit is used up",
+        integration_failed: "A merge failed",
+        verification: "A criterion was not verified",
+        stuck: "A task failed for good",
+        capture: "A task's work could not be captured",
+        recovery_failed: "The goal could not resume after a restart",
+        unknown: "The cause is unclear",
+      },
+      remedy: {
+        review_rejected:
+          "This goal cannot complete in place. Start a new goal from its integration branch.",
+        planning:
+          "Change the setting that stopped the Lead, then retry planning with an instruction.",
+        time: "Recover or retry with a time choice: Fresh gives the full limit again, Remaining the time left. Change or clear a passed deadline first.",
+        budget: "Raise the token or cost cap in the settings, then recover.",
+        run_limit: "Raise the run limit in the settings, then recover.",
+        integration_failed:
+          "Recovering merges it again. First clean any uncommitted tracked files the error names in the integration worktree.",
+        verification:
+          "Every task succeeded. Recovering verifies again; the plan can only lose tasks now.",
+        stuck:
+          "See each task's cause below. Recover with an instruction for it, or let the Lead change the plan.",
+        capture:
+          "Recover to try again. If the task's worktree is gone, its work has to be added again as a new task.",
+        recovery_failed: "Recover to try again.",
+        unknown: "Read the reason and the activity below, then recover or retry.",
+      },
+      personNeeded: {
+        yes: "Needs you",
+        depends: "May need you",
+        no: "Recovery can handle it",
+      },
+      cause: {
+        timeout: "Timed out",
+        pending_request: "Stopped on a question or permission nobody answered",
+        lead_stopped: "Stopped by the Lead",
+        canceled: "Run cancelled",
+        worker_error: "Worker error",
+        interrupted: "Interrupted when the goal stopped",
+        cancelled: "Cancelled before it ran",
+      },
+      interruptedRuns: "{{n}} interrupted",
+      blocks: "Blocks {{titles}}",
+      limits: {
+        goalTimeoutMinutes: "Time limit",
+        deadlineAt: "Deadline",
+        maxRuns: "Run limit",
+        maxTotalTokens: "Token cap",
+        maxCostUsd: "Cost cap",
+      },
+      limitCurrent: "Set to {{value}}",
+      limitUsed: "used {{value}}",
+      limitMinimum: "at least {{value}} leaves room",
+      limitNoMinimum: "no allowed value leaves room",
+      deadlinePassed: "The deadline {{deadline}} has passed. Set a later one or clear it.",
     },
     toasts: {
+      revision_review: "Plan change waiting for approval: {{title}}",
+      recovery_review: "Recovery waiting for approval: {{title}}",
       plan_review: "Plan ready for review: {{title}}",
       change_review: "Changes waiting for approval: {{title}}",
       failed: "Goal failed: {{title}}",
@@ -3887,6 +4099,7 @@ type WaitingOnPluralKey = `${
   | "review"
   | "merge"
   | "retry"}_${PluralCategory}`;
+type DiagnosisPluralKey = `${"failedRuns" | "merged"}_${PluralCategory}`;
 
 // i18next plural categories differ by locale, so locale catalogs may add the
 // explicit v4 suffixes they need while retaining the canonical fallback keys.
@@ -3900,5 +4113,7 @@ export type TranslationResources = TranslationResourcesBase & {
   goals: TranslationResourcesBase["goals"] & {
     waitingOn: TranslationResourcesBase["goals"]["waitingOn"] &
       Partial<Record<WaitingOnPluralKey, string>>;
+    diagnosis: TranslationResourcesBase["goals"]["diagnosis"] &
+      Partial<Record<DiagnosisPluralKey, string>>;
   };
 };

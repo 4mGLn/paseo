@@ -8,6 +8,7 @@ import type {
   GoalConfigChanges,
   GoalPriority,
   GoalSummary,
+  GoalTimeMode,
 } from "@getpaseo/protocol/goal/types";
 import type { GoalCreateInput } from "@/goals/goal-form-model";
 import { removeGoalFromList, replaceGoalInList } from "@/goals/goal-updates";
@@ -16,9 +17,15 @@ import {
   goalListArchivedModeOfKey,
   goalListQueryKey,
   goalsHostQueryKey,
-  type GoalDetail,
 } from "@/hooks/use-goals";
 import { useSessionStore } from "@/stores/session-store";
+
+/** `timeMode` restarts the time limit; send it only with `goalTimeBase`. */
+export interface RetryInput {
+  goalId: string;
+  taskId?: string;
+  timeMode?: GoalTimeMode;
+}
 
 export interface UseGoalMutationsResult {
   /** Resolves with the created goal. */
@@ -34,7 +41,7 @@ export interface UseGoalMutationsResult {
   pendingChangeSetId: string | null;
   rejectPlan: (input: { goalId: string; feedback?: string }) => Promise<void>;
   /** Without a task, retries every failed task, reopening a failed goal. */
-  retry: (input: { goalId: string; taskId?: string }) => Promise<void>;
+  retry: (input: RetryInput) => Promise<void>;
   pause: (goalId: string) => Promise<void>;
   resume: (goalId: string) => Promise<void>;
   /** Dismiss an ended goal so it stops asking for attention. */
@@ -87,6 +94,33 @@ function throwPayloadError(payload: { error: string | null }): void {
   }
 }
 
+/**
+ * Only the retry, for callers that need nothing else: a list row's menu mounts one per row, and
+ * the full set would add a dozen mutation observers to each.
+ */
+export function useGoalRetryMutation({ serverId }: { serverId: string }): {
+  retry: (input: RetryInput) => Promise<void>;
+  /** The task a retry is in flight for; "" for a whole-goal retry. */
+  pendingRetryTaskId: string | null;
+} {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+  const unavailableMessage = t("common.errors.daemonClientUnavailable");
+  const mutation = useMutation({
+    mutationFn: async (input: RetryInput): Promise<void> => {
+      const client = requireClient(serverId, unavailableMessage);
+      throwPayloadError(await client.goalRetry(input));
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: goalsHostQueryKey(serverId) });
+    },
+  });
+  return {
+    retry: mutation.mutateAsync,
+    pendingRetryTaskId: mutation.isPending ? (mutation.variables?.taskId ?? "") : null,
+  };
+}
+
 export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMutationsResult {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
@@ -110,18 +144,19 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
     [queryClient, serverId],
   );
 
-  /** A goal a mutation returned, shown before the refetch lands. */
+  /**
+   * A goal a mutation returned, shown in the lists before the refetch lands. It is in the list
+   * shape (decided plan changes without ops, guidance cut short, no Lead advice), so it never
+   * replaces the detail's goal.inspect copy: the invalidation refetches that in full.
+   */
   const applyGoal = useCallback(
     (goal: Goal | null) => {
       if (!goal) {
         return;
       }
       updateLists((goals, archived) => replaceGoalInList(goals, goal, { archived }));
-      queryClient.setQueryData<GoalDetail>(goalDetailQueryKey(serverId, goal.id), (current) =>
-        current ? { ...current, goal } : current,
-      );
     },
-    [queryClient, serverId, updateLists],
+    [updateLists],
   );
 
   const createMutation = useMutation({
@@ -175,7 +210,7 @@ export function useGoalMutations({ serverId }: { serverId: string }): UseGoalMut
   });
 
   const retryMutation = useMutation({
-    mutationFn: async (input: { goalId: string; taskId?: string }): Promise<void> => {
+    mutationFn: async (input: RetryInput): Promise<void> => {
       const client = requireClient(serverId, unavailableMessage);
       throwPayloadError(await client.goalRetry(input));
     },
