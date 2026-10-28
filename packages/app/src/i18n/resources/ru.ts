@@ -761,6 +761,7 @@ export const ru: TranslationResources = {
       goalAcknowledged: "Скрыто",
       goalConfigUpdated: "Настройки изменены",
       goalReopened: "Планирование заново",
+      goalAccepted: "Принята человеком как есть, снято критериев: {{subject}}",
       integrationRetried: "Повторное слияние: {{subject}}",
       revisionProposed_lead: "Lead предложил изменить план: {{subject}}",
       revisionProposed_person: "Предложено изменение плана: {{subject}}",
@@ -771,6 +772,8 @@ export const ru: TranslationResources = {
       leadDeciding_repeated_failure: "Lead решает, что делать с {{subject}} (снова сбой)",
       leadDeciding_attempts_exhausted:
         "Lead решает, что делать с {{subject}} (последняя попытка использована)",
+      leadDeciding_worker_blocked:
+        "Lead решает, что делать с {{subject}} (исполнитель сообщил, что заблокирован)",
       leadDeciding_lead_stopped: "Lead решает, что делать с {{subject}} (запуск остановлен Lead)",
       leadDecided_continue: "Lead: продолжить {{subject}}",
       leadDecided_give_up: "Lead: отказаться от {{subject}}",
@@ -854,6 +857,20 @@ export const ru: TranslationResources = {
       followUpUnmet: "Эти критерии приёмки не проверены:",
       verificationFix:
         "Восстановление позволяет Lead добавить задачи исправления для невыполненных критериев. После их слияния все критерии проверяются заново.",
+    },
+    accept: {
+      button: "Принять как есть",
+      sheetTitle: "Принять цель как есть",
+      explain: "Цель завершится, а эти критерии будут сняты. Это нельзя отменить.",
+      explainNothingWaived: "Все критерии проверены; цель будет завершена. Это нельзя отменить.",
+      notMet: "Не выполнены",
+      neverChecked: "Не проверялись",
+      noteLabel: "Почему вы принимаете",
+      noteTooLong: "Слишком длинно: не больше {{max}} символов",
+      confirm: "Принять и завершить",
+      completedWaived: "Завершена · снято: {{n}}",
+      waived: "Снят",
+      note: "Принята как есть: {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -966,12 +983,18 @@ export const ru: TranslationResources = {
       cause: {
         timeout: "Время истекло",
         pending_request: "Остановилась на вопросе или разрешении без ответа",
+        worker_blocked: "Исполнитель сообщил, что заблокирован",
         lead_stopped: "Остановлена Lead",
         canceled: "Запуск отменён",
         worker_error: "Ошибка исполнителя",
         interrupted: "Прервана при остановке цели",
         cancelled: "Отменена до запуска",
       },
+      causeRemedy: {
+        worker_blocked:
+          "Это утверждение самого исполнителя. Устраните названную им причину и повторите.",
+      },
+      unchanged: "Завершены без изменений: {{titles}}",
       interruptedRuns: "Прервано: {{n}}",
       blocks: "Блокирует {{titles}}",
       limits: {

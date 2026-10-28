@@ -766,6 +766,7 @@ export const ar: TranslationResources = {
       goalAcknowledged: "تم التجاهل",
       goalConfigUpdated: "تم تغيير الإعدادات",
       goalReopened: "إعادة التخطيط",
+      goalAccepted: "قبله شخص كما هو، عدد المعايير المتنازل عنها: {{subject}}",
       integrationRetried: "إعادة الدمج: {{subject}}",
       revisionProposed_lead: "اقترح Lead تغييرًا في الخطة: {{subject}}",
       revisionProposed_person: "اقتُرح تغيير في الخطة: {{subject}}",
@@ -776,6 +777,7 @@ export const ar: TranslationResources = {
       leadDeciding_repeated_failure: "يقرر Lead ما يفعله بشأن {{subject}} (فشلت مجددًا)",
       leadDeciding_attempts_exhausted:
         "يقرر Lead ما يفعله بشأن {{subject}} (استُخدمت المحاولة الأخيرة)",
+      leadDeciding_worker_blocked: "يقرر Lead ما يفعله بشأن {{subject}} (أبلغ المنفّذ أنه متعثّر)",
       leadDeciding_lead_stopped: "يقرر Lead ما يفعله بشأن {{subject}} (أوقف Lead التشغيل)",
       leadDecided_continue: "Lead: متابعة {{subject}}",
       leadDecided_give_up: "Lead: التخلي عن {{subject}}",
@@ -858,6 +860,20 @@ export const ar: TranslationResources = {
       followUpUnmet: "معايير القبول هذه لم يتم التحقق منها:",
       verificationFix:
         "يتيح الاسترداد لـ Lead إضافة مهام إصلاح للمعايير التي لم تتحقق. ويُتحقق من كل المعايير من جديد بعد دمجها.",
+    },
+    accept: {
+      button: "القبول كما هو",
+      sheetTitle: "قبول الهدف كما هو",
+      explain: "يكتمل الهدف مع التنازل عن هذه المعايير. لا يمكن التراجع عن ذلك.",
+      explainNothingWaived: "تم التحقق من كل المعايير؛ هذا يُكمل الهدف. لا يمكن التراجع عن ذلك.",
+      notMet: "لم تتحقق",
+      neverChecked: "لم يُتحقق منها قط",
+      noteLabel: "سبب القبول",
+      noteTooLong: "طويل جدًا: اجعله أقل من {{max}} حرف",
+      confirm: "القبول والإكمال",
+      completedWaived: "مكتمل · تم التنازل عن {{n}}",
+      waived: "تم التنازل",
+      note: "قُبل كما هو: {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -969,12 +985,17 @@ export const ar: TranslationResources = {
       cause: {
         timeout: "انتهت المهلة",
         pending_request: "توقفت عند سؤال أو إذن لم يُجب عنه أحد",
+        worker_blocked: "أبلغ المنفّذ أنه متعثّر",
         lead_stopped: "أوقفها Lead",
         canceled: "أُلغي التشغيل",
         worker_error: "خطأ لدى المنفّذ",
         interrupted: "انقطعت عند توقف الهدف",
         cancelled: "أُلغيت قبل أن تعمل",
       },
+      causeRemedy: {
+        worker_blocked: "هذا ادعاء المنفّذ نفسه. أصلح ما يذكره، ثم أعد المحاولة.",
+      },
+      unchanged: "انتهت دون تغييرات: {{titles}}",
       interruptedRuns: "منقطعة: {{n}}",
       blocks: "تعيق {{titles}}",
       limits: {

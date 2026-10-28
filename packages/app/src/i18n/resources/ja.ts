@@ -752,6 +752,7 @@ export const ja: TranslationResources = {
       goalAcknowledged: "確認済みにしました",
       goalConfigUpdated: "設定を変更しました",
       goalReopened: "計画をやり直しています",
+      goalAccepted: "人がこのまま受け入れました（免除: {{subject}}）",
       integrationRetried: "再マージ: {{subject}}",
       revisionProposed_lead: "Lead が計画変更を提案しました: {{subject}}",
       revisionProposed_person: "計画変更が提案されました: {{subject}}",
@@ -762,6 +763,8 @@ export const ja: TranslationResources = {
       leadDeciding_repeated_failure: "Lead が {{subject}} の扱いを判断しています（再び失敗）",
       leadDeciding_attempts_exhausted:
         "Lead が {{subject}} の扱いを判断しています（最後の試行を使用）",
+      leadDeciding_worker_blocked:
+        "Lead が {{subject}} の扱いを判断しています（ワーカーが作業を進められないと報告）",
       leadDeciding_lead_stopped: "Lead が {{subject}} の扱いを判断しています（Lead が実行を停止）",
       leadDecided_continue: "Lead: {{subject}} を続行",
       leadDecided_give_up: "Lead: {{subject}} を断念",
@@ -847,6 +850,21 @@ export const ja: TranslationResources = {
       followUpUnmet: "検証されなかった受け入れ基準:",
       verificationFix:
         "リカバリーすると、満たされていない受け入れ基準のために Lead が修正タスクを追加できます。修正タスクがマージされた後、すべての受け入れ基準を再検証します。",
+    },
+    accept: {
+      button: "このまま受け入れる",
+      sheetTitle: "目標をこのまま受け入れる",
+      explain: "これらの受け入れ基準を免除して目標を完了します。元に戻せません。",
+      explainNothingWaived:
+        "すべての受け入れ基準が検証済みです。目標を完了します。元に戻せません。",
+      notMet: "未達成",
+      neverChecked: "未確認",
+      noteLabel: "受け入れる理由",
+      noteTooLong: "長すぎます。{{max}} 文字以内にしてください",
+      confirm: "受け入れて完了",
+      completedWaived: "完了 · {{n}} 件免除",
+      waived: "免除",
+      note: "このまま受け入れ: {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -953,12 +971,18 @@ export const ja: TranslationResources = {
       cause: {
         timeout: "タイムアウト",
         pending_request: "誰も答えなかった質問か権限要求で停止",
+        worker_blocked: "ワーカーが作業を進められないと報告",
         lead_stopped: "Lead が停止",
         canceled: "実行がキャンセルされた",
         worker_error: "ワーカーのエラー",
         interrupted: "目標の停止時に中断",
         cancelled: "実行前にキャンセル",
       },
+      causeRemedy: {
+        worker_blocked:
+          "これはワーカー自身の申告です。示された原因を解消してから再試行してください。",
+      },
+      unchanged: "変更なしで完了: {{titles}}",
       interruptedRuns: "中断 {{n}} 回",
       blocks: "待っているタスク: {{titles}}",
       limits: {

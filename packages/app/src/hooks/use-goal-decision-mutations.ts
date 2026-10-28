@@ -22,6 +22,14 @@ export interface RecoveryStartInput {
   guidance?: GuidanceChanges;
 }
 
+export interface GoalAcceptInput {
+  goalId: string;
+  criterionIds: string[];
+  note: string;
+  /** The same id on a retry, so the host applies one accept however often it is sent. */
+  eventId?: string;
+}
+
 export interface UseGoalDecisionMutationsResult {
   /** Approve or reject a plan revision held for you (`goalPlanRevision`). */
   approvePlanRevision: (input: PlanRevisionTarget) => Promise<void>;
@@ -42,6 +50,9 @@ export interface UseGoalDecisionMutationsResult {
   /** The answer an approve or reject of a recovery is in flight with; null when none is. */
   pendingRecoveryApproval: boolean | null;
   isCancellingRecovery: boolean;
+  /** Accept a failed goal as is (`goalAccept`), waiving `criterionIds`; same cache rule as recovery. */
+  acceptGoal: (input: GoalAcceptInput) => Promise<Goal | null>;
+  isAcceptingGoal: boolean;
 }
 
 function requireClient(serverId: string, unavailableMessage: string): DaemonClient {
@@ -103,6 +114,11 @@ export function useGoalDecisionMutations({
       goalOrThrow(await client().goalRecoveryCancel(input)),
     onSettled: invalidate,
   });
+  const acceptGoal = useMutation({
+    mutationFn: async (input: GoalAcceptInput) =>
+      goalOrThrow(await client().goalOutcomeAccept({ ...input, client: "app" })),
+    onSettled: invalidate,
+  });
 
   const revisionInFlight = approveRevision.isPending ? approveRevision : rejectRevision;
   return {
@@ -119,5 +135,7 @@ export function useGoalDecisionMutations({
       ? (decideRecovery.variables?.approve ?? null)
       : null,
     isCancellingRecovery: cancelRecovery.isPending,
+    acceptGoal: acceptGoal.mutateAsync,
+    isAcceptingGoal: acceptGoal.isPending,
   };
 }

@@ -741,6 +741,7 @@ export const en = {
       goalAcknowledged: "Dismissed",
       goalConfigUpdated: "Settings changed",
       goalReopened: "Planning again",
+      goalAccepted: "Accepted as is by a person, waived: {{subject}}",
       integrationRetried: "Merging again: {{subject}}",
       revisionProposed_lead: "The Lead proposed a plan change: {{subject}}",
       revisionProposed_person: "Plan change proposed: {{subject}}",
@@ -752,6 +753,8 @@ export const en = {
         "The Lead is deciding what to do about {{subject}} (failed again)",
       leadDeciding_attempts_exhausted:
         "The Lead is deciding what to do about {{subject}} (last attempt used)",
+      leadDeciding_worker_blocked:
+        "The Lead is deciding what to do about {{subject}} (the worker reported it was blocked)",
       leadDeciding_lead_stopped:
         "The Lead is deciding what to do about {{subject}} (run stopped by the Lead)",
       leadDecided_continue: "Lead: continue with {{subject}}",
@@ -837,6 +840,21 @@ export const en = {
       followUpUnmet: "These acceptance criteria were not verified:",
       verificationFix:
         "Recover lets the Lead add fix tasks for the criteria not met. Every criterion is verified again once they are merged.",
+    },
+    accept: {
+      button: "Accept as is",
+      sheetTitle: "Accept the goal as is",
+      explain: "The goal completes with these criteria waived. This cannot be undone.",
+      explainNothingWaived:
+        "Every criterion was verified; this completes the goal. This cannot be undone.",
+      notMet: "Not met",
+      neverChecked: "Never checked",
+      noteLabel: "Why you accept it",
+      noteTooLong: "Too long: keep it under {{max}} characters",
+      confirm: "Accept and complete",
+      completedWaived: "Completed · {{n}} waived",
+      waived: "Waived",
+      note: "Accepted as is: {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -945,12 +963,17 @@ export const en = {
       cause: {
         timeout: "Timed out",
         pending_request: "Stopped on a question or permission nobody answered",
+        worker_blocked: "The worker reported it was blocked",
         lead_stopped: "Stopped by the Lead",
         canceled: "Run cancelled",
         worker_error: "Worker error",
         interrupted: "Interrupted when the goal stopped",
         cancelled: "Cancelled before it ran",
       },
+      causeRemedy: {
+        worker_blocked: "This is the worker's own claim. Fix what it names, then retry.",
+      },
+      unchanged: "Finished without changes: {{titles}}",
       interruptedRuns: "{{n}} interrupted",
       blocks: "Blocks {{titles}}",
       limits: {

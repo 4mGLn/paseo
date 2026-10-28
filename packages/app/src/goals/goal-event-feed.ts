@@ -215,6 +215,14 @@ function describeGoalEndEvent(event: GoalEvent, goal: FeedGoal): Described | nul
       return { key: "goalConfigUpdated", tone: "default", subject: null };
     case "goal.reopened":
       return { key: "goalReopened", tone: "default", subject: null };
+    case "goal.accepted":
+      // The count reads in the sentence; the note is the detail, cut to its first sentence.
+      return {
+        key: "goalAccepted",
+        tone: "success",
+        subject: String(event.criterionIds.length),
+        detail: event.note,
+      };
     default:
       return describeLeadEvent(event, goal);
   }

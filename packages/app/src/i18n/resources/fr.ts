@@ -753,6 +753,7 @@ export const fr: TranslationResources = {
       goalAcknowledged: "Ignoré",
       goalConfigUpdated: "Réglages modifiés",
       goalReopened: "Nouvelle planification",
+      goalAccepted: "Accepté en l'état par une personne, critères levés : {{subject}}",
       integrationRetried: "Nouvelle fusion : {{subject}}",
       revisionProposed_lead: "Le Lead a proposé une modification du plan : {{subject}}",
       revisionProposed_person: "Modification du plan proposée : {{subject}}",
@@ -763,6 +764,8 @@ export const fr: TranslationResources = {
       leadDeciding_repeated_failure: "Le Lead décide quoi faire de {{subject}} (nouvel échec)",
       leadDeciding_attempts_exhausted:
         "Le Lead décide quoi faire de {{subject}} (dernière tentative utilisée)",
+      leadDeciding_worker_blocked:
+        "Le Lead décide quoi faire de {{subject}} (l'exécutant s'est déclaré bloqué)",
       leadDeciding_lead_stopped:
         "Le Lead décide quoi faire de {{subject}} (exécution arrêtée par le Lead)",
       leadDecided_continue: "Lead : continuer {{subject}}",
@@ -850,6 +853,21 @@ export const fr: TranslationResources = {
       followUpUnmet: "Ces critères d'acceptation n'ont pas été vérifiés :",
       verificationFix:
         "La reprise permet au Lead d'ajouter des tâches de correction pour les critères non remplis. Tous les critères sont vérifiés à nouveau une fois celles-ci fusionnées.",
+    },
+    accept: {
+      button: "Accepter en l'état",
+      sheetTitle: "Accepter l'objectif en l'état",
+      explain: "L'objectif se termine avec ces critères levés. Cette action est irréversible.",
+      explainNothingWaived:
+        "Tous les critères ont été vérifiés ; l'objectif se termine. Cette action est irréversible.",
+      notMet: "Non remplis",
+      neverChecked: "Jamais vérifiés",
+      noteLabel: "Pourquoi vous l'acceptez",
+      noteTooLong: "Trop long : {{max}} caractères au plus",
+      confirm: "Accepter et terminer",
+      completedWaived: "Terminé · {{n}} levé(s)",
+      waived: "Levé",
+      note: "Accepté en l'état : {{note}}",
     },
     recovery: {
       sheetExplain:
@@ -958,12 +976,18 @@ export const fr: TranslationResources = {
       cause: {
         timeout: "Délai dépassé",
         pending_request: "Arrêtée sur une question ou une permission restée sans réponse",
+        worker_blocked: "L'exécutant s'est déclaré bloqué",
         lead_stopped: "Arrêtée par le Lead",
         canceled: "Exécution annulée",
         worker_error: "Erreur de l'exécutant",
         interrupted: "Interrompue à l'arrêt de l'objectif",
         cancelled: "Annulée avant de s'exécuter",
       },
+      causeRemedy: {
+        worker_blocked:
+          "C'est l'affirmation de l'exécutant lui-même. Corrigez ce qu'il indique, puis réessayez.",
+      },
+      unchanged: "Terminées sans modification : {{titles}}",
       interruptedRuns: "Interrompues : {{n}}",
       blocks: "Bloque {{titles}}",
       limits: {
