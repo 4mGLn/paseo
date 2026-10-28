@@ -194,6 +194,31 @@ describe("goalAvailableActions", () => {
     });
   });
 
+  it("hides retry, archive, delete and dismiss while a recovery is open, and offers them once it ended", () => {
+    const recovery = {
+      id: "r1",
+      startedAt: "2026-10-22T00:00:00Z",
+      startedBy: "person",
+      failureReason: "Task t1 failed",
+    };
+    const tasks = [makeTask("t1", { status: "failed" })];
+    for (const status of ["deciding", "decided", "awaiting_approval"]) {
+      const recovering = goal({ status: "failed", tasks, recovery: { ...recovery, status } });
+      expect(goalAvailableActions(recovering, ALL_FEATURES)).toMatchObject({
+        retry: false,
+        archive: false,
+        delete: false,
+        dismiss: false,
+      });
+    }
+    const ended = goal({ status: "failed", tasks, recovery: { ...recovery, status: "ended" } });
+    expect(goalAvailableActions(ended, ALL_FEATURES)).toMatchObject({
+      retry: true,
+      archive: true,
+      delete: true,
+    });
+  });
+
   it("offers retry, dismiss, archive and delete on a failed goal", () => {
     const actions = goalAvailableActions(goal({ status: "failed" }), ALL_FEATURES);
     expect(actions).toMatchObject({

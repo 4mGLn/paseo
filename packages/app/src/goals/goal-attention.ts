@@ -1,13 +1,32 @@
 import type { Goal, GoalStatus } from "@getpaseo/protocol/goal/types";
+import { pendingPlanRevision } from "./goal-plan-revisions";
+import { endedRecovery, liveRecovery } from "./goal-recovery";
 
-/** Why a goal is waiting on you. A plan or a change to approve blocks it; a failure only reports. */
-export type GoalAttentionKind = "plan_review" | "change_review" | "failed";
+/**
+ * Why a goal is waiting on you. A plan, a change, a plan change or a recovery's plan change to
+ * approve blocks it; a failure only reports.
+ */
+export type GoalAttentionKind =
+  | "plan_review"
+  | "change_review"
+  | "revision_review"
+  | "recovery_review"
+  | "failed";
 
 export type GoalListFilter = "needs_you" | "running" | "done" | "all";
 
 export const GOAL_LIST_FILTERS: readonly GoalListFilter[] = ["needs_you", "running", "done", "all"];
 
-type AttentionInput = Pick<Goal, "status" | "changeSets" | "acknowledgedAt" | "archivedAt">;
+type AttentionInput = Pick<
+  Goal,
+  | "status"
+  | "changeSets"
+  | "acknowledgedAt"
+  | "archivedAt"
+  | "planRevisions"
+  | "recovery"
+  | "failedAt"
+>;
 
 const DONE_STATUSES: ReadonlySet<GoalStatus> = new Set(["completed", "failed", "cancelled"]);
 
@@ -25,24 +44,44 @@ export function goalAttention(goal: AttentionInput): GoalAttentionKind | null {
   if (goal.status === "awaiting_plan_approval") {
     return "plan_review";
   }
-  // A dismissed failure stops asking; a retry that reopens the goal clears the mark.
   if (goal.status === "failed") {
-    return goal.acknowledgedAt ? null : "failed";
+    const recovery = liveRecovery(goal);
+    if (recovery) {
+      // The Lead's plan change waits for you; while it decides or applies, nothing does.
+      return recovery.status === "awaiting_approval" ? "recovery_review" : null;
+    }
+    // A dismissed failure stops asking; a retry that reopens the goal clears the mark. A
+    // recovery that ended after the dismiss is a new failure, so it asks again.
+    return goal.acknowledgedAt && !endedAfter(goal, goal.acknowledgedAt) ? null : "failed";
   }
   if (goal.status === "executing" && awaitingChangeSetIds(goal).length > 0) {
     return "change_review";
   }
+  if (goal.status === "executing" && pendingPlanRevision(goal)) {
+    return "revision_review";
+  }
   return null;
 }
 
-/** An ended goal that has not been dismissed yet; the daemon refuses to acknowledge a live one. */
-export function canAcknowledgeGoal(goal: Pick<Goal, "status" | "acknowledgedAt">): boolean {
-  return DONE_STATUSES.has(goal.status) && !goal.acknowledgedAt;
+/** The goal's current failure is a recovery that ended after `at`. */
+function endedAfter(goal: AttentionInput, at: string): boolean {
+  const resolvedAt = endedRecovery(goal)?.resolvedAt;
+  return resolvedAt !== undefined && Date.parse(resolvedAt) > Date.parse(at);
+}
+
+/**
+ * An ended goal that has not been dismissed yet; the daemon refuses to acknowledge a live one.
+ * A failed goal under recovery is not settled, so it is not offered either.
+ */
+export function canAcknowledgeGoal(
+  goal: Pick<Goal, "status" | "acknowledgedAt" | "recovery">,
+): boolean {
+  return DONE_STATUSES.has(goal.status) && !goal.acknowledgedAt && !liveRecovery(goal);
 }
 
 /** Plans and changes held for your approval. Failures are listed, but do not count here. */
 export function isBlockedOnUser(kind: GoalAttentionKind | null): boolean {
-  return kind === "plan_review" || kind === "change_review";
+  return kind !== null && kind !== "failed";
 }
 
 export function countGoalsBlockedOnUser(goals: readonly AttentionInput[]): number {
@@ -53,10 +92,11 @@ export function matchesGoalListFilter(goal: AttentionInput, filter: GoalListFilt
   switch (filter) {
     case "needs_you":
       return goalAttention(goal) !== null;
+    // A failed goal under recovery is running work again: a Lead decides how it goes on.
     case "running":
-      return !DONE_STATUSES.has(goal.status);
+      return !DONE_STATUSES.has(goal.status) || liveRecovery(goal) !== null;
     case "done":
-      return DONE_STATUSES.has(goal.status);
+      return DONE_STATUSES.has(goal.status) && liveRecovery(goal) === null;
     case "all":
       return true;
   }
@@ -108,6 +148,12 @@ export function buildGoalListSections<T extends AttentionInput & Pick<Goal, "upd
 interface GoalAttentionMark {
   kind: GoalAttentionKind | null;
   changeSetIds: readonly string[];
+  /** The plan change or recovery waiting for approval, so a later one is reported too. */
+  approvalId: string | null;
+}
+
+function approvalId(goal: AttentionInput): string | null {
+  return pendingPlanRevision(goal)?.id ?? liveRecovery(goal)?.id ?? null;
 }
 
 /** What each goal was waiting on at one poll, compared with the next by `findNewGoalAttention`. */
@@ -119,7 +165,11 @@ export function snapshotGoalAttention(
   return new Map(
     goals.map((goal) => [
       goal.id,
-      { kind: goalAttention(goal), changeSetIds: awaitingChangeSetIds(goal) },
+      {
+        kind: goalAttention(goal),
+        changeSetIds: awaitingChangeSetIds(goal),
+        approvalId: approvalId(goal),
+      },
     ]),
   );
 }
@@ -130,8 +180,9 @@ export interface GoalAttentionTransition<T> {
 }
 
 /**
- * Goals that started waiting on you since the previous poll: a new state, or another change set
- * held for approval. Without a previous poll nothing is new, so opening the app is quiet.
+ * Goals that started waiting on you since the previous poll: a new state, another change set
+ * held for approval, or another plan change. Without a previous poll nothing is new, so opening
+ * the app is quiet.
  */
 export function findNewGoalAttention<T extends AttentionInput & Pick<Goal, "id">>(
   previous: GoalAttentionSnapshot | null,
@@ -151,7 +202,10 @@ export function findNewGoalAttention<T extends AttentionInput & Pick<Goal, "id">
     const hasNewChangeSet =
       kind === "change_review" &&
       awaitingChangeSetIds(goal).some((id) => !before?.changeSetIds.includes(id));
-    if (isNewKind || hasNewChangeSet) {
+    const hasNewApproval =
+      (kind === "revision_review" || kind === "recovery_review") &&
+      approvalId(goal) !== (before?.approvalId ?? null);
+    if (isNewKind || hasNewChangeSet || hasNewApproval) {
       transitions.push({ goal, kind });
     }
   }
