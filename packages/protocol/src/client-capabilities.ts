@@ -92,6 +92,11 @@ export const CLIENT_CAPS = {
   // from goal payloads, for older clients whose strict event union rejects them. Remove after
   // 2027-04-28.
   goalRecovery: "goal_recovery",
+  // COMPAT(goalAccept): added in v0.13.14. The daemon omits goal.accepted from goal.inspect
+  // events, and Goal.accepted and each criterion's `waived` from goal payloads, for older
+  // clients whose strict event union rejects the event. Such a client shows an accepted goal
+  // as plain completed with its waived criteria unverified. Remove after 2027-04-28.
+  goalAccept: "goal_accept",
   browserHost: "browser_host",
 } as const;
 

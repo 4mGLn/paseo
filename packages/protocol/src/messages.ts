@@ -123,6 +123,8 @@ import {
   GoalRecoveryDecideResponseSchema,
   GoalRecoveryCancelRequestSchema,
   GoalRecoveryCancelResponseSchema,
+  GoalOutcomeAcceptRequestSchema,
+  GoalOutcomeAcceptResponseSchema,
   GoalUpdateMessageSchema,
   GoalCreateResponseSchema,
   GoalListResponseSchema,
@@ -3866,6 +3868,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   GoalRecoveryStartRequestSchema,
   GoalRecoveryDecideRequestSchema,
   GoalRecoveryCancelRequestSchema,
+  GoalOutcomeAcceptRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -4297,6 +4300,11 @@ export const ServerInfoStatusPayloadSchema = z
         // every criterion and starts verification round `Goal.verificationRound`. Gates wording
         // only: an older daemon refuses such a revise, and its Lead is never offered one.
         goalVerificationRecovery: z.boolean().optional(),
+        // COMPAT(goalAccept): added in v0.13.14, remove gate after 2027-10-28.
+        // goal.outcome.accept: a person accepts a failed goal as is, completing it with its
+        // unverified criteria waived (goal.accepted, Goal.accepted, criterion `waived`). An
+        // older daemon refuses the RPC.
+        goalAccept: z.boolean().optional(),
         // COMPAT(goalTimeBase): added in v0.13.13, remove gate after 2027-10-28.
         // goal.retry takes `timeMode` (fresh or remaining) to restart a goal's time limit,
         // and goals carry `timeBaseAt`. An older daemon drops the field and refuses the retry
@@ -7912,6 +7920,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   GoalRecoveryStartResponseSchema,
   GoalRecoveryDecideResponseSchema,
   GoalRecoveryCancelResponseSchema,
+  GoalOutcomeAcceptResponseSchema,
   GoalUpdateMessageSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
@@ -8442,6 +8451,7 @@ export const WSHelloMessageSchema = z.object({
       [CLIENT_CAPS.goalPlanRevision]: z.boolean().optional(),
       [CLIENT_CAPS.goalLeadInterventions]: z.boolean().optional(),
       [CLIENT_CAPS.goalRecovery]: z.boolean().optional(),
+      [CLIENT_CAPS.goalAccept]: z.boolean().optional(),
       [CLIENT_CAPS.browserHost]: BrowserAutomationHostCapabilitySchema.optional(),
     })
     .passthrough()
