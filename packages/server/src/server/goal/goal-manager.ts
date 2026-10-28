@@ -16,17 +16,20 @@ import type {
   TaskSpec,
   TurnUsage,
   UsageRole,
+  WaitOutcome,
 } from "@getpaseo/protocol/goal/types";
 import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import {
   CAPTURE_FAILED_PREFIX,
   LEGACY_PERMISSION_FAILURE,
+  NO_ANSWER_PREFIX,
   PENDING_PERMISSION_PREFIX,
   PENDING_QUESTION_PREFIX,
   RESUME_FAILED_PREFIX,
   RUN_CANCELED_TEXT,
   TIME_LIMIT_REACHED_PREFIX,
   WORKER_BLOCKED_PREFIX,
+  isNoAnswerFailure,
   isPendingRequestFailure,
   isWorkerBlocked,
   needsPerson,
@@ -36,7 +39,9 @@ import {
   workerStatus,
 } from "@getpaseo/protocol/goal/failure-wording";
 import {
+  absoluteDeadlineMs,
   budgetExceeded,
+  excludedWaitMs,
   goalDeadlineMs,
   resolveLimits,
   systemClock,
@@ -128,6 +133,15 @@ export interface PendingTurnRequest {
   text?: string;
 }
 
+/**
+ * A request starts or stops waiting for a person. `ended` is set when the wait stops because
+ * the turn stopped waiting (the goal switched to `fail`, the caller gave up), not because the
+ * request was answered or withdrawn.
+ */
+export type TurnWaitChange =
+  | { waiting: true; request: PendingTurnRequest }
+  | { waiting: false; ended?: boolean };
+
 /** Whose turn a usage.recorded event describes. */
 export interface TurnUsageLabel {
   role: UsageRole;
@@ -175,6 +189,8 @@ export interface ManagerAgentPort {
       signal?: AbortSignal;
       /** Called once the agent layer has started the turn. */
       onStarted?: () => void;
+      /** Hears when a request starts and stops waiting for a person; see settleTurn. */
+      onWait?: (change: TurnWaitChange) => void;
     },
   ): Promise<TurnResult>;
   cancel(agentId: string): Promise<void>;
@@ -262,6 +278,9 @@ export interface GoalManagerOptions {
 
 const MAX_PLAN_ATTEMPTS = 3;
 
+/** How often the deadline is looked at again while an agent waits for a person's answer. */
+const WAITING_DEADLINE_CHECK_MS = 60_000;
+
 /** The longest delay a Node timer accepts. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -292,6 +311,10 @@ interface LiveRun {
   timeoutMs?: number;
   /** When the Lead last tried to steer a message into the worker's turn. */
   nudgedAt?: number;
+  /** Time the worker's turn spent waiting for a person, waits that ended only. */
+  waitedMs?: number;
+  /** When the worker's current wait for a person began, while one is open. */
+  waitingSince?: number;
 }
 
 interface LiveLead {
@@ -443,6 +466,9 @@ export class GoalManager {
       if (goal.config) this.policies.set(goal.id, goalPermissionPolicy(goal.config));
       this.lastSeen.set(goal.id, goal);
     }
+    // No turn of the previous process is live, so nothing still waits. The time down counts as
+    // waiting: the person had no way to answer either.
+    for (const goal of this.store.list()) await this.closeStaleWaits(goal.id);
     for (const goal of this.store.list()) {
       if (goal.config && !isTerminalGoalStatus(goal.status)) {
         this.armDeadline(goal);
@@ -460,6 +486,30 @@ export class GoalManager {
     // Ended goals too: their outcome may still be on its way to the Lead or the chat.
     for (const goal of this.store.list()) this.resumeNotifications(goal);
     await this.finishPendingDeletions();
+  }
+
+  /** End every wait the goal has open, at boot, when no turn of this process can be waiting. */
+  private async closeStaleWaits(goalId: string): Promise<void> {
+    const goal = this.store.get(goalId);
+    const { userWaitMs } = resolveLimits(goal?.config);
+    for (const [agentId, wait] of Object.entries(goal?.waits?.open ?? {})) {
+      const waitedMs = this.clock.now() - Date.parse(wait.since);
+      if (waitedMs > userWaitMs) {
+        // Counted all the same: nobody could answer while the daemon was down.
+        this.logger.warn(
+          { goalId, agentId, waitedMs, userWaitMs },
+          "A wait left open by the last process ran past userWaitMinutes; it all counts as waiting",
+        );
+      }
+      const lastSeq = this.store.get(goalId)?.lastSeq ?? 0;
+      await this.dispatch(goalId, {
+        id: `${goalId}:wait:${agentId}:${lastSeq}:restarted`,
+        goalId,
+        type: "wait.ended",
+        agentId,
+        outcome: "turn_ended",
+      });
+    }
   }
 
   /** A deletion the previous process tombstoned but did not finish: release and remove. */
@@ -502,18 +552,28 @@ export class GoalManager {
   /** Fail the goal when its overall time limit passes. */
   private armDeadline(goal: Goal): void {
     if (!goal.config || this.deadlines.has(goal.id)) return;
-    const remaining = goalDeadlineMs(goal) - this.clock.now();
+    const now = this.clock.now();
+    let remaining = goalDeadlineMs(goal, now) - now;
+    if (goal.waits?.since) {
+      // While an agent waits the end moves with the clock, so the time left stays the same and
+      // a timer set for it would fire again and again; look less often, but never past the
+      // absolute deadline, which waiting does not move. wait.ended sets the exact timer again.
+      const absolute = absoluteDeadlineMs(goal);
+      remaining = Math.max(remaining, WAITING_DEADLINE_CHECK_MS);
+      if (absolute !== null) remaining = Math.min(remaining, absolute - now);
+    }
     const cancel = this.clock.setTimeout(
       () => {
         this.deadlines.delete(goal.id);
         const current = this.store.get(goal.id);
         if (!current || isTerminalGoalStatus(current.status) || this.stopped) return;
         // Timers cannot wait longer than about 24 days; if the clock jumped, look again.
-        if (goalDeadlineMs(current) - this.clock.now() > 0) {
+        // While an agent waits for a person the end moves later; follow it.
+        if (goalDeadlineMs(current, this.clock.now()) - this.clock.now() > 0) {
           this.armDeadline(current);
           return;
         }
-        this.track(this.failGoal(goal.id, describeDeadline(current)));
+        this.track(this.failGoal(goal.id, describeDeadline(current, this.clock.now())));
       },
       Math.min(Math.max(0, remaining), MAX_TIMER_MS),
     );
@@ -583,7 +643,15 @@ export class GoalManager {
   ): Promise<TurnResult> {
     // Keyed by the goal's position when the turn started: one agent never starts two turns there.
     const usageEventId = `${goalId}:usage:${agentId}:${this.store.get(goalId)?.lastSeq ?? 0}`;
-    const result = await this.timedTurn(goalId, agentId, prompt, runTimeoutMs, onStarted, stop);
+    const result = await this.timedTurn(
+      goalId,
+      agentId,
+      prompt,
+      usage,
+      runTimeoutMs,
+      onStarted,
+      stop,
+    );
     if (!this.stopped) {
       await this.dispatch(goalId, {
         id: usageEventId,
@@ -603,11 +671,17 @@ export class GoalManager {
   /**
    * `timeoutMs` overrides the goal's run timeout, as a task's own limit does. Aborting `stop`
    * cancels the turn as the time limit does, with the same grace before it is abandoned.
+   *
+   * While a request waits for a person, the time limit is paused and the request gets
+   * `limits.userWaitMinutes`; past it the turn is cancelled and fails as `No answer within …`,
+   * whatever it then settles as. The waits are recorded (wait.started, wait.ended) before the
+   * turn returns, so they come before anything recorded about its outcome.
    */
   private async timedTurn(
     goalId: string,
     agentId: string,
     prompt: string,
+    label: TurnUsageLabel,
     timeoutMs?: number,
     onStarted?: () => void,
     stop?: AbortSignal,
@@ -636,13 +710,54 @@ export class GoalManager {
         giveUp({ outcome: "failed", error: failure });
       }, this.cancelGraceMs);
     };
-    const cancelTimer = this.clock.setTimeout(() => {
-      timedOut = true;
-      cancelWithGrace(`${TURN_TIMEOUT_PREFIX} ${minutes} minutes and the agent did not stop`);
-    }, runTimeoutMs);
+    // The time limit runs only while no request waits for a person.
+    let turnLeftMs = runTimeoutMs;
+    let turnTimerSince = this.clock.now();
+    const armTurnTimer = () =>
+      this.clock.setTimeout(
+        () => {
+          timedOut = true;
+          cancelWithGrace(`${TURN_TIMEOUT_PREFIX} ${minutes} minutes and the agent did not stop`);
+        },
+        Math.max(0, turnLeftMs),
+      );
+    let cancelTimer = armTurnTimer();
+    const waits = this.turnWaits(goalId, agentId, label);
+    let expired: string | null = null;
+    let cancelUserWait: () => void = () => {};
+    const onWait = (change: TurnWaitChange) => {
+      // A request seen after the time limit fired is part of a timeout, and nothing waits
+      // after the allowance ran out.
+      if (timedOut || expired !== null) return;
+      if (change.waiting) {
+        if (waits.isOpen()) return;
+        cancelTimer();
+        turnLeftMs -= this.clock.now() - turnTimerSince;
+        waits.start(change.request);
+        const request = change.request;
+        // Read per wait, so a limit changed while the turn runs applies to its next request.
+        const { userWaitMs } = resolveLimits(this.store.get(goalId)?.config);
+        cancelUserWait = this.clock.setTimeout(() => {
+          // A stop already under way keeps its own reason. An answer that lands between the last
+          // poll and this timer is not seen: at worst a request answered in the last second of
+          // its allowance still fails as no answer.
+          if (graceArmed) return;
+          const policy = goalPermissionPolicy(this.store.get(goalId)?.config);
+          expired = `${NO_ANSWER_PREFIX} ${Math.round(userWaitMs / 60_000)} minutes: ${describePendingRequest(request, policy)}`;
+          waits.end("expired");
+          cancelWithGrace(expired);
+        }, userWaitMs);
+        return;
+      }
+      if (!waits.isOpen()) return;
+      cancelUserWait();
+      waits.end(change.ended ? "turn_ended" : "answered");
+      turnTimerSince = this.clock.now();
+      cancelTimer = armTurnTimer();
+    };
     // A stop after the time limit fired changes nothing: the run fails as timed out.
     const onStop = () => {
-      if (!timedOut) cancelWithGrace("The agent was stopped and did not stop");
+      if (!timedOut && expired === null) cancelWithGrace("The agent was stopped and did not stop");
     };
     if (stop?.aborted) onStop();
     else stop?.addEventListener("abort", onStop, { once: true });
@@ -658,21 +773,124 @@ export class GoalManager {
         return goalPermissionPolicy(goal.config) === "fail" ? "fail" : "wait";
       },
       signal: abort.signal,
+      onWait,
       ...(onStarted ? { onStarted } : {}),
     });
     // If the turn is abandoned, its eventual outcome is of no interest.
     running.catch(() => {});
     try {
       const result = await Promise.race([running, abandoned]);
+      // A cancel clears the request, so the turn may settle as anything; nobody answered.
+      if (expired !== null) {
+        return {
+          outcome: "failed",
+          error: expired,
+          ...(result.usage ? { usage: result.usage } : {}),
+        };
+      }
       return timedOut && result.outcome !== "failed"
         ? { outcome: "failed", error: `${TURN_TIMEOUT_PREFIX} ${minutes} minutes` }
         : result;
     } finally {
       cancelTimer();
+      cancelUserWait();
       cancelGrace();
       stop?.removeEventListener("abort", onStop);
       abort.abort();
+      waits.end("turn_ended");
+      await waits.recorded();
     }
+  }
+
+  /**
+   * One turn's waits for a person, recorded in order: wait.started for a request that waited a
+   * poll, wait.ended when it stopped. Ids are taken as each event is dispatched, after the one
+   * before it landed, so two waits never share one. `recorded` resolves once all are dispatched.
+   */
+  private turnWaits(goalId: string, agentId: string, label: TurnUsageLabel) {
+    let chain: Promise<unknown> = Promise.resolve();
+    // The id wait.started was recorded under, null when it was refused; absent while no wait is open.
+    let open: Promise<string | null> | undefined;
+    const record = <T>(work: () => Promise<T>, fallback: T): Promise<T> => {
+      const next = chain.then(work).catch((error) => {
+        this.logger.error({ err: error, goalId, agentId }, "Could not record a wait");
+        return fallback;
+      });
+      chain = next;
+      return next;
+    };
+    return {
+      isOpen: () => open !== undefined,
+      start: (request: PendingTurnRequest) => {
+        this.noteRunWait(goalId, label.runId, true);
+        open = record(async () => {
+          const id = `${goalId}:wait:${agentId}:${this.store.get(goalId)?.lastSeq ?? 0}`;
+          const recorded =
+            !this.stopped &&
+            (await this.dispatch(goalId, {
+              id,
+              goalId,
+              type: "wait.started",
+              agentId,
+              role: label.role,
+              ...(label.runId ? { runId: label.runId } : {}),
+              request: {
+                kind: request.kind,
+                tool: request.tool,
+                ...(request.text ? { text: request.text } : {}),
+              },
+            }));
+          return recorded ? id : null;
+        }, null);
+      },
+      end: (outcome: WaitOutcome) => {
+        const started = open;
+        if (!started) return;
+        open = undefined;
+        this.noteRunWait(goalId, label.runId, false);
+        void record(async () => {
+          const id = await started;
+          // A goal that ended closed the wait itself.
+          if (id === null || this.stopped || !this.store.get(goalId)?.waits?.open[agentId]) return;
+          await this.dispatch(goalId, {
+            id: `${id}:ended`,
+            goalId,
+            type: "wait.ended",
+            agentId,
+            outcome,
+          });
+        }, undefined);
+      },
+      recorded: () => chain,
+    };
+  }
+
+  /** A run's time in its turn so far, leaving out time spent waiting for a person. */
+  private turnElapsedMs(live: LiveRun, now: number): number {
+    if (live.turnStartedAt === undefined) return 0;
+    const waiting = live.waitingSince === undefined ? 0 : now - live.waitingSince;
+    return now - live.turnStartedAt - (live.waitedMs ?? 0) - waiting;
+  }
+
+  /** Note on the run's live state that its agent started or stopped waiting. */
+  private noteRunWait(goalId: string, runId: string | undefined, waiting: boolean): void {
+    const live = runId ? this.inFlight.get(`${goalId}:${runId}`) : undefined;
+    if (!live) return;
+    const now = this.clock.now();
+    if (waiting) {
+      live.waitingSince = now;
+      return;
+    }
+    if (live.waitingSince === undefined) return;
+    live.waitedMs = (live.waitedMs ?? 0) + (now - live.waitingSince);
+    live.waitingSince = undefined;
+  }
+
+  /** A deadline timer set while a wait was open fires at the old end; set it at the new one. */
+  private onWaitEnded(goal: Goal, event: GoalEvent): void {
+    if (event.type !== "wait.ended" || isTerminalGoalStatus(goal.status)) return;
+    this.clearDeadline(goal.id);
+    this.armDeadline(goal);
   }
 
   /** Resolves when no reaction work is outstanding, including running agent turns. For tests. */
@@ -708,6 +926,7 @@ export class GoalManager {
     }
     this.onInterventionState(previous, goal);
     this.onRecoveryState(previous, goal);
+    this.onWaitEnded(goal, event);
     switch (event.type) {
       case "goal.created":
         this.armDeadline(goal);
@@ -1240,6 +1459,8 @@ export class GoalManager {
           startedAtMs: live.turnStartedAt,
           timeoutMs: live.timeoutMs ?? taskRunTimeoutMs(goal, task),
           cursor,
+          waitedMs: now - live.turnStartedAt - this.turnElapsedMs(live, now),
+          waiting: live.waitingSince !== undefined,
         },
         now,
       );
@@ -1282,7 +1503,7 @@ export class GoalManager {
     this.checkInContexts.set(key, {
       slot,
       triggers: verdict.triggers,
-      elapsedMs: this.clock.now() - (live.turnStartedAt ?? this.clock.now()),
+      elapsedMs: this.turnElapsedMs(live, this.clock.now()),
       quietMs: verdict.quietMs,
       ...(verdict.runningTool ? { runningTool: verdict.runningTool } : {}),
       activity,
@@ -1314,7 +1535,7 @@ export class GoalManager {
   private stoppable(goalId: string, runId: string): boolean {
     const live = this.inFlight.get(`${goalId}:${runId}`);
     if (!live || live.turnStartedAt === undefined || live.timeoutMs === undefined) return false;
-    return this.clock.now() - live.turnStartedAt < live.timeoutMs;
+    return this.turnElapsedMs(live, this.clock.now()) < live.timeoutMs;
   }
 
   /** The Lead's nudge; the attempt is noted even when refused, since a provider may queue it. */
@@ -1571,7 +1792,10 @@ export class GoalManager {
       if (result.outcome !== "completed") {
         const policy = goalPermissionPolicy(this.store.get(goal.id)?.config);
         const detail =
-          result.outcome === "needs_permission" ? ` ${describeFailure(result, policy)}` : "";
+          result.outcome === "needs_permission" ||
+          (result.outcome === "failed" && isNoAnswerFailure(result.error))
+            ? ` ${describeFailure(result, policy)}`
+            : "";
         await this.failGoal(
           goal.id,
           `Lead agent did not finish planning (${result.outcome}).${detail}`,
@@ -2147,7 +2371,7 @@ export class GoalManager {
       // Name the request a person has to deal with; `needs_permission` is what the app looks for.
       const asking = failed
         .map((t) => ({ id: t.id, error: lastRunError(goal, t.id) }))
-        .find((t) => isPendingRequestFailure(t.error));
+        .find((t) => isPendingRequestFailure(t.error) || isNoAnswerFailure(t.error));
       const request = asking
         ? `. Task ${asking.id} stopped on a request (needs_permission): ${asking.error}`
         : "";
@@ -2585,11 +2809,14 @@ function gaveUpText(goal: Goal, failed: readonly Task[]): string {
 }
 
 /** The diagnosis reads these back: TIME_LIMIT_REACHED_PREFIX and DEADLINE_REACHED_PATTERN. */
-function describeDeadline(goal: Goal): string {
+function describeDeadline(goal: Goal, nowMs: number): string {
   const { goalTimeoutMs } = resolveLimits(goal.config);
-  return goalDeadlineMs(goal) < timeLimitEndMs(goal)
-    ? `Deadline ${goal.config?.limits?.deadlineAt} reached`
-    : `${TIME_LIMIT_REACHED_PREFIX} ${Math.round(goalTimeoutMs / 60_000)} minutes reached`;
+  if (goalDeadlineMs(goal, nowMs) < timeLimitEndMs(goal, nowMs)) {
+    return `Deadline ${goal.config?.limits?.deadlineAt} reached`;
+  }
+  const waited = Math.round(excludedWaitMs(goal, nowMs) / 60_000);
+  const note = waited > 0 ? ` (${waited} minutes waiting for answers not counted)` : "";
+  return `${TIME_LIMIT_REACHED_PREFIX} ${Math.round(goalTimeoutMs / 60_000)} minutes reached${note}`;
 }
 
 interface GoalWorkspaceRef {

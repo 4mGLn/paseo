@@ -12,6 +12,7 @@ import {
   task,
   type GoalTestEnv,
 } from "./goal-test-env.js";
+import { countedFailures } from "./goal-reducer.js";
 
 const tick = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -568,6 +569,230 @@ describe("limits and policies", () => {
     const retried = (await env.readEvents()).findLast((e) => e.type === "goal.retried");
     expect(retried).toMatchObject({ timeMode: "remaining", activeMs: 30_000, reopen: false });
     expect(env.goalOf(store).timeBaseAt).toBe(new Date(createdAt + 60_000).toISOString());
+  });
+
+  // ---- waiting for a person's answer ------------------------------------
+
+  const MIN = 60_000;
+  const bashRequest = { kind: "permission" as const, tool: "Bash", text: "git commit" };
+
+  /** A held worker turn under `limits`; returns the boot and the worker's turn. */
+  async function waitingWorker(limits: GoalConfig["limits"], extra: Partial<GoalConfig> = {}) {
+    env.logOptions.now = () => new Date(env.clock.now()).toISOString();
+    env.script([task("a")], () => "hold");
+    const booted = await start(
+      withConfig({ maxAttempts: 3, onPermissionRequest: "wait", ...extra, limits }),
+    );
+    await tick();
+    const turn = h().turns.find((t) => t.provider === "codex");
+    if (!turn?.onWait) throw new Error("no worker turn");
+    return { ...booted, turn, onWait: turn.onWait };
+  }
+
+  test("a wait for an answer pauses the run time limit, which then resumes with the time left", async () => {
+    const { store, onWait } = await waitingWorker({
+      runTimeoutMinutes: 60,
+      goalTimeoutMinutes: 600,
+      retryBackoffSeconds: 0,
+    });
+    env.clock.advance(30 * MIN);
+    onWait({ waiting: true, request: bashRequest });
+    await tick();
+    env.clock.advance(120 * MIN);
+    await tick();
+    expect(env.goalOf(store).runs[0]?.status).toBe("running");
+    onWait({ waiting: false });
+    await tick();
+    env.clock.advance(29 * MIN);
+    await tick();
+    expect(env.goalOf(store).runs[0]?.status).toBe("running");
+    env.clock.advance(2 * MIN);
+    await tick();
+    expect(env.goalOf(store).runs[0]).toMatchObject({
+      status: "failed",
+      error: "Turn timed out after 60 minutes",
+    });
+    const types = (await env.readEvents()).map((e) => e.type);
+    expect(types.filter((t) => t.startsWith("wait."))).toEqual(["wait.started", "wait.ended"]);
+  });
+
+  test("past userWaitMinutes the run fails as no answer, even when its cancel settles as completed", async () => {
+    const { store, manager, turn, onWait } = await waitingWorker({
+      userWaitMinutes: 5,
+      retryBackoffSeconds: 0,
+    });
+    // The cancel clears the request, and the agent then finishes its turn as completed.
+    h().ignoreCancel = true;
+    onWait({ waiting: true, request: bashRequest });
+    await tick();
+    env.clock.advance(5 * MIN + 1);
+    await tick();
+    expect(h().canceled).toContain(turn.agentId);
+    turn.resolve({ outcome: "completed", text: "done anyway" });
+    await env.settle(manager);
+
+    const g = env.goalOf(store);
+    expect(g.runs).toHaveLength(1);
+    expect(g.runs[0]?.status).toBe("failed");
+    expect(countedFailures(g, "a")).toBe(1);
+    expect(g.runs[0]?.error).toMatch(
+      /^No answer within 5 minutes: Agent is waiting for permission to use Bash/,
+    );
+    // No automatic retry: the person decides, and the goal names the request.
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toContain(
+      `Task a stopped on a request (needs_permission): ${g.runs[0]?.error}`,
+    );
+    const events = await env.readEvents();
+    const ended = events.findIndex((e) => e.type === "wait.ended");
+    const finished = events.findIndex((e) => e.type === "run.finished");
+    expect(events[ended]).toMatchObject({ outcome: "expired" });
+    expect(ended).toBeLessThan(finished);
+    expect(g.waits?.open).toEqual({});
+  });
+
+  test("a turn timer that fires before a request is noticed times the run out", async () => {
+    const { store, manager, onWait } = await waitingWorker(
+      { runTimeoutMinutes: 60, retryBackoffSeconds: 0 },
+      { maxAttempts: 1 },
+    );
+    h().ignoreCancel = true;
+    env.clock.advance(60 * MIN + 1);
+    await tick();
+    onWait({ waiting: true, request: bashRequest });
+    await tick();
+    h()
+      .turns.find((t) => t.provider === "codex")
+      ?.resolve({ outcome: "canceled" });
+    await env.settle(manager);
+    expect(env.goalOf(store).runs[0]?.error).toBe("Turn timed out after 60 minutes");
+    expect((await env.readEvents()).some((e) => e.type.startsWith("wait."))).toBe(false);
+  });
+
+  test("each request gets its own allowance", async () => {
+    const { store, onWait } = await waitingWorker({ userWaitMinutes: 5, retryBackoffSeconds: 0 });
+    for (let i = 0; i < 2; i++) {
+      onWait({ waiting: true, request: bashRequest });
+      await tick();
+      env.clock.advance(4 * MIN);
+      await tick();
+      onWait({ waiting: false });
+      await tick();
+    }
+    expect(env.goalOf(store).runs[0]?.status).toBe("running");
+    expect(env.goalOf(store).waits?.excludedMs).toBe(8 * MIN);
+  });
+
+  test("the goal time limit leaves out the wait and is set again when it ends", async () => {
+    const { store, onWait } = await waitingWorker({
+      goalTimeoutMinutes: 60,
+      runTimeoutMinutes: 1440,
+      retryBackoffSeconds: 0,
+    });
+    env.clock.advance(10 * MIN);
+    onWait({ waiting: true, request: bashRequest });
+    await tick();
+    // The timer armed for the old end fires while the wait is open, and waits again.
+    env.clock.advance(90 * MIN);
+    await tick();
+    expect(env.goalOf(store).status).toBe("executing");
+    onWait({ waiting: false });
+    await tick();
+    env.clock.advance(49 * MIN);
+    await tick();
+    expect(env.goalOf(store).status).toBe("executing");
+    env.clock.advance(2 * MIN);
+    await tick();
+    expect(env.goalOf(store)).toMatchObject({
+      status: "failed",
+      failureReason:
+        "Time limit of 60 minutes reached (90 minutes waiting for answers not counted)",
+    });
+  });
+
+  /** Holds the first turn whose prompt has `marker`, lets it wait past 5 minutes, and settles. */
+  async function expireHeldTurn(marker: string, tasks = [task("a")]) {
+    env.logOptions.now = () => new Date(env.clock.now()).toISOString();
+    env.script(tasks);
+    const base = h().respond;
+    h().respond = (turn) => (turn.prompt.includes(marker) ? "hold" : (base?.(turn) ?? "hold"));
+    const booted = await start(
+      withConfig({
+        onPermissionRequest: "wait",
+        limits: { userWaitMinutes: 5, retryBackoffSeconds: 0 },
+      }),
+    );
+    await tick();
+    const held = h().turns.find((t) => t.prompt.includes(marker));
+    if (!held?.onWait) throw new Error(`no held turn for ${marker}`);
+    held.onWait({ waiting: true, request: bashRequest });
+    await tick();
+    env.clock.advance(5 * MIN + 1);
+    await env.settle(booted.manager);
+    return env.goalOf(booted.store);
+  }
+  const noAnswer = "No answer within 5 minutes: Agent is waiting for permission to use Bash";
+
+  test("a reviewer nobody answered rejects its change set, quoting the no-answer error", async () => {
+    const g = await expireHeldTurn("independent reviewer");
+    expect(g.changeSets[0]?.status).toBe("rejected");
+    expect(g.changeSets[0]?.error).toContain(
+      `Review failed: Reviewer did not finish (failed: ${noAnswer}`,
+    );
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toContain(noAnswer);
+    const started = (await env.readEvents()).find((e) => e.type === "wait.started");
+    expect(started).toMatchObject({ role: "reviewer" });
+  });
+
+  test("a verifier nobody answered fails the goal, quoting the no-answer error", async () => {
+    const g = await expireHeldTurn("You are the verifier");
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toContain(
+      `Verification failed: Verifier did not finish (failed: ${noAnswer}`,
+    );
+  });
+
+  test("a planning Lead nobody answered fails the goal, quoting the no-answer error", async () => {
+    const g = await expireHeldTurn("You are the Lead", []);
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toContain(`Lead agent did not finish planning (failed). ${noAnswer}`);
+  });
+
+  test("an open wait near the time limit neither fails the goal nor sets a timer over and over", async () => {
+    const { store, onWait } = await waitingWorker({
+      goalTimeoutMinutes: 60,
+      runTimeoutMinutes: 1440,
+      retryBackoffSeconds: 0,
+    });
+    env.clock.advance(60 * MIN - 1_000);
+    onWait({ waiting: true, request: bashRequest });
+    await tick();
+    const timers = (env.clock as unknown as { timers: { live: boolean }[] }).timers;
+    const before = timers.length;
+    for (let i = 0; i < 30; i++) env.clock.advance(1_000);
+    await tick();
+    expect(env.goalOf(store).status).toBe("executing");
+    // One look a minute while waiting, not one per second.
+    expect(timers.length - before).toBeLessThanOrEqual(2);
+    env.clock.advance(120 * MIN);
+    await tick();
+    expect(env.goalOf(store).status).toBe("executing");
+  });
+
+  test("a restart closes a wait left open, counting the time down as waiting", async () => {
+    const first = await waitingWorker({ goalTimeoutMinutes: 600, retryBackoffSeconds: 0 });
+    first.onWait({ waiting: true, request: bashRequest });
+    await tick();
+    first.manager.stop();
+    env.clock.advance(30 * MIN);
+    const second = await env.boot();
+    await tick();
+    const g = env.goalOf(second.store);
+    expect(g.waits?.open).toEqual({});
+    expect(g.waits?.excludedMs).toBe(30 * MIN);
+    const ended = (await env.readEvents()).filter((e) => e.type === "wait.ended");
+    expect(ended).toHaveLength(1);
   });
 
   // ---- read-only roles --------------------------------------------------

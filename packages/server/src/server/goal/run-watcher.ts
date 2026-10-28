@@ -56,6 +56,13 @@ export interface RunObservation {
   timeoutMs: number;
   /** Null when the timeline cannot be read; stall is then not judged. */
   cursor: TimelineCursor | null;
+  /**
+   * Time the run spent waiting for a person's answer, the wait still open included. It does not
+   * count toward the time limit, so it is left out of the run's elapsed time.
+   */
+  waitedMs?: number;
+  /** True while the run waits for a person's answer. */
+  waiting?: boolean;
 }
 
 /** What one poll found about one run. */
@@ -92,7 +99,8 @@ export class RunWatcher {
    * Read run `key` at `now`. A run younger than one poll gives nothing. `near_timeout` fires once
    * per run; `stall` after STALL_MS without the timeline moving, never while a tool call runs
    * (one long command is not a stall). A tool row's timestamp moves with its updates, so how long
-   * a tool runs is counted from when the watcher first saw it.
+   * a tool runs is counted from when the watcher first saw it. A run waiting for a person's
+   * answer gives nothing, and its quiet time counts from when the wait ended.
    */
   evaluate(key: string, obs: RunObservation, now: number): RunVerdict {
     const { cursor } = obs;
@@ -114,14 +122,18 @@ export class RunWatcher {
       state.movedAt = now;
       state.stallArmed = true;
     }
+    if (obs.waiting) {
+      state.movedAt = now;
+      state.stallArmed = true;
+    }
     const tool = oldestRunningTool(state, cursor, now);
     const verdict: RunVerdict = {
       triggers: [],
       quietMs: now - state.movedAt,
       ...(tool ? { runningTool: tool } : {}),
     };
-    const elapsed = now - obs.startedAtMs;
-    if (elapsed < WATCH_POLL_MS) return verdict;
+    const elapsed = now - obs.startedAtMs - (obs.waitedMs ?? 0);
+    if (obs.waiting || elapsed < WATCH_POLL_MS) return verdict;
     if (!state.nearTimeoutDone && elapsed >= NEAR_TIMEOUT_FRACTION * obs.timeoutMs) {
       verdict.triggers.push("near_timeout");
     }

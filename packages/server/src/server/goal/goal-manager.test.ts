@@ -1816,6 +1816,40 @@ describe("Lead watching", () => {
     expect(events.filter((e) => e.type === "usage.recorded" && e.role === "lead")).toHaveLength(3);
   });
 
+  test("a Lead stop during a wait keeps its reason when the wait's allowance runs out", async () => {
+    let held: Turn | undefined;
+    scriptWatch([task("a")], () => "hold", {
+      checkIn: (turn) => {
+        held = turn as Turn;
+        return "hold";
+      },
+    });
+    const { store } = await env.boot();
+    await env.createGoal(store, {
+      ...WATCH,
+      onPermissionRequest: "wait",
+      limits: { ...WATCH.limits, userWaitMinutes: 5 },
+    });
+    await until(() => harness.turns.length === 1);
+    const worker = harness.turns[0] as Turn;
+    await minutesPass(store, 80, () => held !== undefined);
+    const checkIn = harness.turns.find((t) => isCheckIn(t.prompt));
+    worker.onWait?.({ waiting: true, request: { kind: "permission", tool: "Bash" } });
+    await pollSettles(store);
+    // The agent ignores the cancel, so the stop's grace period is still running when the wait's
+    // allowance ends.
+    harness.ignoreCancel = true;
+    checkIn?.resolve(answer({ decision: "stop", reason: "stuck" }));
+    await until(() => harness.canceled.includes(worker.agentId));
+    env.clock.advance(5 * 60_000 + 1);
+    await pollSettles(store);
+    worker.resolve({ outcome: "canceled" });
+    await until(() => env.goalOf(store).runs[0]?.status === "failed");
+    expect(env.goalOf(store).runs[0]?.error).toBe(`${LEAD_STOP_PREFIX} stuck`);
+    const ended = (await env.readEvents()).filter((e) => e.type === "wait.ended");
+    expect(ended).toEqual([expect.objectContaining({ outcome: "turn_ended" })]);
+  });
+
   test("ok lets the run go on, mutes near_timeout for it, and retries nothing", async () => {
     const { checkIns } = scriptWatch([task("a")], () => "hold", {
       checkIn: () => answer({ decision: "ok", reason: "it is close" }),

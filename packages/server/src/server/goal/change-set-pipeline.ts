@@ -21,6 +21,7 @@ import {
 import {
   VERIFICATION_NOT_MET_PREFIX,
   WORK_NOT_RECOVERED_PREFIX,
+  isNoAnswerFailure,
   isPendingRequestFailure,
   isWorkerBlocked,
   workerBlockedFailureText,
@@ -463,7 +464,8 @@ export class ChangeSetPipeline {
         });
         if (this.host.isStopped() || this.store.get(goal.id)?.status !== "executing") return null;
         if (result.outcome !== "completed") {
-          throw new Error(`Reviewer did not finish (${result.outcome})`);
+          // A failed turn's error says why, such as a request nobody answered in time.
+          throw new Error(`Reviewer did not finish (${turnEnd(result)})`);
         }
         // A reviewer only reads. If it changed the author's worktree, undo that and
         // do not trust the verdict it gave from a changed tree.
@@ -675,9 +677,13 @@ export class ChangeSetPipeline {
       : "";
     // A worker's blocked claim opens the reason, quoted, as in the Manager's stuck-goal reason.
     // It is not retried, so the reason names no attempt count.
-    const reason = isWorkerBlocked(task.error)
-      ? `${workerBlockedFailureText(task.id, error)} Rework ${task.id} failed.`
-      : `Rework ${task.id} failed after ${task.attempts} attempts.${request}`;
+    let reason = `Rework ${task.id} failed after ${task.attempts} attempts.${request}`;
+    if (isWorkerBlocked(task.error)) {
+      reason = `${workerBlockedFailureText(task.id, error)} Rework ${task.id} failed.`;
+    } else if (isNoAnswerFailure(task.error)) {
+      // Nobody answered in time: not retried either, and the person decides how to go on.
+      reason = `Rework ${task.id} failed: nobody answered its request in time; answer sooner or raise userWaitMinutes, then retry. Task ${task.id} stopped on a request (needs_permission): ${error}`;
+    }
     await this.host.failGoal(goalId, reason);
   }
 
@@ -830,7 +836,7 @@ export class ChangeSetPipeline {
         });
         if (this.host.isStopped() || this.store.get(goal.id)?.status !== "executing") return null;
         if (result.outcome !== "completed") {
-          throw new Error(`Verifier did not finish (${result.outcome})`);
+          throw new Error(`Verifier did not finish (${turnEnd(result)})`);
         }
         await this.assertUnchanged(goal, workspace.cwd);
         try {
@@ -885,4 +891,9 @@ export class ChangeSetPipeline {
     }
     return unmet;
   }
+}
+
+/** How a turn that did not complete ended: its outcome, with the error of a failed one. */
+function turnEnd(result: TurnResult): string {
+  return result.outcome === "failed" ? `failed: ${result.error}` : result.outcome;
 }
