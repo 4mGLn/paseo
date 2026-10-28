@@ -840,6 +840,61 @@ describe("goal logs written by earlier phases", () => {
     }
   });
 
+  test("goal b195cf6f accepted as is after its last recovery round-trips through the log", async () => {
+    const goalId = "b195cf6f-6f1c-4889-aff8-3f689db7ab15";
+    await writeFile(
+      join(dir, `${goalId}.jsonl`),
+      await readFile(join(import.meta.dirname, "test-fixtures", "b195cf6f-verify.jsonl"), "utf8"),
+    );
+    const log = new GoalEventLog({ dir });
+    const store = new GoalStore(log);
+    await store.recover();
+    expect(store.get(goalId)).not.toHaveProperty("accepted");
+    const service = new GoalService(store, log);
+    service.attachActivityProbe({ hasLiveWork: () => false });
+    const started = await service.startRecovery(goalId, { timeMode: "fresh" });
+    const recoveryId = started.recovery?.id ?? "";
+    const send = (event: Record<string, unknown>) =>
+      store.dispatch(goalId, { goalId, ...event } as Parameters<GoalStore["dispatch"]>[1]);
+    await send({ id: "lead", type: "lead.attached", agentId: "lead-3" });
+    await send({
+      id: "ask",
+      type: "intervention.requested",
+      interventionId: `recovery-${recoveryId}`,
+      trigger: "recovery",
+      error: "",
+    });
+    await send({
+      id: "decided",
+      type: "recovery.decided",
+      recoveryId,
+      decision: { decision: "needs_person", reason: "c1 needs a person" },
+    });
+    expect(store.get(goalId)).toMatchObject({ status: "failed", recoveries: 3 });
+    const accepted = await service.accept(goalId, {
+      criterionIds: ["c1"],
+      note: "UV-02 is tracked separately",
+      client: "cli",
+    });
+    expect(accepted.status).toBe("completed");
+
+    // A fresh store reads the same goal back from the log.
+    const reread = new GoalStore(new GoalEventLog({ dir }));
+    await reread.recover();
+    const goal = reread.get(goalId);
+    expect(goal).toEqual(accepted);
+    expect(goal?.criteria.find((c) => c.id === "c1")?.waived?.note).toBe(
+      "UV-02 is tracked separately",
+    );
+    expect(GoalSchema.safeParse(goal).success).toBe(true);
+    const lines = (await readFile(join(dir, `${goalId}.jsonl`), "utf8")).trim().split("\n");
+    expect(JSON.parse(lines.at(-1) ?? "{}")).toMatchObject({
+      type: "goal.accepted",
+      criterionIds: ["c1"],
+      client: "cli",
+    });
+  });
+
   test("goal b195cf6f later: it replays with no verification round, and a recovery that adds a fix round-trips", async () => {
     // The real log to seq 216, anonymised (test-fixtures): verification failed on c1 and two
     // recoveries ended needs_person.

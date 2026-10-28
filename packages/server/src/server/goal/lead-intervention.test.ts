@@ -145,6 +145,14 @@ describe("dueWakeUp", () => {
     expect(due(failedB(stopped, { maxAttempts: 1 }))).toEqual({ trigger: "attempts_exhausted" });
   });
 
+  test("a worker that reported it was blocked wakes the Lead at once; on the last attempt, as the last", () => {
+    const blocked = "Worker reported it was blocked: disk full";
+    expect(due(failedB(blocked))).toEqual({ trigger: "worker_blocked" });
+    expect(due(failedB(blocked, { maxAttempts: 1 }))).toEqual({ trigger: "attempts_exhausted" });
+    // A worker's words without the status line are an ordinary failure.
+    expect(due(failedB("Answer: Blocked by a full disk (ENOSPC)."))).toBeNull();
+  });
+
   test("aff07ea6 with interrupted runs: wake-ups at a2, a4 and the last attempt a5", () => {
     let goal = apply(null, [
       {

@@ -1,4 +1,8 @@
-import { LEAD_STOP_PREFIX, TURN_TIMEOUT_PREFIX } from "@getpaseo/protocol/goal/failure-wording";
+import {
+  LEAD_STOP_PREFIX,
+  TURN_TIMEOUT_PREFIX,
+  isWorkerBlocked,
+} from "@getpaseo/protocol/goal/failure-wording";
 import {
   LAST_ATTEMPT_TRIGGER,
   type FailureTrigger,
@@ -54,11 +58,13 @@ export type WakeUp = { trigger: FailureTrigger } | "deferred" | "woken" | null;
 
 /**
  * What a failure says about the task, first match wins. The last attempt comes first: it is
- * exempt from the per-task cap, so it always gets its wake-up while the goal's cap allows.
+ * exempt from the per-task cap, so it always gets its wake-up while the goal's cap allows; the
+ * prompt still quotes a blocked worker's reason, since it quotes the run's error.
  */
 export function failureTrigger(goal: Goal, task: Task, error: string): FailureTrigger | null {
   const failed = countedFailures(goal, task.id);
   if (goal.config && failed >= goal.config.maxAttempts) return LAST_ATTEMPT_TRIGGER;
+  if (isWorkerBlocked(error)) return "worker_blocked";
   if (error.startsWith(LEAD_STOP_PREFIX)) return "lead_stopped";
   if (error.startsWith(TURN_TIMEOUT_PREFIX)) return "timeout";
   if (failed >= 2) return "repeated_failure";
@@ -69,7 +75,8 @@ export function failureTrigger(goal: Goal, task: Task, error: string): FailureTr
  * Whether the failure of task `taskId` should wake the Lead, read from the goal alone: the
  * task, its latest run and that run's error. Recovery recomputes it from the log the same way.
  * `waitsForPerson` is true when the run stopped on a request a person must answer under the
- * same permission policy; that path stays the person's.
+ * same permission policy; that path stays the person's. A worker that reported it was blocked
+ * is told apart by its error, read here, and wakes the Lead first.
  */
 export function dueWakeUp(goal: Goal, taskId: string, waitsForPerson: boolean): WakeUp {
   if (goal.status !== "executing" || !goal.config?.leadInterventions || !goal.leadAgentId) {

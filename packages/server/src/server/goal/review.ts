@@ -1,6 +1,6 @@
 import type { ChangeSet, Goal, ReworkReason, Task } from "@getpaseo/protocol/goal/types";
 import { z } from "zod";
-import { quoteData } from "./prompts.js";
+import { WORKER_STATUS_LINES, quoteData } from "./prompts.js";
 
 export class ReplyParseError extends Error {
   constructor(message: string) {
@@ -113,6 +113,7 @@ export function buildReworkPrompt(
     "",
     steps,
     "End with a brief report of what you changed.",
+    ...WORKER_STATUS_LINES,
   ].join("\n");
 }
 

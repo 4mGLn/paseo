@@ -1050,7 +1050,7 @@ describe("recovering a failed goal through its Lead", () => {
     expect(goal.criteria.filter((c) => !c.verifiedAt).map((c) => c.id)).toEqual(["c4"]);
     const finding = diagnoseGoalFailure(goal, { now: env.clock.now() }).findings[0];
     expect(finding).toMatchObject({ kind: "verification", personNeeded: "yes" });
-    expect(finding?.remedy).toContain("Start a follow-up goal");
+    expect(finding?.remedy).toContain("Accept the goal as is or start a follow-up goal");
     await expect(service.startRecovery(B195, { timeMode: "fresh" })).rejects.toThrow(
       `already recovered ${MAX_RECOVERIES} times`,
     );
@@ -1090,5 +1090,118 @@ describe("recovering a failed goal through its Lead", () => {
     // Recording c2 again under its round id is a duplicate; the round-0 id was already used.
     expect((await second.store.dispatch(B195, c2)).duplicate).toBe(true);
     expect(await verifiedIds("c2")).toEqual([`${B195}:verified:c2`, `${B195}:verified:c2:v1`]);
+  });
+
+  test("b195cf6f with no recovery left is accepted as is: completed with c1 waived", async () => {
+    const { store, manager, service } = await b195();
+    scriptRecovery({
+      plan: [],
+      recover: () => reply({ decision: "needs_person", reason: "c1 needs a person" }),
+    });
+    await service.startRecovery(B195, { timeMode: "fresh" });
+    await env.settle(manager);
+    const failed = env.goalOf(store, B195);
+    expect(failed).toMatchObject({ status: "failed", recoveries: MAX_RECOVERIES });
+    const finding = diagnoseGoalFailure(failed, { now: env.clock.now() }).findings[0];
+    expect(finding).toMatchObject({ kind: "verification", personNeeded: "yes" });
+    expect(finding?.remedy).toContain("Accept the goal as is or start a follow-up goal");
+
+    // The goal's reason is the recovery's ending now; the audit record keeps the failure itself.
+    const reason = failed.recovery?.failureReason;
+    expect(reason).toMatch(/^Acceptance criteria not met: Criterion c1/);
+    expect(failed.failureReason).not.toBe(reason);
+    await service.accept(B195, { criterionIds: ["c1"], note: "UV-02 ships later", client: "app" });
+    await env.settle(manager);
+    const goal = env.goalOf(store, B195);
+    expect(goal.status).toBe("completed");
+    expect(goal.failureReason).toBeNull();
+    expect(goal.accepted).toMatchObject({ note: "UV-02 ships later", from: reason, client: "app" });
+    expect(goal.criteria.filter((c) => c.waived).map((c) => c.id)).toEqual(["c1"]);
+    const accepted = (await env.readEvents(B195)).at(-1);
+    expect(accepted).toMatchObject({
+      type: "goal.accepted",
+      criterionIds: ["c1"],
+      acceptedFrom: reason,
+      client: "app",
+    });
+  });
+
+  test("an accept tells the chat under its own key, never the Lead, and only a person may accept", async () => {
+    scriptRecovery({
+      plan: [task("a")],
+      recover: () => reply({ decision: "retry", reason: "verify again" }),
+    });
+    env.stageReplies.verify = (turn) => {
+      const criteria = askedIds(turn.prompt).map((id) => ({ id, met: false, evidence: "no" }));
+      return { outcome: "completed", text: env.fenced(JSON.stringify({ criteria })) };
+    };
+    const booted = await boot();
+    const { store, manager, service } = booted;
+    await failedGoal({ ...CONFIG, originAgentId: "chat-1" }, booted);
+    // Two recoveries retry and verification fails again each time: the goal ends at reopens 2.
+    for (let i = 0; i < 2; i += 1) {
+      await service.startRecovery("g1", {});
+      await env.settle(manager);
+    }
+    const failed = env.goalOf(store);
+    expect(failed).toMatchObject({ status: "failed", reopens: 2 });
+    const keys = () => (env.goalOf(store).notifications ?? []).map((n) => `${n.target}:${n.key}`);
+    expect(keys()).toContain("origin:goal-ended-r2");
+    const otherNotices = env.harness.notified.filter((n) => n.agentId !== "chat-1").length;
+
+    await expect(
+      service.accept("g1", { criterionIds: ["c1"], note: "fine", agentId: "agent-7" }),
+    ).rejects.toThrow("Only a person can accept a goal as is; the request came from agent agent-7");
+    expect(env.goalOf(store).status).toBe("failed");
+
+    await service.accept("g1", { criterionIds: ["c1"], note: "fine", client: "cli" }, "acc-1");
+    // A resend with the same eventId changes nothing.
+    await service.accept("g1", { criterionIds: ["c1"], note: "fine", client: "cli" }, "acc-1");
+    await env.settle(manager);
+    expect(env.goalOf(store).status).toBe("completed");
+    expect(keys()).toContain("origin:goal-accepted-r2");
+    expect(keys()).not.toContain("lead:goal-completed");
+    const toChat = env.harness.notified.filter((n) => n.agentId === "chat-1").map((n) => n.text);
+    expect(toChat.at(-1)).toMatch(/completed: accepted as is by a person \(criteria waived: 1\)/);
+    expect(env.harness.notified.filter((n) => n.agentId !== "chat-1")).toHaveLength(otherNotices);
+    expect((await env.readEvents()).filter((e) => e.type === "goal.accepted")).toHaveLength(1);
+  });
+
+  test("an accept is refused while a recovery decides, and a recovery once the goal is accepted", async () => {
+    let hold = true;
+    scriptRecovery({
+      plan: [task("a")],
+      recover: () => (hold ? "hold" : reply({ decision: "needs_person", reason: "stop" })),
+    });
+    env.stageReplies.verify = (turn) => {
+      const criteria = askedIds(turn.prompt).map((id) => ({ id, met: false, evidence: "no" }));
+      return { outcome: "completed", text: env.fenced(JSON.stringify({ criteria })) };
+    };
+    const booted = await boot();
+    const { store, manager, service } = booted;
+    await failedGoal(CONFIG, booted);
+    await service.startRecovery("g1", {});
+    await expect(
+      service.accept("g1", { criterionIds: ["c1"], note: "fine", client: "app" }),
+    ).rejects.toThrow(/Recovery rec-\d+ of goal g1 is deciding/);
+    await service.cancelRecovery("g1", { recoveryId: env.goalOf(store).recovery?.id ?? "" });
+    await env.settle(manager);
+    hold = false;
+    await service.accept("g1", { criterionIds: ["c1"], note: "fine", client: "app" });
+    await expect(service.startRecovery("g1", {})).rejects.toThrow(/completed/);
+    expect(env.goalOf(store).status).toBe("completed");
+  });
+
+  test("a goal that failed before it had a plan cannot be accepted", async () => {
+    scriptRecovery({
+      plan: [task("a", { dependsOn: ["a"] })],
+      recover: () => reply({ decision: "retry", reason: "-" }),
+    });
+    const booted = await boot();
+    const failed = await failedGoal(CONFIG, booted);
+    expect(failed.tasks).toHaveLength(0);
+    await expect(
+      booted.service.accept("g1", { criterionIds: ["c1"], note: "fine", client: "app" }),
+    ).rejects.toThrow(/before it had a plan/);
   });
 });

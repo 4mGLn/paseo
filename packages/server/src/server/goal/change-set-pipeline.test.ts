@@ -498,6 +498,28 @@ describe("change set pipeline", () => {
     });
   });
 
+  test("a rework whose worker reports it was blocked is not retried and fails the goal quoting the claim", async () => {
+    env.script([task("a")], (turn) =>
+      turn.prompt.includes("You are fixing your earlier work")
+        ? { outcome: "completed", text: "Could not run.\nTASK_STATUS: blocked: disk full" }
+        : { outcome: "completed", text: "done" },
+    );
+    setReview((n) => (n === 1 ? REQUEST("needs work") : approve));
+    const { store } = await run();
+
+    const g = goal(store);
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toBe(
+      'Task a-rw1 stopped: the worker reported it was blocked: "disk full". Fix what it names and retry. Rework a-rw1 failed.',
+    );
+    expect(g.changeSets[0]).toMatchObject({
+      status: "rejected",
+      rejectionReason: "rework_failed",
+      error: "Rework a-rw1 failed: Worker reported it was blocked: disk full",
+    });
+    expect(g.runs.filter((r) => r.taskId === "a-rw1")).toHaveLength(1);
+  });
+
   test("a retry reworks a change set whose rework failed, and the rework supersedes it", async () => {
     let fixing = false;
     env.script([task("a")], (turn) =>
