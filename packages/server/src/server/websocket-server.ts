@@ -2064,6 +2064,8 @@ export class VoiceAssistantWebSocketServer {
               goalReworkRetry: true,
               // COMPAT(goalVerificationRecovery): added in v0.13.14, remove gate after 2027-10-28.
               goalVerificationRecovery: true,
+              // COMPAT(goalAccept): added in v0.13.14, remove gate after 2027-10-28.
+              goalAccept: true,
               // COMPAT(goalConcurrencyConfig): added in v0.13.9, remove gate after 2027-10-27.
               goalConcurrencyConfig: true,
             }

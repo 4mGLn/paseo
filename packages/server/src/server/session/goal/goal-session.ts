@@ -32,6 +32,8 @@ export interface GoalSessionHost {
   supportsGoalLeadInterventions?(): boolean;
   /** Whether the client parses the recovery.* events. Assumed when absent. */
   supportsGoalRecovery?(): boolean;
+  /** Whether the client parses goal.accepted and the waived fields. Assumed when absent. */
+  supportsGoalAccept?(): boolean;
 }
 
 // COMPAT(goalControlEvents): added in v0.13.0, remove after 2027-04-26.
@@ -83,6 +85,25 @@ const GOAL_RECOVERY_EVENT_TYPES: ReadonlySet<string> = new Set([
   "recovery.decided",
   "recovery.resolved",
 ]);
+
+// COMPAT(goalAccept): added in v0.13.14, remove after 2027-04-28.
+const GOAL_ACCEPT_EVENT_TYPES: ReadonlySet<string> = new Set(["goal.accepted"]);
+
+// COMPAT(goalAccept): added in v0.13.14, remove after 2027-04-28.
+function withoutAcceptEvents(events: GoalEvent[], hide: boolean): GoalEvent[] {
+  return hide ? events.filter((e) => !GOAL_ACCEPT_EVENT_TYPES.has(e.type)) : events;
+}
+
+// COMPAT(goalAccept): added in v0.13.14, remove after 2027-04-28. An older client shows an
+// accepted goal as plain completed, its waived criteria as unverified.
+export function withoutAcceptance<T extends Goal>(goal: T): T {
+  if (!goal.accepted && !goal.criteria.some((c) => c.waived)) return goal;
+  const { accepted: _accepted, ...rest } = goal;
+  return {
+    ...rest,
+    criteria: goal.criteria.map(({ waived: _waived, ...c }) => c),
+  } as T;
+}
 
 // COMPAT(goalConfigEdit): added in v0.13.3, remove after 2027-04-27. An older client's
 // policy enum has no "auto"; the nearest it knows is "wait", which auto also does when
@@ -208,11 +229,13 @@ export interface GoalClientSupport {
   planRevision?: boolean;
   leadInterventions?: boolean;
   recovery?: boolean;
+  accept?: boolean;
 }
 
 /** The goal as a client with `support` can read it. */
 export function goalForClient<T extends Goal>(goal: T, support: GoalClientSupport): T {
-  const policy = support.configEdit === false ? withoutAutoPolicy(goal) : goal;
+  const accepted = support.accept === false ? withoutAcceptance(goal) : goal;
+  const policy = support.configEdit === false ? withoutAutoPolicy(accepted) : accepted;
   const usage = support.usageBreakdown === false ? withoutUsageBreakdown(policy) : policy;
   const recovery = support.recovery === false ? withoutRecovery(usage) : usage;
   if (support.planRevision === false) return withoutPlanRevisions(recovery);
@@ -237,6 +260,7 @@ export function publishGoalUpdate(
   // COMPAT(goalConfigEdit, goalUsageBreakdown): added in v0.13.3, remove after 2027-04-27.
   // COMPAT(goalPlanRevision, goalLeadInterventions): added in v0.13.13, remove after 2027-04-28.
   // COMPAT(goalRecovery): added in v0.13.13, remove after 2027-04-28.
+  // COMPAT(goalAccept): added in v0.13.14, remove after 2027-04-28.
   const variants = new Map<string, Extract<SessionOutboundMessage, { type: "goal.update" }>>();
   for (const session of sessions) {
     const support = {
@@ -245,8 +269,9 @@ export function publishGoalUpdate(
       planRevision: session.supports(CLIENT_CAPS.goalPlanRevision),
       leadInterventions: session.supports(CLIENT_CAPS.goalLeadInterventions),
       recovery: session.supports(CLIENT_CAPS.goalRecovery),
+      accept: session.supports(CLIENT_CAPS.goalAccept),
     };
-    const key = `${support.configEdit}:${support.usageBreakdown}:${support.planRevision}:${support.leadInterventions}:${support.recovery}`;
+    const key = `${support.configEdit}:${support.usageBreakdown}:${support.planRevision}:${support.leadInterventions}:${support.recovery}:${support.accept}`;
     let message = variants.get(key);
     if (!message) {
       const variant = goalForClient(slim, support);
@@ -315,7 +340,8 @@ type GoalMutationRequest = Extract<
       | "goal.plan.reject_revision.request"
       | "goal.recovery.start.request"
       | "goal.recovery.decide.request"
-      | "goal.recovery.cancel.request";
+      | "goal.recovery.cancel.request"
+      | "goal.outcome.accept.request";
   }
 >;
 
@@ -343,7 +369,8 @@ type GoalMutationResponseType =
   | "goal.plan.reject_revision.response"
   | "goal.recovery.start.response"
   | "goal.recovery.decide.response"
-  | "goal.recovery.cancel.response";
+  | "goal.recovery.cancel.response"
+  | "goal.outcome.accept.response";
 
 export class GoalSession {
   private readonly host: GoalSessionHost;
@@ -484,6 +511,19 @@ export class GoalSession {
             msg.eventId,
           ),
         );
+      case "goal.outcome.accept.request":
+        return this.mutate(msg, "goal.outcome.accept.response", () =>
+          this.goalService.accept(
+            msg.goalId,
+            {
+              criterionIds: msg.criterionIds,
+              note: msg.note,
+              ...(msg.client ? { client: msg.client } : {}),
+              ...(msg.agentId ? { agentId: msg.agentId } : {}),
+            },
+            msg.eventId,
+          ),
+        );
       default:
         return undefined;
     }
@@ -607,12 +647,13 @@ export class GoalSession {
                 !(hideRecovery && isRecoveryRequest(e)),
             )
           : events;
+      const shown = withoutAcceptEvents(visible, this.host.supportsGoalAccept?.() === false);
       this.host.emit({
         type: "goal.inspect.response",
         payload: {
           requestId,
           goal: this.forClient(goal),
-          events: hideConfigEdit ? visible.map(eventWithoutAutoPolicy) : visible,
+          events: hideConfigEdit ? shown.map(eventWithoutAutoPolicy) : shown,
           error: null,
         },
       });
@@ -628,6 +669,7 @@ export class GoalSession {
       planRevision: this.host.supportsGoalPlanRevision?.(),
       leadInterventions: this.host.supportsGoalLeadInterventions?.(),
       recovery: this.host.supportsGoalRecovery?.(),
+      accept: this.host.supportsGoalAccept?.(),
     });
   }
 

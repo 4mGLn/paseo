@@ -46,6 +46,7 @@ describe("GoalSession", () => {
     planRevision?: boolean,
     leadInterventions?: boolean,
     recovery?: boolean,
+    accept?: boolean,
   ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
@@ -63,6 +64,7 @@ describe("GoalSession", () => {
           supportsGoalPlanRevision: planRevision,
           supportsGoalLeadInterventions: leadInterventions,
           supportsGoalRecovery: recovery,
+          supportsGoalAccept: accept,
         }),
       },
       goalService: service,
@@ -1184,11 +1186,124 @@ describe("GoalSession", () => {
     }
   });
 
+  /** A goal whose one task succeeded and whose criterion c1 the verifier found unmet. */
+  async function writeUnmetLog(): Promise<void> {
+    const at = new Date().toISOString();
+    const events = [
+      {
+        type: "goal.created",
+        title: "T",
+        objective: "o",
+        criteria: [
+          { id: "c1", text: "works" },
+          { id: "c2", text: "fast" },
+        ],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "codex",
+          maxParallel: 2,
+          maxAttempts: 2,
+          autoApprovePlan: false,
+          notifyLead: false,
+        },
+      },
+      { type: "plan.proposed", tasks: [{ ...task("a"), kind: "read" }] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.succeeded", taskId: "a" },
+      { type: "criterion.verified", criterionId: "c2", evidence: "ok" },
+      { type: "goal.failed", reason: "Acceptance criteria not met: works (no)" },
+    ];
+    await writeFile(
+      join(dir, "g1.jsonl"),
+      `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+    );
+  }
+
+  test("goal.outcome.accept completes a failed goal with its unmet criteria waived, and refuses an agent", async () => {
+    await writeUnmetLog();
+    const session = await openSession();
+    const accept = (requestId: string, fields: Record<string, unknown>) =>
+      send(session, {
+        type: "goal.outcome.accept.request",
+        requestId,
+        goalId: "g1",
+        criterionIds: ["c1"],
+        note: "good enough",
+        ...fields,
+      } as SessionInboundMessage);
+    await accept("a1", { agentId: "agent-7" });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "a1",
+      error: expect.stringContaining("Only a person can accept a goal as is"),
+    });
+    await accept("a2", { criterionIds: [] });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "a2",
+      error: expect.stringContaining("missing: c1"),
+    });
+    await accept("a3", { client: "app" });
+    const goal = lastOf("goal.outcome.accept.response").payload.goal;
+    expect(goal).toMatchObject({
+      status: "completed",
+      failureReason: null,
+      accepted: {
+        note: "good enough",
+        from: "Acceptance criteria not met: works (no)",
+        client: "app",
+      },
+    });
+    expect(goal?.criteria.map((c) => [c.id, c.waived?.note ?? null])).toEqual([
+      ["c1", "good enough"],
+      ["c2", null],
+    ]);
+  });
+
+  test.each([
+    [true, "show to clients with"],
+    [false, "are hidden from clients without"],
+  ] as const)("acceptances %s the capability", async (capable, _shown) => {
+    await writeUnmetLog();
+    const accepting = await openSession();
+    await send(accepting, {
+      type: "goal.outcome.accept.request",
+      requestId: "a1",
+      goalId: "g1",
+      criterionIds: ["c1"],
+      note: "good enough",
+      client: "cli",
+    });
+    const session = await openSession(
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      capable,
+    );
+    await send(session, { type: "goal.inspect.request", requestId: "i1", goalId: "g1" });
+    const { goal, events } = lastOf("goal.inspect.response").payload;
+    expect(goal?.status).toBe("completed");
+    expect(events.some((e) => e.type === "goal.accepted")).toBe(capable);
+    expect(goal?.accepted !== undefined).toBe(capable);
+    expect(goal?.criteria.some((c) => c.waived)).toBe(capable);
+    await send(session, { type: "goal.list.request", requestId: "l1" });
+    const listed = lastOf("goal.list.response").payload.goals[0];
+    expect(listed?.accepted !== undefined).toBe(capable);
+    expect(listed?.criteria.some((c) => c.waived)).toBe(capable);
+  });
+
   test("recovery RPCs need automation.manage, like the other goal controls", () => {
     for (const type of [
       "goal.recovery.start.request",
       "goal.recovery.decide.request",
       "goal.recovery.cancel.request",
+      "goal.outcome.accept.request",
     ] as const) {
       expect(requiredPermissionForInbound(type)).toBe("automation.manage");
       const response = {
@@ -1242,7 +1357,7 @@ describe("goal.update pushes", () => {
     ],
   } as Goal;
 
-  function session(revisions: boolean, interventions = true, recovery = true) {
+  function session(revisions: boolean, interventions = true, recovery = true, accept = true) {
     const sent: SessionOutboundMessage[] = [];
     return {
       sent,
@@ -1250,6 +1365,7 @@ describe("goal.update pushes", () => {
         if (capability === CLIENT_CAPS.goalPlanRevision) return revisions;
         if (capability === CLIENT_CAPS.goalLeadInterventions) return interventions;
         if (capability === CLIENT_CAPS.goalRecovery) return recovery;
+        if (capability === CLIENT_CAPS.goalAccept) return accept;
         return true;
       },
       publish: (message: SessionOutboundMessage) => sent.push(message),
@@ -1315,6 +1431,37 @@ describe("goal.update pushes", () => {
     expect(pushed(older)).not.toHaveProperty("recoveries");
     expect(pushed(older)).not.toHaveProperty("guidance");
     expect(pushed(older).planRevisions).toHaveLength(2);
+  });
+
+  test("an accepted goal reaches older clients as plain completed, without waived fields", () => {
+    const accepted = {
+      ...goal,
+      status: "completed",
+      criteria: [
+        { id: "c1", text: "works", verifiedAt: null, evidence: null, waived: { at, note: "ok" } },
+      ],
+      accepted: { at, note: "ok", from: "Acceptance criteria not met: works", client: "app" },
+    } as Goal;
+    const capable = session(true);
+    const older = session(true, true, true, false);
+    publishGoalUpdate([capable, older], toGoalSummary(accepted));
+    const pushed = (target: ReturnType<typeof session>) => {
+      const message = target.sent[0];
+      if (message?.type !== "goal.update") throw new Error("no goal.update");
+      return message.payload.goal;
+    };
+    expect(pushed(capable).accepted?.note).toBe("ok");
+    expect(pushed(capable).criteria[0]?.waived).toEqual({ at, note: "ok" });
+    expect(pushed(older)).not.toHaveProperty("accepted");
+    expect(pushed(older).criteria[0]).toEqual({
+      id: "c1",
+      text: "works",
+      verifiedAt: null,
+      evidence: null,
+    });
+    expect(pushed(older).status).toBe("completed");
+    // One publish, two variants: the sessions differ only in goal_accept.
+    expect(capable.sent[0]).not.toBe(older.sent[0]);
   });
 
   test("long guidance is cut in the slim payload and marked", () => {
