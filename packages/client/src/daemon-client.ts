@@ -7162,6 +7162,41 @@ export class DaemonClient {
     });
   }
 
+  /** A person accepting a failed goal as is (goal.outcome.accept). */
+  supportsGoalAccept(): boolean {
+    return this.lastServerInfoMessage?.features?.goalAccept === true;
+  }
+
+  /**
+   * Accept a failed goal as is: it completes with `criterionIds`, every criterion still
+   * unverified, waived. `note` says why and is required. `client` is "app" or "cli".
+   */
+  async goalOutcomeAccept(options: {
+    goalId: string;
+    criterionIds: string[];
+    note: string;
+    client?: string;
+    agentId?: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    if (!this.supportsGoalAccept()) {
+      throw new Error("Update the host to accept a failed goal as is.");
+    }
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.outcome.accept.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.outcome.accept.request",
+        goalId: options.goalId,
+        criterionIds: options.criterionIds,
+        note: options.note,
+        ...(options.client ? { client: options.client } : {}),
+        ...(options.agentId ? { agentId: options.agentId } : {}),
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
   /** Approve or reject the Lead's revise while a recovery waits for approval. */
   async goalRecoveryDecide(options: {
     goalId: string;

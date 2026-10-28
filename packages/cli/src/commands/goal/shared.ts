@@ -64,11 +64,13 @@ export function toGoalRow(goal: Goal, now: number = Date.now()): GoalRow {
   };
 }
 
-function goalStatusLabel(goal: Goal): string {
-  if (goal.archivedAt) return `${goal.status} (archived)`;
-  if (goal.pausedAt) return `${goal.status} (paused)`;
-  if (goal.acknowledgedAt) return `${goal.status} (acknowledged)`;
-  return goal.status;
+export function goalStatusLabel(goal: Goal): string {
+  const waived = goal.accepted ? goal.criteria.filter((c) => c.waived).length : 0;
+  const status = waived > 0 ? `${goal.status} · ${waived} waived` : goal.status;
+  if (goal.archivedAt) return `${status} (archived)`;
+  if (goal.pausedAt) return `${status} (paused)`;
+  if (goal.acknowledgedAt) return `${status} (acknowledged)`;
+  return status;
 }
 
 export const goalSchema: OutputSchema<GoalRow> = {
