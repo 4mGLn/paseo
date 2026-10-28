@@ -1155,6 +1155,7 @@ test("advertises client capabilities in hello", async () => {
       goal_plan_revision: true,
       goal_lead_interventions: true,
       goal_recovery: true,
+      goal_accept: true,
       hello_rejection: true,
       background_agents: true,
       browser_host: {
@@ -1635,6 +1636,51 @@ test("recovery requests and a retry's guidance are sent only to a host with goal
       );
       await expect(pending).resolves.toMatchObject({ error: "refused" });
     }
+  }
+});
+
+test("accepting a goal as is is sent only to a host with goalAccept", async () => {
+  for (const accept of [false, true]) {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: `clsk_goal_accept_${accept}`,
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connectPromise = client.connect();
+    mock.triggerOpen({ features: { goalControls: true, goalAccept: accept } });
+    await connectPromise;
+    expect(client.supportsGoalAccept()).toBe(accept);
+    const sentBefore = mock.sent.length;
+    const pending = client.goalOutcomeAccept({
+      goalId: "g1",
+      criterionIds: ["c1"],
+      note: "good enough",
+      client: "cli",
+    });
+    if (!accept) {
+      await expect(pending).rejects.toThrow("Update the host to accept a failed goal as is.");
+      expect(mock.sent).toHaveLength(sentBefore);
+      continue;
+    }
+    const request = parseSentFrame(mock.sent.at(-1));
+    expect(request).toEqual({
+      type: "goal.outcome.accept.request",
+      goalId: "g1",
+      criterionIds: ["c1"],
+      note: "good enough",
+      client: "cli",
+      requestId: request.requestId,
+    });
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "goal.outcome.accept.response",
+        payload: { requestId: request.requestId, goal: null, error: "refused" },
+      }),
+    );
+    await expect(pending).resolves.toMatchObject({ error: "refused" });
   }
 });
 
