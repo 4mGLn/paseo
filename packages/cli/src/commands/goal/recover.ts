@@ -102,6 +102,9 @@ export function renderDiagnosis(goal: Goal, diagnosis: GoalDiagnosis, activeMs?:
     }
   }
   if (diagnosis.blocked.length > 0) lines.push(`Blocked: ${diagnosis.blocked.join(", ")}`);
+  if (diagnosis.unchanged.length > 0) {
+    lines.push(`Finished without changes (information): ${diagnosis.unchanged.join(", ")}`);
+  }
   if (diagnosis.openChangeSets.length > 0) {
     const open = diagnosis.openChangeSets.map((c) => `${c.id} (${c.taskId}, ${c.status})`);
     lines.push(`Open change sets: ${open.join(", ")}`);
