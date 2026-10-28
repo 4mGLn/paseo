@@ -69,10 +69,13 @@ export function GoalSettingsSheet({
   // An older daemon drops the caps silently, as on create.
   const budgetSupported = useHostFeature(serverId, "goalBudgets");
   const autoPermissionSupported = useHostFeature(serverId, "goalConfigEdit");
+  // COMPAT(goalUserWait): added in v0.13.14, remove gate after 2027-10-28.
+  const userWaitSupported = useHostFeature(serverId, "goalUserWait");
   const [snapshot] = useState<GoalSettingsFormSnapshot>(() => ({
     config,
     budgetSupported,
     autoPermissionSupported,
+    userWaitSupported,
   }));
   const model = useGoalSettingsFormModel(snapshot, config);
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
@@ -237,6 +240,7 @@ function GoalSettingsFields({ model, state, size }: FieldsProps): ReactElement {
         {number("runTimeoutMinutes")}
         {number("goalTimeoutMinutes")}
         {number("retryBackoffSeconds")}
+        {state.userWaitSupported ? number("userWaitMinutes") : null}
       </GoalSettingsGroup>
       {state.budgetSupported ? (
         <GoalSettingsGroup title={t("goals.form.sections.budget")}>

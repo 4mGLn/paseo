@@ -84,6 +84,20 @@ describe("buildGoalCreateInput", () => {
     });
   });
 
+  it("sends the wait limit only to a host with goalUserWait", () => {
+    const changed = values({
+      ...MANAGED,
+      settings: { ...DAEMON_GOAL_SETTINGS, userWaitMinutes: 60 },
+    });
+    expect(buildGoalCreateInput(changed, { userWaitSupported: true })?.config?.limits).toEqual({
+      userWaitMinutes: 60,
+    });
+    expect(buildGoalCreateInput(changed)?.config?.limits).toBeUndefined();
+    expect(
+      buildGoalCreateInput(changed, { userWaitSupported: false })?.config?.limits,
+    ).toBeUndefined();
+  });
+
   it("includes the optionals the user set and the origin chat", () => {
     const input = buildGoalCreateInput(
       values({
@@ -596,6 +610,7 @@ describe("project and host", () => {
         label: "A",
         budgetSupported: false,
         thinkingSupported: false,
+        userWaitSupported: false,
         autoPermissionSupported: false,
       },
       {
@@ -603,6 +618,7 @@ describe("project and host", () => {
         label: "B",
         budgetSupported: true,
         thinkingSupported: true,
+        userWaitSupported: true,
         autoPermissionSupported: true,
       },
     ]);

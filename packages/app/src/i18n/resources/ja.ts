@@ -947,7 +947,7 @@ export const ja: TranslationResources = {
         integration_failed:
           "リカバリーすると再びマージします。先に、エラーが示す統合ワークツリー内の未コミットの追跡ファイルを片付けてください。",
         rework_failed:
-          "再試行またはリカバリーすると、手直しが同じワークツリーで再び実行されます。下の手直しタスクの原因を確認してください。リクエストで止まった場合は、先に設定で権限ポリシーを変更してください。",
+          "再試行またはリカバリーすると、手直しが同じワークツリーで再び実行されます。下の手直しタスクの原因を確認してください。リクエストで止まった場合は、先に設定で権限ポリシーを変更してください。時間内に回答がなかった場合は、早めに回答するか待機の上限を延ばしてください。",
         verification:
           "すべてのタスクが成功しましたが、満たされていない受け入れ基準があります。リカバリーすると Lead が修正タスクを追加でき、それがマージされた後にすべての受け入れ基準を再検証します。",
         verification_last:
@@ -972,6 +972,7 @@ export const ja: TranslationResources = {
         timeout: "タイムアウト",
         pending_request: "誰も答えなかった質問か権限要求で停止",
         worker_blocked: "ワーカーが作業を進められないと報告",
+        no_answer: "時間内に回答がなかった",
         lead_stopped: "Lead が停止",
         canceled: "実行がキャンセルされた",
         worker_error: "ワーカーのエラー",
@@ -979,6 +980,8 @@ export const ja: TranslationResources = {
         cancelled: "実行前にキャンセル",
       },
       causeRemedy: {
+        no_answer:
+          "回答が来る前に待機の上限を過ぎました。早めに回答するか、待機の上限を延ばしてから再試行してください。",
         worker_blocked:
           "これはワーカー自身の申告です。示された原因を解消してから再試行してください。",
       },
@@ -1130,6 +1133,10 @@ export const ja: TranslationResources = {
         goalTimeoutMinutes: {
           label: "ゴール全体",
           hint: "それまでに終わらないとゴールは失敗します",
+        },
+        userWaitMinutes: {
+          label: "回答を待つ最長時間",
+          hint: "待機した時間は時間制限に含まれません",
         },
         retryBackoffSeconds: { label: "再試行までの待ち時間", hint: "試行のたびに長くなります" },
         maxTotalTokens: {

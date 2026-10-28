@@ -128,6 +128,8 @@ export interface GoalFormHost {
   budgetSupported: boolean;
   /** The host takes a thinking level per role (`goalThinking`). */
   thinkingSupported: boolean;
+  /** The host takes `userWaitMinutes` (`goalUserWait`). */
+  userWaitSupported: boolean;
   /** The host takes the `auto` permission policy (`goalConfigEdit`). */
   autoPermissionSupported: boolean;
 }
@@ -155,6 +157,8 @@ export interface GoalFormSnapshot {
   budgetSupported?: boolean;
   /** The host takes a thinking level per role. Without it no thinking is sent or offered. */
   thinkingSupported?: boolean;
+  /** The host takes `userWaitMinutes`. Without it the wait limit is neither shown nor sent. */
+  userWaitSupported?: boolean;
   /** The host takes the `auto` permission policy. Without it `auto` is neither offered nor sent. */
   autoPermissionSupported?: boolean;
 }
@@ -270,6 +274,7 @@ function buildGoalConfig(input: {
   originAgentId: string | null;
   budgetSupported: boolean;
   thinkingSupported: boolean;
+  userWaitSupported: boolean;
   baseCommit?: string | null;
 }): GoalConfig {
   const { values } = input;
@@ -277,7 +282,9 @@ function buildGoalConfig(input: {
     ? composeProvider(values.reviewProvider, values.reviewModel)
     : "";
   const testCommand = values.testCommand.trim();
-  const settingsConfig = goalSettingsToConfig(values.settings);
+  const settingsConfig = goalSettingsToConfig(values.settings, {
+    userWaitSupported: input.userWaitSupported,
+  });
   const limits = {
     ...settingsConfig.limits,
     ...(input.budgetSupported ? goalBudgetToLimits(values.budget) : {}),
@@ -332,6 +339,7 @@ export function buildGoalCreateInput(
     originAgentId?: string | null;
     budgetSupported?: boolean;
     thinkingSupported?: boolean;
+    userWaitSupported?: boolean;
     cwdCheck?: GoalCwdCheck | null;
     baseCommit?: string | null;
   } = {},
@@ -345,6 +353,7 @@ export function buildGoalCreateInput(
         originAgentId: options.originAgentId ?? null,
         budgetSupported: options.budgetSupported ?? false,
         thinkingSupported: options.thinkingSupported ?? false,
+        userWaitSupported: options.userWaitSupported ?? false,
         baseCommit: options.baseCommit ?? null,
       })
     : null;
@@ -503,6 +512,7 @@ export interface GoalFormState {
   personalSettings: GoalSettings | null;
   budgetSupported: boolean;
   thinkingSupported: boolean;
+  userWaitSupported: boolean;
   autoPermissionSupported: boolean;
   /** The thinking levels each role's model offers; empty hides that role's picker. */
   thinkingOptions: Record<GoalThinkingRole, GoalThinkingOption[]>;
@@ -673,6 +683,7 @@ function withDerived(input: BaseState): GoalFormState {
       originAgentId: state.originAgentId,
       budgetSupported: state.budgetSupported,
       thinkingSupported: state.thinkingSupported,
+      userWaitSupported: state.userWaitSupported,
       cwdCheck: state.cwdCheck,
       baseCommit: state.baseCommit?.commit ?? null,
     }),
@@ -781,6 +792,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
     personalSettings: snapshot.personalSettings ?? null,
     budgetSupported: snapshot.budgetSupported ?? false,
     thinkingSupported: snapshot.thinkingSupported ?? false,
+    userWaitSupported: snapshot.userWaitSupported ?? false,
     autoPermissionSupported: snapshot.autoPermissionSupported ?? false,
     touched: [],
     submitAttempted: false,
@@ -902,6 +914,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         hosts: [...hosts],
         budgetSupported: host ? host.budgetSupported : state.budgetSupported,
         thinkingSupported: host ? host.thinkingSupported : state.thinkingSupported,
+        userWaitSupported: host ? host.userWaitSupported : state.userWaitSupported,
         autoPermissionSupported: host
           ? host.autoPermissionSupported
           : state.autoPermissionSupported,
@@ -950,6 +963,7 @@ export function openGoalForm(snapshot: GoalFormSnapshot): GoalFormModel {
         personalSettings: memory?.settings ?? null,
         budgetSupported: host?.budgetSupported ?? false,
         thinkingSupported: host?.thinkingSupported ?? false,
+        userWaitSupported: host?.userWaitSupported ?? false,
         autoPermissionSupported: host?.autoPermissionSupported ?? false,
         submitError: null,
       });

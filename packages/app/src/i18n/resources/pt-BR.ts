@@ -950,7 +950,7 @@ export const ptBR: TranslationResources = {
         integration_failed:
           "Recuperar mescla de novo. Antes, limpe os arquivos rastreados não commitados que o erro cita no worktree de integração.",
         rework_failed:
-          "Tentar de novo ou recuperar executa a correção outra vez no worktree dela. Veja abaixo a causa da tarefa de correção; se ela parou em uma solicitação, mude antes a política de permissões nas configurações.",
+          "Tentar de novo ou recuperar executa a correção outra vez no worktree dela. Veja abaixo a causa da tarefa de correção; se ela parou em uma solicitação, mude antes a política de permissões nas configurações; se ninguém respondeu a tempo, responda mais cedo ou aumente o limite de espera.",
         verification:
           "Todas as tarefas tiveram sucesso, mas um critério não foi atendido. Ao recuperar, o Lead pode adicionar tarefas de correção, e todos os critérios são verificados de novo depois que elas forem mescladas.",
         verification_last:
@@ -975,6 +975,7 @@ export const ptBR: TranslationResources = {
         timeout: "Tempo esgotado",
         pending_request: "Parou numa pergunta ou permissão que ninguém respondeu",
         worker_blocked: "O executor informou que ficou bloqueado",
+        no_answer: "Ninguém respondeu a tempo",
         lead_stopped: "Parada pelo Lead",
         canceled: "Execução cancelada",
         worker_error: "Erro do executor",
@@ -982,6 +983,8 @@ export const ptBR: TranslationResources = {
         cancelled: "Cancelada antes de rodar",
       },
       causeRemedy: {
+        no_answer:
+          "O limite de espera acabou antes de alguém responder. Responda mais cedo ou aumente o limite de espera e tente novamente.",
         worker_blocked:
           "Esta é a própria afirmação do executor. Corrija o que ele indica e tente novamente.",
       },
@@ -1139,6 +1142,10 @@ export const ptBR: TranslationResources = {
         goalTimeoutMinutes: {
           label: "Meta inteira",
           hint: "A meta falha se não terminar até lá",
+        },
+        userWaitMinutes: {
+          label: "Espera máxima por uma resposta",
+          hint: "O tempo de espera não conta nos limites de tempo",
         },
         retryBackoffSeconds: {
           label: "Pausa antes de tentar de novo",

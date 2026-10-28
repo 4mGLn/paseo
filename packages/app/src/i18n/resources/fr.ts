@@ -952,7 +952,7 @@ export const fr: TranslationResources = {
         integration_failed:
           "La reprise refait la fusion. Nettoyez d'abord les fichiers suivis non validés que l'erreur nomme dans le worktree d'intégration.",
         rework_failed:
-          "Réessayer ou reprendre relance la correction dans son worktree. Consultez ci-dessous la cause de la tâche de correction ; si elle s'est arrêtée sur une demande, changez d'abord la politique d'autorisation dans les réglages.",
+          "Réessayer ou reprendre relance la correction dans son worktree. Consultez ci-dessous la cause de la tâche de correction ; si elle s'est arrêtée sur une demande, changez d'abord la politique d'autorisation dans les réglages ; si personne n'a répondu à temps, répondez plus tôt ou augmentez la limite d'attente.",
         verification:
           "Toutes les tâches ont réussi, mais un critère n'est pas rempli. À la reprise, le Lead peut ajouter des tâches de correction, et tous les critères sont vérifiés à nouveau une fois celles-ci fusionnées.",
         verification_last:
@@ -977,6 +977,7 @@ export const fr: TranslationResources = {
         timeout: "Délai dépassé",
         pending_request: "Arrêtée sur une question ou une permission restée sans réponse",
         worker_blocked: "L'exécutant s'est déclaré bloqué",
+        no_answer: "Personne n'a répondu à temps",
         lead_stopped: "Arrêtée par le Lead",
         canceled: "Exécution annulée",
         worker_error: "Erreur de l'exécutant",
@@ -984,6 +985,8 @@ export const fr: TranslationResources = {
         cancelled: "Annulée avant de s'exécuter",
       },
       causeRemedy: {
+        no_answer:
+          "La limite d'attente est écoulée avant que quelqu'un réponde. Répondez plus tôt ou augmentez la limite d'attente, puis réessayez.",
         worker_blocked:
           "C'est l'affirmation de l'exécutant lui-même. Corrigez ce qu'il indique, puis réessayez.",
       },
@@ -1144,6 +1147,10 @@ export const fr: TranslationResources = {
         goalTimeoutMinutes: {
           label: "Objectif entier",
           hint: "L'objectif échoue s'il n'est pas terminé à ce moment",
+        },
+        userWaitMinutes: {
+          label: "Attente maximale d'une réponse",
+          hint: "Le temps d'attente ne compte pas dans les limites de temps",
         },
         retryBackoffSeconds: {
           label: "Pause avant une nouvelle tentative",

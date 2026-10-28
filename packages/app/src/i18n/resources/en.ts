@@ -939,7 +939,7 @@ export const en = {
         integration_failed:
           "Recovering merges it again. First clean any uncommitted tracked files the error names in the integration worktree.",
         rework_failed:
-          "Retrying or recovering runs the rework again in its worktree. See the rework task's cause below; if it stopped on a request, change the permission policy in the settings first.",
+          "Retrying or recovering runs the rework again in its worktree. See the rework task's cause below; if it stopped on a request, change the permission policy in the settings first; if nobody answered in time, answer sooner or raise the wait limit.",
         verification:
           "Every task succeeded, but a criterion was not met. Recover: the Lead can add fix tasks, and every criterion is verified again once they are merged.",
         verification_last:
@@ -964,6 +964,7 @@ export const en = {
         timeout: "Timed out",
         pending_request: "Stopped on a question or permission nobody answered",
         worker_blocked: "The worker reported it was blocked",
+        no_answer: "No one answered in time",
         lead_stopped: "Stopped by the Lead",
         canceled: "Run cancelled",
         worker_error: "Worker error",
@@ -971,6 +972,8 @@ export const en = {
         cancelled: "Cancelled before it ran",
       },
       causeRemedy: {
+        no_answer:
+          "The wait limit ran out before anyone answered. Answer sooner or raise the wait limit, then retry.",
         worker_blocked: "This is the worker's own claim. Fix what it names, then retry.",
       },
       unchanged: "Finished without changes: {{titles}}",
@@ -1119,6 +1122,10 @@ export const en = {
         goalTimeoutMinutes: {
           label: "Whole goal",
           hint: "The goal fails if it is not done by then",
+        },
+        userWaitMinutes: {
+          label: "Longest wait for an answer",
+          hint: "Waiting time does not count toward the time limits",
         },
         retryBackoffSeconds: { label: "Pause before a retry", hint: "Grows with each attempt" },
         maxTotalTokens: { label: "Tokens", hint: "The goal stops once providers report this many" },
