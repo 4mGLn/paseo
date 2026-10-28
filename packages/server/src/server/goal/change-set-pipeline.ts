@@ -14,6 +14,7 @@ import {
   DEFAULT_GOAL_BRANCH_PREFIX,
   goalPermissionPolicy,
 } from "@getpaseo/protocol/goal/config-bounds";
+import { WORK_NOT_RECOVERED_PREFIX } from "@getpaseo/protocol/goal/failure-wording";
 import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { GitPort } from "./git-ops.js";
 import { thinkingInput } from "./goal-thinking.js";
@@ -690,10 +691,7 @@ export class ChangeSetPipeline {
       const cwd = cs?.cwd ?? run?.cwd;
       if (!run || !workspaceId || !cwd) {
         // The work cannot be found, so it cannot be reviewed. Do not let the goal complete without it.
-        await this.host.failGoal(
-          goalId,
-          `Could not recover the work of task ${task.id} for review.`,
-        );
+        await this.host.failGoal(goalId, `${WORK_NOT_RECOVERED_PREFIX} ${task.id} for review.`);
         return;
       }
       await this.capture({ goalId, task, runId: run.id, workspaceId, cwd });

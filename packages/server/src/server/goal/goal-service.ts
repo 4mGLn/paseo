@@ -3,6 +3,7 @@ import type {
   GoalListArchivedFilter,
   GoalRetainedResource,
 } from "@getpaseo/protocol/goal/rpc-schemas";
+import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
 import { DEFAULT_GOAL_PERMISSION_POLICY } from "@getpaseo/protocol/goal/config-bounds";
 import {
   GoalConfigSchema,
@@ -13,13 +14,29 @@ import {
   type GoalEventInput,
   type GoalPriority,
   type GoalStatus,
+  type GuidanceChanges,
+  type PlanRevisionOp,
+  type Recovery,
   type TaskSpec,
 } from "@getpaseo/protocol/goal/types";
 import type { GoalEventLog } from "./event-log.js";
 import type { GoalConfigUpdateValidator, GoalConfigValidator } from "./goal-config-validation.js";
 import { goalPriority, sortGoalsByPriority } from "./goal-priority.js";
-import { isIntegrationFailed, isTerminalGoalStatus } from "./goal-reducer.js";
+import {
+  GoalTransitionError,
+  isIntegrationFailed,
+  isTerminalGoalStatus,
+  liveRecovery,
+} from "./goal-reducer.js";
+import { decisionNoLongerFits, recoveryTimeFields } from "./goal-recovery.js";
 import type { GoalRemovedListener, GoalStore, GoalStoreListener } from "./goal-store.js";
+import {
+  PlanRevisionError,
+  diffDesiredPlan,
+  revisionNeedsApproval,
+  validatePlanRevision,
+  type PlanRevisionSource,
+} from "./plan-revision.js";
 
 /** Client ids are namespaced so they cannot collide with the Manager's own event ids. */
 function clientEventId(type: string, target: string, eventId: string): string {
@@ -47,6 +64,49 @@ export interface GoalActivityProbe {
   hasLiveWork(goalId: string): boolean;
   /** Remove what a deleted goal created; returns what was left in place. Never throws. */
   releaseResources?(goal: Goal): Promise<GoalRetainedResource[]>;
+  /** Provider and thinking checks on specs a revision adds or replaces. Throws PlanRevisionError. */
+  checkPlanSpecs?(goal: Goal, specs: readonly TaskSpec[]): Promise<void>;
+  /** Approve a revision whose automatic approval did not happen; throws why it failed. */
+  approveRevisionNow?(goalId: string, revisionId: string): Promise<void>;
+  /** Why the goal's integration worktree cannot take a recovery now, or null. */
+  integrationProblem?(goal: Goal): Promise<string | null>;
+}
+
+/**
+ * A person's instruction for a recovery or a retry. `prompt` is for the whole goal and
+ * `tasks` for one task each; a string sets it, null clears it. `agentId` is set when an agent
+ * asks, which is refused: only a person starts a recovery or gives guidance.
+ */
+export interface GuidanceInput {
+  prompt?: string | null;
+  tasks?: Record<string, string | null>;
+  agentId?: string;
+}
+
+export interface RecoveryStartInput extends GuidanceInput {
+  /** How the time limit restarts when the recovery applies; see GOAL_TIME_MODES. */
+  timeMode?: string;
+}
+
+export interface RecoveryDecisionInput {
+  recoveryId: string;
+  approve: boolean;
+  /** Why a person rejected the Lead's revise. */
+  message?: string;
+  agentId?: string;
+}
+
+/**
+ * A change to an executing goal's plan: `ops`, or the desired plan as `tasks` with `remove`
+ * naming each pending, failed or cancelled task left out. `agentId` is the caller's agent,
+ * when an agent asks; only the goal's Lead may.
+ */
+export interface PlanRevisionInput {
+  ops?: PlanRevisionOp[];
+  tasks?: TaskSpec[];
+  remove?: string[];
+  reason: string;
+  agentId?: string;
 }
 
 /** goal.list filters. Every one is optional; they combine with AND. */
@@ -99,6 +159,8 @@ export class GoalService {
     private readonly log: GoalEventLog,
     private readonly validateConfig?: GoalConfigValidator,
     private readonly validateConfigUpdate?: GoalConfigUpdateValidator,
+    /** Epoch milliseconds; tests pass the clock the log uses. */
+    private readonly now: () => number = Date.now,
   ) {}
 
   /** The Manager is built after the service; it reports whether a goal still has work stopping. */
@@ -138,11 +200,13 @@ export class GoalService {
     const validated = input.config
       ? ((await this.validateConfig?.(input.config)) ?? input.config)
       : null;
-    // The default is recorded, so a later change of default leaves this goal as it was.
+    // Defaults are recorded, so a later change of default leaves this goal as it was. Goals
+    // stored without leadInterventions read as off; new ones get it unless asked not to.
     const config = validated
       ? {
           ...validated,
           onPermissionRequest: validated.onPermissionRequest ?? DEFAULT_GOAL_PERMISSION_POLICY,
+          leadInterventions: validated.leadInterventions ?? true,
         }
       : null;
     const goalId = input.goalId ?? randomUUID();
@@ -233,11 +297,12 @@ export class GoalService {
    * interrupted. Deleting a goal that does not exist succeeds with `deleted: false`.
    */
   async delete(goalId: string): Promise<GoalDeletion> {
-    if (this.store.get(goalId)) this.requireEnded(goalId, "deleted");
+    if (this.store.get(goalId)) refuseWhileRecovering(this.requireEnded(goalId, "deleted"));
     const removed = await this.store.remove(goalId, (goal) => {
       if (!isTerminalGoalStatus(goal.status)) {
         throw new Error(`Goal ${goalId} is ${goal.status}; stop it before it can be deleted`);
       }
+      refuseWhileRecovering(goal);
       if (this.activity?.hasLiveWork(goalId)) {
         throw new Error("The goal's agents are still stopping; delete again in a moment");
       }
@@ -259,6 +324,100 @@ export class GoalService {
 
   approvePlan(goalId: string, eventId?: string): Promise<Goal> {
     return this.dispatch(goalId, eventId, { type: "plan.approved" });
+  }
+
+  /**
+   * Propose a change to an executing goal's plan. Who proposes decides approval, not access:
+   * no agent id is a person, whose revision applies at once; the goal's Lead waits for a
+   * person unless plans auto-approve. The Manager makes that approval, never the service, and
+   * the reply waits for it, so it shows the decided revision.
+   */
+  async revisePlan(goalId: string, input: PlanRevisionInput, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "plan.revision_proposed", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    const goal = this.requireManaged(goalId, "revise");
+    const source = revisionSource(goal, input.agentId);
+    const ops = revisionOps(goal, input);
+    validatePlanRevision(goal, ops, source);
+    const specs = ops.flatMap((op) => (op.op === "remove" ? [] : [op.task]));
+    await this.activity?.checkPlanSpecs?.(goal, specs);
+    // Prefixed so it never matches an id the Manager derives from a task and attempt.
+    const revisionId = `rev-${eventId ?? randomUUID()}`;
+    await this.dispatch(goalId, eventId, {
+      type: "plan.revision_proposed",
+      revisionId,
+      source,
+      reason: input.reason.trim(),
+      ops,
+    });
+    await this.store.whenIdle(goalId);
+    await this.ensureDecided(goalId, revisionId);
+    return this.requireGoal(goalId);
+  }
+
+  /**
+   * A revision that needs no approval is decided by the Manager as it is recorded. If it is
+   * still pending (that reaction failed), ask once more, and otherwise say so rather than
+   * report success for a change that is not applied.
+   */
+  private async ensureDecided(goalId: string, revisionId: string): Promise<void> {
+    const pending = () => {
+      const goal = this.requireGoal(goalId);
+      const revision = goal.planRevisions?.find((r) => r.id === revisionId);
+      return revision?.status === "pending" && !revisionNeedsApproval(goal.config, revision.source);
+    };
+    if (!pending()) return;
+    await this.activity?.approveRevisionNow?.(goalId, revisionId);
+    if (pending()) {
+      throw new Error(
+        `Plan revision ${revisionId} was recorded but not applied; it is approved when the daemon restarts`,
+      );
+    }
+  }
+
+  /** A person approves a revision held for approval. */
+  async approvePlanRevision(goalId: string, revisionId: string, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "plan.revision_approved", revisionId, eventId)) {
+      return this.requireGoal(goalId);
+    }
+    this.requirePendingRevision(goalId, revisionId);
+    return this.dispatch(goalId, eventId, {
+      type: "plan.revision_approved",
+      revisionId,
+      target: revisionId,
+    });
+  }
+
+  /** A person rejects a revision held for approval; the plan stays as it was. */
+  async rejectPlanRevision(
+    goalId: string,
+    revisionId: string,
+    feedback: string | undefined,
+    eventId?: string,
+  ): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "plan.revision_rejected", revisionId, eventId)) {
+      return this.requireGoal(goalId);
+    }
+    this.requirePendingRevision(goalId, revisionId);
+    return this.dispatch(goalId, eventId, {
+      type: "plan.revision_rejected",
+      revisionId,
+      reason: feedback?.trim() ?? "",
+      target: revisionId,
+    });
+  }
+
+  private requirePendingRevision(goalId: string, revisionId: string): void {
+    const revision = this.requireGoal(goalId).planRevisions?.find((r) => r.id === revisionId);
+    if (!revision) {
+      throw new Error(`Plan revision ${revisionId} not found in goal ${goalId}`);
+    }
+    if (revision.status !== "pending") {
+      throw new Error(
+        `Plan revision ${revisionId} is ${revision.status}; only a pending one can be decided`,
+      );
+    }
   }
 
   /** A person releases a reviewed change set that is held for human approval. */
@@ -342,14 +501,30 @@ export class GoalService {
    * Retry one failed or cancelled task, or all of them. A failed goal is reopened,
    * and then every failed and cancelled task is retried whichever one is named. A goal
    * that failed while planning has no tasks; it is reopened and a fresh Lead plans.
+   * `timeMode` restarts the time limit (see GOAL_TIME_MODES); the reducer checks it.
    */
-  async retry(goalId: string, taskId: string | undefined, eventId?: string): Promise<Goal> {
+  async retry(
+    goalId: string,
+    taskId: string | undefined,
+    eventId?: string,
+    timeMode?: string,
+    guidanceInput: GuidanceInput = {},
+  ): Promise<Goal> {
     if (await this.retriedBefore(goalId, taskId, eventId)) return this.requireGoal(goalId);
+    const guidance = guidanceChanges(guidanceInput);
+    if (guidance) refuseAgent(guidanceInput.agentId, "give guidance");
     const goal = this.requireManaged(goalId, "retry");
+    refuseWhileRecovering(goal);
+    const time = await this.retryTime(goalId, timeMode);
     if (goal.status === "failed" && goal.tasks.length === 0) {
       if (taskId) throw new Error(`Task ${taskId} not found in goal ${goalId}`);
+      if (guidance) {
+        throw new Error(
+          `Goal ${goalId} failed before it had a plan, so there are no workers to guide; retry without guidance`,
+        );
+      }
       this.requireSettled(goalId);
-      return this.dispatch(goalId, eventId, { type: "goal.reopened" });
+      return this.dispatch(goalId, eventId, { type: "goal.reopened", ...time });
     }
     const retryable = retryableTaskIds(goal, taskId);
     const reopen = goal.status === "failed";
@@ -365,11 +540,17 @@ export class GoalService {
     }
     if (reopen) this.requireSettled(goalId);
     if (remerge.length > 0) {
+      if (guidance) {
+        throw new Error(
+          `This retry merges again ${remerge.join(", ")}, which takes no guidance; retry without it, or recover the goal: paseo goal recover ${goalId}`,
+        );
+      }
       return this.dispatch(goalId, eventId, {
         type: "changeset.integration_retried",
         changeSetIds: remerge,
         taskIds: retryable,
         target: "",
+        ...time,
       });
     }
     return this.dispatch(goalId, eventId, {
@@ -377,7 +558,188 @@ export class GoalService {
       taskIds: reopen || !taskId ? retryable : [taskId],
       reopen,
       target: taskId ?? "",
+      ...time,
+      ...(guidance ? { guidance } : {}),
     });
+  }
+
+  /**
+   * A person asks the goal's Lead to recover a failed goal. The goal stays failed while a fresh
+   * Lead decides; the Manager starts it and applies its decision. `timeMode` restarts the time
+   * limit when the recovery applies; with `remaining`, the time the goal ran is read from its
+   * log now and recorded. Refused when an agent asks.
+   */
+  async startRecovery(goalId: string, input: RecoveryStartInput, eventId?: string): Promise<Goal> {
+    if (await this.alreadyApplied(goalId, "recovery.started", "", eventId)) {
+      return this.requireGoal(goalId);
+    }
+    refuseAgent(input.agentId, "start a recovery");
+    const goal = this.requireManaged(goalId, "recover");
+    refuseWhileRecovering(goal);
+    if (goal.status === "failed") {
+      this.requireSettled(goalId, "recover");
+      // Checked before anything is recorded, so a broken worktree is refused, not counted as a
+      // recovery that ended at once. The Manager checks again after a restart and before applying.
+      const problem = await this.activity?.integrationProblem?.(goal);
+      if (problem) throw new Error(problem);
+    }
+    const time = await this.retryTime(goalId, input.timeMode);
+    const guidance = guidanceChanges(input);
+    // The seq the event takes: unique in the goal, and never an id a revision or task uses.
+    const recoveryId = `rec-${goal.lastSeq + 1}`;
+    const { goal: started } = await this.store.dispatch(goalId, {
+      id: eventId
+        ? clientEventId("recovery.started", "", eventId)
+        : `${goalId}:recovery:${goal.lastSeq}`,
+      goalId,
+      type: "recovery.started",
+      recoveryId,
+      startedBy: "person",
+      ...time,
+      ...(guidance ? { guidance } : {}),
+    });
+    return started;
+  }
+
+  /**
+   * A person decides a recovery whose revise waits for approval. An approval checks the
+   * integration worktree again, then applies; a problem there or a refused apply ends the
+   * recovery for a person, counted only when the Lead's decision no longer fits the goal.
+   */
+  async decideRecovery(
+    goalId: string,
+    input: RecoveryDecisionInput,
+    eventId?: string,
+  ): Promise<Goal> {
+    const { recoveryId } = input;
+    if (
+      (await this.alreadyApplied(goalId, "recovery.resolved", recoveryId, eventId)) ||
+      (await this.alreadyApplied(goalId, "recovery.resolved", `${recoveryId}:refused`, eventId))
+    ) {
+      return this.requireGoal(goalId);
+    }
+    refuseAgent(input.agentId, "decide a recovery");
+    const recovery = this.requireRecovery(goalId, recoveryId);
+    if (recovery.status !== "awaiting_approval") {
+      throw new Error(
+        `Recovery ${recoveryId} is ${recovery.status}; only a recovery waiting for approval can be approved or rejected`,
+      );
+    }
+    if (!input.approve) {
+      const reason = input.message?.trim();
+      return this.dispatch(goalId, eventId, {
+        type: "recovery.resolved",
+        recoveryId,
+        outcome: "rejected",
+        ...(reason ? { reason } : {}),
+        target: recoveryId,
+      });
+    }
+    if (!this.activity?.integrationProblem) {
+      throw new Error(
+        "The daemon cannot check the integration worktree yet; approve again in a moment",
+      );
+    }
+    const problem = await this.activity.integrationProblem(this.requireGoal(goalId));
+    if (problem) return this.refuseRecovery(goalId, recoveryId, problem, true, eventId);
+    try {
+      return await this.dispatch(goalId, eventId, {
+        type: "recovery.resolved",
+        recoveryId,
+        outcome: "applied",
+        ...recoveryTimeFields(recovery),
+        target: recoveryId,
+      });
+    } catch (error) {
+      if (!(error instanceof GoalTransitionError)) throw error;
+      const current = this.requireGoal(goalId);
+      if (current.recovery?.id !== recoveryId || current.recovery.status !== "awaiting_approval") {
+        throw error;
+      }
+      return this.refuseRecovery(
+        goalId,
+        recoveryId,
+        `The recovery could not be applied: ${error.message}`,
+        !decisionNoLongerFits(current, current.recovery),
+        eventId,
+      );
+    }
+  }
+
+  private refuseRecovery(
+    goalId: string,
+    recoveryId: string,
+    reason: string,
+    uncounted: boolean,
+    eventId: string | undefined,
+  ): Promise<Goal> {
+    return this.dispatch(goalId, eventId, {
+      type: "recovery.resolved",
+      recoveryId,
+      outcome: "needs_person",
+      reason,
+      ...(uncounted ? { uncounted: true } : {}),
+      target: `${recoveryId}:refused`,
+    });
+  }
+
+  /**
+   * A person stops a recovery that is deciding or waiting for approval; the goal stays failed.
+   * Refused while the Manager applies a decision.
+   */
+  async cancelRecovery(
+    goalId: string,
+    input: { recoveryId: string; agentId?: string },
+    eventId?: string,
+  ): Promise<Goal> {
+    const { recoveryId } = input;
+    if (await this.alreadyApplied(goalId, "recovery.resolved", recoveryId, eventId)) {
+      return this.requireGoal(goalId);
+    }
+    refuseAgent(input.agentId, "cancel a recovery");
+    const recovery = this.requireRecovery(goalId, recoveryId);
+    if (recovery.status === "applied" || recovery.status === "ended") {
+      throw new Error(
+        `Recovery ${recoveryId} already ended (${recovery.outcome ?? recovery.status}); there is nothing to cancel`,
+      );
+    }
+    return this.dispatch(goalId, eventId, {
+      type: "recovery.resolved",
+      recoveryId,
+      outcome: "cancelled",
+      target: recoveryId,
+    });
+  }
+
+  private requireRecovery(goalId: string, recoveryId: string): Recovery {
+    const recovery = this.requireManaged(goalId, "recover").recovery;
+    if (recovery?.id !== recoveryId) {
+      throw new Error(
+        recovery
+          ? `Recovery ${recoveryId} not found in goal ${goalId}; its latest recovery is ${recovery.id}`
+          : `Goal ${goalId} has no recovery`,
+      );
+    }
+    return recovery;
+  }
+
+  /**
+   * The time fields of a retry event. With `remaining`, the time the goal ran is read from
+   * its log now and recorded on the event, so replaying the log never recomputes it.
+   */
+  private async retryTime(
+    goalId: string,
+    timeMode: string | undefined,
+  ): Promise<{ timeMode?: string; activeMs?: number }> {
+    if (timeMode === undefined) return {};
+    if (timeMode !== "remaining") return { timeMode };
+    // Read before the event is appended, so a live goal's running time stops short of the
+    // event's own time by the few milliseconds the append takes; a stopped goal's is exact.
+    const activeMs = Math.round(goalActiveMs(await this.log.read(goalId), this.now()));
+    if (!Number.isFinite(activeMs)) {
+      throw new Error(`Goal ${goalId}'s running time could not be read from its log`);
+    }
+    return { timeMode, activeMs };
   }
 
   private async retriedBefore(
@@ -393,9 +755,9 @@ export class GoalService {
   }
 
   /** A failed goal is reopened only once the work it left stopping has ended. */
-  private requireSettled(goalId: string): void {
+  private requireSettled(goalId: string, verb = "retry"): void {
     if (this.activity?.hasLiveWork(goalId)) {
-      throw new Error("The goal's agents are still stopping; retry again in a moment");
+      throw new Error(`The goal's agents are still stopping; ${verb} again in a moment`);
     }
   }
 
@@ -504,6 +866,60 @@ function stableJson(value: unknown): string {
     inner && typeof inner === "object" && !Array.isArray(inner)
       ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => a.localeCompare(b)))
       : inner,
+  );
+}
+
+/**
+ * Who proposes: a person when no agent id is given, the Lead when it is the goal's Lead. The
+ * id is the caller's own claim, so it can only lower what it may do: a person's revision
+ * applies at once, the Lead's may wait for approval.
+ */
+function revisionSource(goal: Goal, agentId: string | undefined): PlanRevisionSource {
+  if (agentId === undefined) return "person";
+  if (goal.leadAgentId && agentId === goal.leadAgentId) return "lead";
+  throw new PlanRevisionError("Only the goal's Lead or a person can revise its plan.");
+}
+
+function revisionOps(goal: Goal, input: PlanRevisionInput): PlanRevisionOp[] {
+  if (input.ops && (input.tasks || input.remove)) {
+    throw new PlanRevisionError("Give ops, or tasks with remove, not both.");
+  }
+  if (input.ops) return input.ops;
+  if (!input.tasks) {
+    throw new PlanRevisionError("Give ops, or the desired plan as tasks with remove.");
+  }
+  return diffDesiredPlan(goal, input.tasks, input.remove ?? []);
+}
+
+/** The guidance a request changes, or undefined when it changes none. */
+function guidanceChanges(input: GuidanceInput): GuidanceChanges | undefined {
+  const tasks = input.tasks && Object.keys(input.tasks).length > 0 ? input.tasks : undefined;
+  if (input.prompt === undefined && !tasks) return undefined;
+  return {
+    ...(input.prompt === undefined ? {} : { goal: input.prompt }),
+    ...(tasks ? { tasks } : {}),
+  };
+}
+
+/**
+ * Only a person starts or steers a recovery. The agent id is the caller's own claim, so this
+ * stops an agent that says who it is; one that does not is treated as the person it acts for,
+ * as everywhere goals run with automation.manage.
+ */
+function refuseAgent(agentId: string | undefined, action: string): void {
+  if (agentId === undefined) return;
+  throw new Error(
+    `Only a person can ${action}; the request came from agent ${agentId}. Ask the person to run it.`,
+  );
+}
+
+/** A retry, a second recovery or a delete would race a recovery still open. */
+function refuseWhileRecovering(goal: Goal): void {
+  const live = liveRecovery(goal);
+  if (!live) return;
+  const state = live.status === "awaiting_approval" ? "waiting for approval" : live.status;
+  throw new Error(
+    `Recovery ${live.id} of goal ${goal.id} is ${state}; cancel the recovery first: paseo goal recover ${goal.id} --cancel`,
   );
 }
 

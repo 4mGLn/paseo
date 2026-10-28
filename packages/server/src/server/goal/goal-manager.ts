@@ -10,37 +10,81 @@ import type {
   Goal,
   GoalEvent,
   GoalEventInput,
+  LeadIntervention,
   NotificationTarget,
   Task,
   TaskSpec,
   TurnUsage,
   UsageRole,
 } from "@getpaseo/protocol/goal/types";
-import { goalRoleProvider, goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
+import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
+import {
+  CAPTURE_FAILED_PREFIX,
+  LEGACY_PERMISSION_FAILURE,
+  PENDING_PERMISSION_PREFIX,
+  PENDING_QUESTION_PREFIX,
+  RESUME_FAILED_PREFIX,
+  RUN_CANCELED_TEXT,
+  TIME_LIMIT_REACHED_PREFIX,
+  isPendingRequestFailure,
+} from "@getpaseo/protocol/goal/failure-wording";
 import {
   budgetExceeded,
   goalDeadlineMs,
   resolveLimits,
   systemClock,
+  taskRunTimeoutMs,
+  timeLimitEndMs,
   type Clock,
 } from "./goal-limits.js";
 import {
   GoalTransitionError,
   MAX_NOTIFICATION_ATTEMPTS,
   NOTIFICATION_BACKOFF_MS,
+  checkInCapError,
   countedFailures,
   isTerminalGoalStatus,
+  liveRecovery,
 } from "./goal-reducer.js";
+import { GoalRecoveries, integrationProblem, recoveryHandler } from "./goal-recovery.js";
 import type { GoalStore } from "./goal-store.js";
 import { ChangeSetPipeline } from "./change-set-pipeline.js";
 import type { GitPort } from "./git-ops.js";
-import { PlanParseError, extractPlan } from "./plan-extract.js";
 import {
-  GoalThinkingError,
-  assertThinkingOption,
-  thinkingInput,
-  type GoalModelCatalog,
-} from "./goal-thinking.js";
+  PlanParseError,
+  extractPlan,
+  type CheckInDecision,
+  type FailureDecision,
+} from "./plan-extract.js";
+import { GoalThinkingError, thinkingInput, type GoalModelCatalog } from "./goal-thinking.js";
+import {
+  LEAD_STOP_PREFIX,
+  LeadInterventions,
+  TURN_TIMEOUT_PREFIX,
+  dueWakeUp,
+  failureWakeUpHandler,
+  type WakeUp,
+  wakeUpsUnblocked,
+  type InterventionHandler,
+} from "./lead-intervention.js";
+import { CHECK_IN_TRIGGER, interventionClass } from "@getpaseo/protocol/goal/interventions";
+import {
+  isInterventionLive,
+  pendingRevision,
+  revisionNeedsApproval,
+  revisionTargets,
+} from "./plan-revision.js";
+import { PlanValidator } from "./plan-validator.js";
+import {
+  MAX_ACTIVITY_DIGEST_CHARS,
+  RunWatcher,
+  WATCH_POLL_MS,
+  checkInHandler,
+  nearBudget,
+  type CheckInContext,
+  type RunVerdict,
+  type TimelineCursor,
+} from "./run-watcher.js";
 import { buildReworkPrompt } from "./review.js";
 import {
   buildLeadNotification,
@@ -114,9 +158,20 @@ export interface ManagerAgentPort {
   runTurn(
     agentId: string,
     prompt: string,
-    options?: { permission?: TurnPermission | (() => TurnPermission); signal?: AbortSignal },
+    options?: {
+      permission?: TurnPermission | (() => TurnPermission);
+      signal?: AbortSignal;
+      /** Called once the agent layer has started the turn. */
+      onStarted?: () => void;
+    },
   ): Promise<TurnResult>;
   cancel(agentId: string): Promise<void>;
+  /**
+   * Resolves once the agent has no turn running, such as one a person started in its chat,
+   * so a turn can start without interrupting it. Rejects when `signal` aborts or the agent
+   * cannot be loaded.
+   */
+  waitUntilIdle(agentId: string, signal?: AbortSignal): Promise<void>;
   /**
    * Tell an agent something without waiting for it to answer. Resolves once the
    * agent layer has accepted the prompt; rejects with the reason it did not.
@@ -131,6 +186,25 @@ export interface ManagerAgentPort {
     agentId: string,
     permission: GoalPermissionPolicy,
   ): Promise<{ modeId: string; nextTurn: boolean } | null>;
+  /** Whether the agent has a turn running, such as one a person started in its chat. */
+  isBusy(agentId: string): Promise<boolean>;
+  /** Where the agent's timeline stands; null when it cannot be read. */
+  timelineCursor(agentId: string): Promise<TimelineCursor | null>;
+  /** The agent's recent activity as curated text, at most `maxChars`, newest kept. */
+  activityDigest(agentId: string, maxChars: number): Promise<string>;
+  /**
+   * Steer text into the agent's running turn, recorded in its timeline as a user message.
+   * Never replaces the turn: `unavailable` when the provider cannot take it or no turn runs.
+   */
+  steer(agentId: string, text: string): Promise<"steered" | "unavailable">;
+  /**
+   * Agents not archived whose labels include every one given, with their workspace. Absent
+   * when the agent layer cannot be searched; a recovery Lead orphaned by a crash between its
+   * creation and its lead.attached is then left in place.
+   */
+  findAgents?(
+    labels: Record<string, string>,
+  ): Promise<{ agentId: string; workspaceId: string | null }[]>;
   /** Provider ids a plan may name. */
   knownProviders(): string[];
   /** Model catalog a plan's thinking ids are checked against; absent accepts them. */
@@ -195,6 +269,17 @@ interface LiveRun {
   canceled: boolean;
   /** The permission policy its agent was started under. */
   policy?: GoalPermissionPolicy;
+  /** The commit its worktree started from, for the work summary a Lead wake-up shows. */
+  baseRef?: string;
+  /** Aborted when the Lead stops the run from a check-in; `stoppedBy` holds its reason. */
+  leadStop: AbortController;
+  stoppedBy?: string;
+  /** When the worker's turn started on the Manager's clock; its time limit counts from here. */
+  turnStartedAt?: number;
+  /** The worker turn's time limit. */
+  timeoutMs?: number;
+  /** When the Lead last tried to steer a message into the worker's turn. */
+  nudgedAt?: number;
 }
 
 interface LiveLead {
@@ -237,6 +322,32 @@ export class GoalManager {
   /** Notifications with an attempt in progress, so one is never sent twice at once. */
   private readonly delivering = new Set<string>();
   private readonly cancelGraceMs: number;
+  private readonly planValidator: PlanValidator;
+  private readonly interventions: LeadInterventions;
+  private readonly failureWakeUps: InterventionHandler<FailureDecision>;
+  private readonly checkIns: InterventionHandler<CheckInDecision>;
+  private readonly recoveryDecisions: InterventionHandler<string>;
+  private readonly recoveries: GoalRecoveries;
+  /** Goals whose ended recovery's Lead is still being stopped, with how many such stops run. */
+  private readonly stoppingRecoveries = new Map<string, number>();
+  private readonly watcher = new RunWatcher();
+  /** Each goal's poll of its running workers, while it has any. */
+  private readonly watchTimers = new Map<string, () => void>();
+  /** Goals with a poll in progress, so polls never overlap. */
+  private readonly watching = new Set<string>();
+  /** What the watcher saw for each check-in it asked for, keyed `<goal>:<intervention>`. */
+  private readonly checkInContexts = new Map<string, CheckInContext & { slot: string }>();
+  /**
+   * Runs whose wake-up the reducer refused although dueWakeUp found it due. They go on as
+   * without a wake-up, so the Manager never asks for the same refused wake-up again.
+   */
+  private readonly refusedWakeUps = new Set<string>();
+  /** The policy each failed run's agent started under, keyed `<goal>:<run>`. */
+  private readonly runPolicies = new Map<string, GoalPermissionPolicy>();
+  /** Failed tasks being retried or reported after a failure, per goal. */
+  private readonly continuing = new Map<string, number>();
+  /** Each goal's state before its latest event, to tell when deferred wake-ups may go. */
+  private readonly lastSeen = new Map<string, Goal>();
   private unsubscribe: (() => void) | null = null;
   private stopped = false;
 
@@ -250,6 +361,7 @@ export class GoalManager {
     this.readMaxConcurrentRuns = typeof cap === "function" ? cap : () => cap;
     this.clock = options.clock ?? systemClock;
     this.cancelGraceMs = options.cancelGraceMs ?? 30_000;
+    this.planValidator = new PlanValidator(options.agents);
     this.pipeline = new ChangeSetPipeline({
       store: options.store,
       agents: options.agents,
@@ -269,6 +381,46 @@ export class GoalManager {
         notifyLeadFinal: (goal, text) => this.track(this.notifyLeadFinal(goal, text)),
       },
     });
+    this.interventions = new LeadInterventions({
+      store: options.store,
+      agents: options.agents,
+      clock: this.clock,
+      logger: this.logger,
+      isStopped: () => this.stopped,
+      track: (work) => this.track(work),
+      runTurn: (goalId, agentId, prompt, onStarted) =>
+        this.leadTurn(goalId, agentId, prompt, onStarted),
+      turnEnded: (goalId) => this.resumeLeadNotifications(goalId),
+    });
+    this.failureWakeUps = failureWakeUpHandler({
+      goal: (goalId) => this.store.get(goalId),
+      record: (goalId, input) => this.record(goalId, input),
+      checkSpecs: (goal, specs) => this.planValidator.check(goal, specs),
+    });
+    this.checkIns = checkInHandler({
+      goal: (goalId) => this.store.get(goalId),
+      record: (goalId, input) => this.record(goalId, input),
+      steer: (goalId, runId, agentId, text) => this.steerRun(goalId, runId, agentId, text),
+      stoppable: (goalId, runId) => this.stoppable(goalId, runId),
+      stopRun: (goalId, runId, reason) => this.stopRun(goalId, runId, reason),
+      context: (goalId, interventionId) => this.checkInContexts.get(`${goalId}:${interventionId}`),
+      now: () => this.clock.now(),
+    });
+    this.recoveryDecisions = recoveryHandler({
+      goal: (goalId) => this.store.get(goalId),
+      record: (goalId, input) => this.record(goalId, input),
+      now: () => this.clock.now(),
+    });
+    this.recoveries = new GoalRecoveries({
+      store: options.store,
+      agents: options.agents,
+      workspaces: options.workspaces,
+      git: options.git,
+      logger: this.logger,
+      isStopped: () => this.stopped,
+      record: (goalId, input) => this.record(goalId, input),
+      discard: (agentId, workspaceId) => this.discard(agentId, workspaceId),
+    });
   }
 
   /** Begin reacting to events, then repair and resume every live goal. */
@@ -277,6 +429,7 @@ export class GoalManager {
     this.unsubscribe = this.store.subscribe((goal, event) => this.onEvent(goal, event));
     for (const goal of this.store.list()) {
       if (goal.config) this.policies.set(goal.id, goalPermissionPolicy(goal.config));
+      this.lastSeen.set(goal.id, goal);
     }
     for (const goal of this.store.list()) {
       if (goal.config && !isTerminalGoalStatus(goal.status)) {
@@ -284,7 +437,11 @@ export class GoalManager {
         // One goal's trouble must not keep the daemon, and every other goal, from starting.
         await this.recover(goal.id).catch(async (error) => {
           this.logger.error({ err: error, goalId: goal.id }, "Goal recovery failed");
-          await this.failGoal(goal.id, `Recovery failed: ${errorMessage(error)}`);
+          await this.failGoal(goal.id, `${RESUME_FAILED_PREFIX}: ${errorMessage(error)}`);
+        });
+      } else if (goal.config && goal.status === "failed" && goal.recovery) {
+        await this.resumeRecovery(goal.id).catch((error) => {
+          this.logger.error({ err: error, goalId: goal.id }, "Could not resume a goal's recovery");
         });
       }
     }
@@ -321,6 +478,10 @@ export class GoalManager {
     this.retries.clear();
     for (const cancel of this.notificationRetries.values()) cancel();
     this.notificationRetries.clear();
+    for (const cancel of this.watchTimers.values()) cancel();
+    this.watchTimers.clear();
+    // Decisions still open are asked again by the next start.
+    this.interventions.shutdown();
     this.pipeline.shutdown();
   }
 
@@ -404,10 +565,13 @@ export class GoalManager {
     agentId: string,
     prompt: string,
     usage: TurnUsageLabel,
+    runTimeoutMs?: number,
+    onStarted?: () => void,
+    stop?: AbortSignal,
   ): Promise<TurnResult> {
     // Keyed by the goal's position when the turn started: one agent never starts two turns there.
     const usageEventId = `${goalId}:usage:${agentId}:${this.store.get(goalId)?.lastSeq ?? 0}`;
-    const result = await this.timedTurn(goalId, agentId, prompt);
+    const result = await this.timedTurn(goalId, agentId, prompt, runTimeoutMs, onStarted, stop);
     if (!this.stopped) {
       await this.dispatch(goalId, {
         id: usageEventId,
@@ -424,9 +588,19 @@ export class GoalManager {
     return result;
   }
 
-  private async timedTurn(goalId: string, agentId: string, prompt: string): Promise<TurnResult> {
-    const config = this.store.get(goalId)?.config;
-    const { runTimeoutMs } = resolveLimits(config);
+  /**
+   * `timeoutMs` overrides the goal's run timeout, as a task's own limit does. Aborting `stop`
+   * cancels the turn as the time limit does, with the same grace before it is abandoned.
+   */
+  private async timedTurn(
+    goalId: string,
+    agentId: string,
+    prompt: string,
+    timeoutMs?: number,
+    onStarted?: () => void,
+    stop?: AbortSignal,
+  ): Promise<TurnResult> {
+    const runTimeoutMs = timeoutMs ?? resolveLimits(this.store.get(goalId)?.config).runTimeoutMs;
     const minutes = Math.round(runTimeoutMs / 60_000);
     const abort = new AbortController();
     let timedOut = false;
@@ -437,39 +611,54 @@ export class GoalManager {
     const abandoned = new Promise<TurnResult>((resolve) => {
       giveUp = resolve;
     });
-    const cancelTimer = this.clock.setTimeout(() => {
-      timedOut = true;
-      this.agents.cancel(agentId).catch((error) => {
-        this.logger.warn({ err: error, agentId }, "Failed to cancel a timed-out agent");
+    let graceArmed = false;
+    // The first cancel arms the grace period; a later one neither renames nor extends it.
+    const cancelWithGrace = (failure: string) => {
+      if (graceArmed) return;
+      graceArmed = true;
+      this.agents.cancel(agentId).catch((cause) => {
+        this.logger.warn({ err: cause, agentId }, "Failed to cancel an agent's turn");
       });
       cancelGrace = this.clock.setTimeout(() => {
         abort.abort();
-        giveUp({
-          outcome: "failed",
-          error: `Turn timed out after ${minutes} minutes and the agent did not stop`,
-        });
+        giveUp({ outcome: "failed", error: failure });
       }, this.cancelGraceMs);
+    };
+    const cancelTimer = this.clock.setTimeout(() => {
+      timedOut = true;
+      cancelWithGrace(`${TURN_TIMEOUT_PREFIX} ${minutes} minutes and the agent did not stop`);
     }, runTimeoutMs);
+    // A stop after the time limit fired changes nothing: the run fails as timed out.
+    const onStop = () => {
+      if (!timedOut) cancelWithGrace("The agent was stopped and did not stop");
+    };
+    if (stop?.aborted) onStop();
+    else stop?.addEventListener("abort", onStop, { once: true });
     const running = this.agents.runTurn(agentId, prompt, {
       // Under `auto` an agent may still ask; the request waits for a person as under `wait`.
       // Read on every poll: a goal switched to `fail`, or one that ended, ends a turn that is waiting.
+      // A failed goal whose recovery Lead is deciding is live for that Lead's turn.
       permission: () => {
         const goal = this.store.get(goalId);
-        if (!goal || isTerminalGoalStatus(goal.status)) return "fail";
+        if (!goal) return "fail";
+        const deciding = goal.status === "failed" && goal.recovery?.status === "deciding";
+        if (isTerminalGoalStatus(goal.status) && !deciding) return "fail";
         return goalPermissionPolicy(goal.config) === "fail" ? "fail" : "wait";
       },
       signal: abort.signal,
+      ...(onStarted ? { onStarted } : {}),
     });
     // If the turn is abandoned, its eventual outcome is of no interest.
     running.catch(() => {});
     try {
       const result = await Promise.race([running, abandoned]);
       return timedOut && result.outcome !== "failed"
-        ? { outcome: "failed", error: `Turn timed out after ${minutes} minutes` }
+        ? { outcome: "failed", error: `${TURN_TIMEOUT_PREFIX} ${minutes} minutes` }
         : result;
     } finally {
       cancelTimer();
       cancelGrace();
+      stop?.removeEventListener("abort", onStop);
       abort.abort();
     }
   }
@@ -490,10 +679,23 @@ export class GoalManager {
   }
 
   private onEvent(goal: Goal, event: GoalEvent): void {
+    const previous = this.lastSeen.get(goal.id);
+    this.lastSeen.set(goal.id, goal);
     if (!goal.config || this.stopped) return;
     const previousPolicy = this.policies.get(goal.id);
     this.policies.set(goal.id, goalPermissionPolicy(goal.config));
-    this.pipeline.onEvent(goal, event);
+    try {
+      this.pipeline.onEvent(goal, event);
+    } catch (error) {
+      // The store swallows a listener's throw; the reactions below must still run, or an
+      // approval or a pump this event needs is lost until the next restart.
+      this.logger.error(
+        { err: error, goalId: goal.id, type: event.type },
+        "Pipeline reaction failed",
+      );
+    }
+    this.onInterventionState(previous, goal);
+    this.onRecoveryState(previous, goal);
     switch (event.type) {
       case "goal.created":
         this.armDeadline(goal);
@@ -526,7 +728,9 @@ export class GoalManager {
         this.track(this.notifyOrigin(goal, "completed"));
         break;
       case "goal.cancelled":
-      case "goal.failed":
+      case "goal.failed": {
+        // Read now: by the time the work has stopped, a recovery may have given the goal a new Lead.
+        const lead = { agentId: goal.leadAgentId, workspaceId: goal.leadWorkspaceId };
         this.clearDeadline(goal.id);
         this.track(
           this.notifyOrigin(
@@ -536,9 +740,10 @@ export class GoalManager {
               : "cancelled",
           ),
         );
-        this.track(this.abortGoalWork(goal.id));
+        this.track(this.abortGoalWork(goal.id, lead));
         this.track(this.pipeline.abort(goal.id));
         break;
+      }
       default:
         this.onControlEvent(goal, event, previousPolicy);
         break;
@@ -568,13 +773,595 @@ export class GoalManager {
       this.track(this.resumeReopened(goal.id));
     } else if (event.type === "usage.recorded") {
       const overBudget = budgetExceeded(goal);
-      if (overBudget) this.track(this.failGoal(goal.id, overBudget));
+      // A failed goal takes only its recovery Lead's usage; an overrun ends that recovery.
+      if (overBudget && goal.status === "failed") {
+        if (liveRecovery(goal)) this.track(this.recoveries.endOverBudget(goal.id, overBudget));
+      } else if (overBudget) {
+        this.track(this.failGoal(goal.id, overBudget));
+      }
     } else if (event.type === "goal.reopened") {
       // A goal that failed while planning: a fresh Lead plans, as when it was created.
       this.armDeadline(goal);
       this.track(this.plan(goal.id));
     } else if (event.type === "goal.config_updated") {
       this.onConfigUpdated(goal, event.id, previousPolicy);
+    } else if (event.type === "intervention.requested") {
+      this.decideIntervention(goal, event.interventionId);
+    } else if (event.type === "intervention.resolved") {
+      this.onInterventionResolved(goal, event.interventionId);
+    } else if (
+      event.type === "recovery.started" ||
+      event.type === "recovery.decided" ||
+      event.type === "recovery.resolved"
+    ) {
+      this.onRecoveryEvent(goal, event);
+    } else {
+      this.onRevisionEvent(goal, event);
+    }
+  }
+
+  // ---- recovering a failed goal ---------------------------------------------
+
+  /**
+   * A recovery started gets its Lead; a decision the Manager may apply is applied; an applied one
+   * reopened the goal, which resumes as after a retry. Its end is handled by onRecoveryState.
+   */
+  private onRecoveryEvent(goal: Goal, event: GoalEvent): void {
+    if (event.type === "recovery.started") {
+      this.track(this.recoveries.begin(goal.id));
+    } else if (event.type === "recovery.decided" && goal.recovery?.status === "decided") {
+      this.track(this.recoveries.apply(goal.id));
+    } else if (event.type === "recovery.resolved" && goal.recovery?.status === "applied") {
+      this.armDeadline(goal);
+      this.track(this.resumeReopened(goal.id));
+    }
+  }
+
+  /**
+   * A recovery that ended without reopening the goal, whichever event ended it: tell the chat,
+   * stop and archive its Lead (the ids read now, never a later Lead's), and clear what it armed.
+   */
+  private onRecoveryState(previous: Goal | undefined, goal: Goal): void {
+    const before = previous?.recovery;
+    const after = goal.recovery;
+    if (goal.status !== "failed" || after?.status !== "ended" || before?.id !== after.id) return;
+    if (!liveRecovery(previous ?? {})) return;
+    this.endRecovery(goal);
+  }
+
+  private endRecovery(goal: Goal): void {
+    const recovery = goal.recovery;
+    if (!recovery) return;
+    const lead = {
+      agentId: recovery.leadAgentId ?? null,
+      workspaceId: recovery.leadWorkspaceId ?? null,
+    };
+    this.clearDeadline(goal.id);
+    this.clearWatch(goal.id);
+    this.track(
+      this.notifyOrigin(
+        goal,
+        `recovery ended: ${goal.failureReason ?? recovery.outcome ?? "unknown reason"}`,
+        `recovery-${recovery.id}-ended`,
+      ),
+    );
+    // Until its Lead is stopped and archived, a retry or a new recovery waits (hasLiveWork).
+    this.stoppingRecoveries.set(goal.id, (this.stoppingRecoveries.get(goal.id) ?? 0) + 1);
+    this.track(
+      this.abortGoalWork(goal.id, lead).finally(() => {
+        const left = (this.stoppingRecoveries.get(goal.id) ?? 1) - 1;
+        if (left > 0) this.stoppingRecoveries.set(goal.id, left);
+        else this.stoppingRecoveries.delete(goal.id);
+      }),
+    );
+    this.track(this.pipeline.abort(goal.id));
+  }
+
+  /**
+   * At start, a failed goal's recovery goes on from its state alone: a Lead is created (after
+   * releasing one a crash orphaned) or asked, an open decision is asked again or expires, a
+   * decided one is applied, and an ended one's Lead is released if it is still there. One
+   * waiting for approval waits for its person.
+   */
+  private async resumeRecovery(goalId: string): Promise<void> {
+    const goal = this.store.get(goalId);
+    const recovery = goal?.recovery;
+    if (!goal || goal.status !== "failed" || !recovery) return;
+    switch (recovery.status) {
+      case "deciding":
+        if (!recovery.leadAgentId) {
+          await this.recoveries.releaseOrphans(goalId, recovery.id);
+          this.track(this.recoveries.begin(goalId));
+        } else if (!recovery.interventionId) {
+          this.track(this.recoveries.begin(goalId));
+        } else {
+          this.decideIntervention(goal, recovery.interventionId);
+        }
+        break;
+      case "decided":
+        this.track(this.recoveries.apply(goalId));
+        break;
+      case "ended":
+        // An applied recovery's Lead became the goal's, and went with the goal's own ending.
+        if (recovery.outcome === "applied") break;
+        if (await this.recoveries.hasLeftovers(goalId, recovery)) this.endRecovery(goal);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Why the goal's integration worktree cannot take a recovery now, or null. */
+  integrationProblem(goal: Goal): Promise<string | null> {
+    return integrationProblem(goal, this.git);
+  }
+
+  // ---- Lead interventions -------------------------------------------------
+
+  /**
+   * A decision this event ended (decided, superseded, abandoned) stops its loop and the
+   * Manager's turn. Failure wake-ups it let go are asked first, before anything the event
+   * schedules, decided against this very state.
+   */
+  private onInterventionState(previous: Goal | undefined, goal: Goal): void {
+    try {
+      this.interventions.sync(goal);
+      if (previous && wakeUpsUnblocked(previous, goal)) this.wakeNext(goal);
+    } catch (error) {
+      // The store swallows a listener's throw; the reactions after this must still run.
+      this.logger.error({ err: error, goalId: goal.id }, "Lead intervention reaction failed");
+    }
+  }
+
+  /** The handler that decides an intervention of this kind; null for one this version leaves be. */
+  private handlerFor(intervention: LeadIntervention): InterventionHandler<unknown> | null {
+    switch (interventionClass(intervention)) {
+      case "failure":
+        return this.failureWakeUps;
+      case "check_in":
+        return this.checkIns as InterventionHandler<unknown>;
+      case "recovery":
+        return this.recoveryDecisions as InterventionHandler<unknown>;
+      case null:
+        return null;
+    }
+  }
+
+  /**
+   * Ask the Lead about an open intervention, in the background, with its kind's handler or the
+   * one given. Nothing here reads the goal's status: a later kind about a failed goal (recovery)
+   * passes its own handler and calls this for that goal.
+   */
+  private decideIntervention(
+    goal: Goal,
+    interventionId: string,
+    handler?: InterventionHandler<unknown>,
+  ): void {
+    const intervention = goal.interventions?.find((i) => i.id === interventionId);
+    const chosen = handler ?? (intervention ? this.handlerFor(intervention) : null);
+    if (!chosen || intervention?.status !== "open") return;
+    this.track(this.interventions.run(goal.id, interventionId, chosen));
+  }
+
+  /** Ask again about every open intervention of the goal, whatever its status. */
+  private resumeDecisions(goal: Goal): number {
+    const open = (goal.interventions ?? []).filter((i) => i.status === "open");
+    for (const intervention of open) this.decideIntervention(goal, intervention.id);
+    return open.length;
+  }
+
+  /**
+   * After the Lead's continue, or no usable answer, the failed task goes on as it would have
+   * without the wake-up: retried while attempts remain. After give_up the goal fails at once,
+   * so independent work does not keep running and spending.
+   */
+  private onInterventionResolved(goal: Goal, interventionId: string): void {
+    const intervention = goal.interventions?.find((i) => i.id === interventionId);
+    if (intervention && interventionClass(intervention) === "failure") {
+      const gaveUp = gaveUpReason(goal);
+      if (gaveUp) {
+        this.track(this.failGoal(goal.id, gaveUp));
+        return;
+      }
+      this.continueAfterDecision(goal, intervention);
+    }
+    this.track(this.pump(goal.id));
+  }
+
+  private continueAfterDecision(goal: Goal, intervention: LeadIntervention): void {
+    const goesOn =
+      intervention.outcome === "continue" ||
+      intervention.outcome === "expired" ||
+      intervention.outcome === "lead_unavailable" ||
+      intervention.outcome === "revision_rejected";
+    if (!goesOn || !intervention.taskId || !intervention.runId) return;
+    this.track(
+      this.continueAfterFailure(
+        goal.id,
+        intervention.taskId,
+        intervention.runId,
+        intervention.error,
+        false,
+      ),
+    );
+  }
+
+  /** The Lead turn of an intervention, with its usage recorded as the Lead's. */
+  private leadTurn(
+    goalId: string,
+    agentId: string,
+    prompt: string,
+    onStarted: () => void,
+  ): Promise<TurnResult> {
+    const config = this.store.get(goalId)?.config;
+    const thinking = config ? goalRoleThinking(config, "lead") : undefined;
+    const usage = { role: "lead" as const, ...(thinking ? { thinking } : {}) };
+    return this.turn(goalId, agentId, prompt, usage, undefined, onStarted);
+  }
+
+  /** Records an event; the reducer's refusal comes back as its message. */
+  private async record(goalId: string, input: GoalEventInput): Promise<string | null> {
+    try {
+      await this.store.dispatch(goalId, input);
+      return null;
+    } catch (error) {
+      if (error instanceof GoalTransitionError) {
+        this.logger.debug({ goalId, type: input.type, reason: error.message }, "Event refused");
+        return error.message;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Request the first failure wake-up that is due, and let failed tasks whose wake-up no
+   * longer applies go on as without one. Decided synchronously against `goal`, so it can run
+   * inside the store listener. Returns true when a wake-up was requested or is still due.
+   */
+  private wakeNext(goal: Goal, continueOthers = true): boolean {
+    // Not gated on leadInterventions: a task deferred before it was turned off goes on here.
+    if (goal.status !== "executing" || !goal.config) return false;
+    const policy = goalPermissionPolicy(goal.config);
+    for (const task of goal.tasks) {
+      if (task.status !== "failed" || task.rework) continue;
+      const run = goal.runs.findLast((r) => r.taskId === task.id);
+      // failRun still owns a run in flight: it reads the work summary and decides.
+      if (run && this.inFlight.has(`${goal.id}:${run.id}`)) continue;
+      const { error, waitsForPerson } = this.failureOf(goal, task, policy);
+      const wake = this.wakeUpFor(goal, task.id, waitsForPerson);
+      if (wake === "deferred") return true;
+      if (wake === "woken") continue;
+      if (wake === null) {
+        if (continueOthers && run) {
+          this.track(this.continueAfterFailure(goal.id, task.id, run.id, error, waitsForPerson));
+        }
+        continue;
+      }
+      this.track(this.requestWakeUp(goal.id, task, error, wake.trigger));
+      return true;
+    }
+    return false;
+  }
+
+  /** Record a failure wake-up; if the reducer refuses it, the task goes on as without one. */
+  private async requestWakeUp(
+    goalId: string,
+    task: Task,
+    error: string,
+    trigger: string,
+    workSummary?: string,
+  ): Promise<void> {
+    const run = this.store.get(goalId)?.runs.findLast((r) => r.taskId === task.id);
+    if (!run) return;
+    const interventionId = `${task.id}-a${task.attempts}`;
+    const refusal = await this.record(goalId, {
+      id: `${goalId}:intervention:${interventionId}`,
+      goalId,
+      type: "intervention.requested",
+      interventionId,
+      taskId: task.id,
+      runId: run.id,
+      trigger,
+      error,
+      ...(workSummary === undefined ? {} : { workSummary }),
+    });
+    if (refusal === null || this.stopped) return;
+    const goal = this.store.get(goalId);
+    if (!goal) return;
+    const wake = this.wakeUpFor(goal, task.id, false);
+    // Another wake-up or a revision got in first: this one waits its turn.
+    if (wake === "deferred" || wake === "woken") return;
+    // The reducer disagrees with dueWakeUp. Asking again would be refused again, forever:
+    // this run goes on as without a wake-up.
+    const key = `${goalId}:${run.id}`;
+    if (!this.refusedWakeUps.has(key)) {
+      this.refusedWakeUps.add(key);
+      this.logger.warn({ goalId, taskId: task.id, reason: refusal }, "Lead wake-up refused");
+    }
+    await this.continueAfterFailure(goalId, task.id, run.id, error, false);
+  }
+
+  /** A failed task's last error, and whether it waits for a person rather than the Lead. */
+  private failureOf(
+    goal: Goal,
+    task: Task,
+    policy: GoalPermissionPolicy,
+  ): { error: string; waitsForPerson: boolean } {
+    const run = goal.runs.findLast((r) => r.taskId === task.id);
+    const error = lastRunError(goal, task.id) ?? task.error ?? "";
+    // As in failRun: a request waits for a person only under the policy the run started with.
+    const started = run ? (this.runPolicies.get(`${goal.id}:${run.id}`) ?? policy) : policy;
+    return { error, waitsForPerson: isPendingRequestFailure(error) && started === policy };
+  }
+
+  /** dueWakeUp, except for a run whose wake-up the reducer refused in this process. */
+  private wakeUpFor(goal: Goal, taskId: string, waitsForPerson: boolean): WakeUp {
+    const run = goal.runs.findLast((r) => r.taskId === taskId);
+    if (run && this.refusedWakeUps.has(`${goal.id}:${run.id}`)) return null;
+    return dueWakeUp(goal, taskId, waitsForPerson);
+  }
+
+  // ---- watching running workers --------------------------------------------
+
+  /** Poll the goal's running workers every WATCH_POLL_MS while it has any. */
+  private armWatch(goalId: string): void {
+    if (this.stopped || this.watchTimers.has(goalId)) return;
+    const cancel = this.clock.setTimeout(() => {
+      this.watchTimers.delete(goalId);
+      if (this.stopped) return;
+      if (this.liveRunsFor(goalId) === 0 || !this.isGoalLive(goalId)) {
+        this.watcher.forgetGoal(goalId);
+        return;
+      }
+      this.armWatch(goalId);
+      this.track(this.watchRuns(goalId));
+    }, WATCH_POLL_MS);
+    this.watchTimers.set(goalId, cancel);
+  }
+
+  private clearWatch(goalId: string): void {
+    this.watchTimers.get(goalId)?.();
+    this.watchTimers.delete(goalId);
+    this.watcher.forgetGoal(goalId);
+    for (const key of this.checkInContexts.keys()) {
+      if (key.startsWith(`${goalId}:`)) this.checkInContexts.delete(key);
+    }
+  }
+
+  private forgetWatchedRun(slot: string): void {
+    this.watcher.forget(slot);
+    for (const [key, context] of this.checkInContexts) {
+      if (context.slot === slot) this.checkInContexts.delete(key);
+    }
+  }
+
+  /**
+   * Why no check-in may be asked for now, or null. Failure wake-ups come first, a Lead in a
+   * turn is never queued for (the check-in is skipped, not deferred), and a goal close to a
+   * budget spends nothing more on watching.
+   */
+  private watchBlocked(goal: Goal): string | null {
+    if (goal.status !== "executing" || !goal.config?.leadInterventions || !goal.leadAgentId) {
+      return "off";
+    }
+    if (
+      (goal.interventions ?? []).some(isInterventionLive) ||
+      this.interventions.hasLive(goal.id)
+    ) {
+      return "an intervention is live";
+    }
+    if (pendingRevision(goal)) return "a revision is pending";
+    if (nearBudget(goal)) return "usage is near a budget";
+    const policy = goalPermissionPolicy(goal.config);
+    for (const task of goal.tasks) {
+      if (task.status !== "failed" || task.rework) continue;
+      const wake = this.wakeUpFor(goal, task.id, this.failureOf(goal, task, policy).waitsForPerson);
+      if (wake === "deferred" || (wake !== null && wake !== "woken")) {
+        return "a failure wake-up is due";
+      }
+    }
+    return null;
+  }
+
+  private async watchRuns(goalId: string): Promise<void> {
+    if (this.watching.has(goalId)) return;
+    this.watching.add(goalId);
+    try {
+      await this.watchRunsNow(goalId);
+    } finally {
+      this.watching.delete(goalId);
+    }
+  }
+
+  /**
+   * One poll: read every live run of the goal, then ask for at most one check-in, about the
+   * first run a rule fired for. Nothing is asked while the runs are healthy.
+   */
+  private async watchRunsNow(goalId: string): Promise<void> {
+    const goal = this.store.get(goalId);
+    if (!goal?.config?.leadInterventions || goal.status !== "executing") return;
+    const now = this.clock.now();
+    const due: DueCheckIn[] = [];
+    for (const [slot, live] of this.inFlight) {
+      // Not judged until its turn started: the time limit counts from there.
+      if (live.goalId !== goalId || !live.agentId || live.canceled) continue;
+      if (live.turnStartedAt === undefined) continue;
+      const runId = slot.slice(goalId.length + 1);
+      const run = goal.runs.find((r) => r.id === runId);
+      const task = goal.tasks.find((t) => t.id === run?.taskId);
+      if (!run || run.status !== "running" || !task) continue;
+      const cursor = await this.agents.timelineCursor(live.agentId).catch(() => null);
+      const verdict = this.watcher.evaluate(
+        slot,
+        {
+          startedAtMs: live.turnStartedAt,
+          timeoutMs: live.timeoutMs ?? taskRunTimeoutMs(goal, task),
+          cursor,
+        },
+        now,
+      );
+      if (verdict.triggers.length > 0 && !checkInCapError(goal, runId)) {
+        due.push({ slot, live, runId, verdict, cursor });
+      }
+    }
+    const first = due[0];
+    if (!first || this.watchBlocked(goal) || !goal.leadAgentId) return;
+    if (await this.agents.isBusy(goal.leadAgentId).catch(() => true)) return;
+    await this.requestCheckIn(goalId, first);
+  }
+
+  /** Ask the Lead about one run: what it did lately, and what it changed so far. */
+  private async requestCheckIn(goalId: string, due: DueCheckIn): Promise<void> {
+    const { slot, live, runId, verdict, cursor } = due;
+    const agentId = live.agentId as string;
+    const activity = await this.agents
+      .activityDigest(agentId, MAX_ACTIVITY_DIGEST_CHARS)
+      .catch((error) => `(activity unavailable: ${errorMessage(error)})`);
+    const workSummary = live.cwd
+      ? await this.git
+          .workSummary({
+            cwd: live.cwd,
+            ...(live.baseRef ? { baseCommit: live.baseRef } : {}),
+            timeoutMs: 10_000,
+          })
+          .catch((error) => `(work summary unavailable: ${errorMessage(error)})`)
+      : undefined;
+    // Things move while git runs: look again before asking.
+    const goal = this.store.get(goalId);
+    if (this.stopped || !goal || this.watchBlocked(goal) || live.canceled) return;
+    const checkIn =
+      (goal.interventions ?? []).filter(
+        (i) => interventionClass(i) === "check_in" && i.runId === runId,
+      ).length + 1;
+    const interventionId = `${runId}:check-${checkIn}`;
+    const key = `${goalId}:${interventionId}`;
+    // Set before the request: its listener starts the Lead's turn, which reads it.
+    this.checkInContexts.set(key, {
+      slot,
+      triggers: verdict.triggers,
+      elapsedMs: this.clock.now() - (live.turnStartedAt ?? this.clock.now()),
+      quietMs: verdict.quietMs,
+      ...(verdict.runningTool ? { runningTool: verdict.runningTool } : {}),
+      activity,
+      ...(cursor?.lastError ? { lastError: cursor.lastError } : {}),
+    });
+    const taskId = goal.runs.find((r) => r.id === runId)?.taskId;
+    const refusal = await this.record(goalId, {
+      id: `${goalId}:intervention:${interventionId}`,
+      goalId,
+      type: "intervention.requested",
+      interventionId,
+      ...(taskId ? { taskId } : {}),
+      runId,
+      trigger: CHECK_IN_TRIGGER,
+      triggers: verdict.triggers,
+      checkIn,
+      error: "",
+      ...(workSummary === undefined ? {} : { workSummary }),
+    });
+    // Refused (the run ended, a cap, another intervention got in first): skipped this poll.
+    if (refusal !== null) {
+      this.checkInContexts.delete(key);
+      return;
+    }
+    this.watcher.checkedIn(slot, verdict.triggers);
+  }
+
+  /** A run's worker turn is live here and inside its time limit, so a stop is what ends it. */
+  private stoppable(goalId: string, runId: string): boolean {
+    const live = this.inFlight.get(`${goalId}:${runId}`);
+    if (!live || live.turnStartedAt === undefined || live.timeoutMs === undefined) return false;
+    return this.clock.now() - live.turnStartedAt < live.timeoutMs;
+  }
+
+  /** The Lead's nudge; the attempt is noted even when refused, since a provider may queue it. */
+  private steerRun(
+    goalId: string,
+    runId: string,
+    agentId: string,
+    text: string,
+  ): Promise<"steered" | "unavailable"> {
+    const live = this.inFlight.get(`${goalId}:${runId}`);
+    if (live) live.nudgedAt = this.clock.now();
+    return this.agents.steer(agentId, text);
+  }
+
+  /** The Lead stopped a run from a check-in: cancel its worker, which then fails with the reason. */
+  private stopRun(goalId: string, runId: string, reason: string): void {
+    const live = this.inFlight.get(`${goalId}:${runId}`);
+    if (!live || live.stoppedBy !== undefined || !this.stoppable(goalId, runId)) return;
+    live.stoppedBy = reason;
+    live.leadStop.abort();
+  }
+
+  /**
+   * The Manager is the only one that approves a revision on its own: a person's at once, the
+   * Lead's when plans auto-approve. The service only proposes, so the two never race.
+   */
+  private onRevisionEvent(goal: Goal, event: GoalEvent): void {
+    if (event.type === "plan.revision_proposed") {
+      if (!revisionNeedsApproval(goal.config, event.source)) {
+        // Called synchronously, so the approval is queued before the proposer's dispatch returns.
+        this.track(this.approveRevision(goal.id, event.revisionId));
+      }
+    } else if (event.type === "plan.revision_approved") {
+      const revision = goal.planRevisions?.find((r) => r.id === event.revisionId);
+      // A retry still backing off would start the old spec, or a task that is gone.
+      for (const taskId of revisionTargets(revision?.ops ?? [])) this.cancelRetry(goal.id, taskId);
+      this.track(this.pump(goal.id));
+    } else if (event.type === "plan.revision_rejected") {
+      // A rejected answer to a wake-up leaves its task failed: it goes on as after continue.
+      const revision = goal.planRevisions?.find((r) => r.id === event.revisionId);
+      const answered = goal.interventions?.find((i) => i.id === revision?.interventionId);
+      if (answered) this.continueAfterDecision(goal, answered);
+      // settleIfStuck waited for the decision; the goal may now complete or fail.
+      this.track(this.pump(goal.id));
+    }
+  }
+
+  /**
+   * Approve a pending revision. When the reducer refuses (verification started, the run limit
+   * is used up, the plan changed underneath it), the refusal is recorded as the rejection, so
+   * the goal never waits on a revision nobody will decide.
+   */
+  private async approveRevision(goalId: string, revisionId: string): Promise<void> {
+    try {
+      await this.store.dispatchOrElse(
+        goalId,
+        {
+          id: `${goalId}:revision-approve:${revisionId}`,
+          goalId,
+          type: "plan.revision_approved",
+          revisionId,
+        },
+        (reason) => ({
+          id: `${goalId}:revision-reject:${revisionId}`,
+          goalId,
+          type: "plan.revision_rejected",
+          revisionId,
+          reason,
+        }),
+      );
+    } catch (error) {
+      // The goal ended, or the revision was decided, while this was queued.
+      if (!(error instanceof GoalTransitionError)) throw error;
+      this.logger.debug({ goalId, revisionId, reason: error.message }, "Revision approval dropped");
+    }
+  }
+
+  /**
+   * Approve a revision that needs no approval, for a caller that found it still pending after
+   * the automatic approval should have run. Throws what made that approval fail.
+   */
+  async approveRevisionNow(goalId: string, revisionId: string): Promise<void> {
+    await this.approveRevision(goalId, revisionId);
+  }
+
+  /** Approve the pending revision when it needs no approval under the current settings. */
+  private approvePendingRevision(goal: Goal): void {
+    const revision = pendingRevision(goal);
+    if (revision && !revisionNeedsApproval(goal.config, revision.source)) {
+      this.track(this.approveRevision(goal.id, revision.id));
     }
   }
 
@@ -603,6 +1390,8 @@ export class GoalManager {
         }),
       );
     } else if (goal.status === "executing") {
+      // Turning on autoApprovePlan approves a Lead revision that waits, as it does a plan.
+      this.approvePendingRevision(goal);
       // A higher maxParallel may let more tasks start.
       this.track(this.pump(goal.id));
     }
@@ -749,11 +1538,11 @@ export class GoalManager {
       try {
         const tasks = extractPlan(
           result.text,
-          this.providersFor(goal),
+          this.planValidator.providersFor(goal),
           // Read now: the limit may have been changed while the Lead was planning.
           resolveLimits(this.store.get(goal.id)?.config ?? goal.config).maxTasks,
         );
-        await this.checkPlanThinking(goal, tasks);
+        await this.planValidator.checkThinking(goal, tasks);
         await this.dispatch(goal.id, {
           id: `${goal.id}:plan-proposed:${goal.lastSeq}:${attempt}`,
           goalId: goal.id,
@@ -770,26 +1559,12 @@ export class GoalManager {
     await this.failGoal(goal.id, `Lead did not produce a valid plan: ${problem}`);
   }
 
-  /** A task's thinking id must be one its model lists, when the catalog knows the model. */
-  private async checkPlanThinking(goal: Goal, tasks: readonly TaskSpec[]): Promise<void> {
-    if (!goal.config) return;
-    for (const task of tasks) {
-      if (!task.thinking) continue;
-      await assertThinkingOption({
-        catalog: this.agents.modelCatalog,
-        providerValue: goalRoleProvider(goal.config, "worker", task),
-        thinking: task.thinking,
-        cwd: goal.config.cwd,
-        field: `Task ${task.id} thinking`,
-      });
-    }
-  }
-
-  /** Providers a plan may name: the registered ones, narrowed by the goal's allow-list. */
-  private providersFor(goal: Goal): string[] {
-    const allowed = goal.config?.allowedProviders;
-    const known = this.agents.knownProviders();
-    return allowed ? known.filter((p) => allowed.includes(p)) : known;
+  /**
+   * The checks a revision's added and replaced specs need beyond the reducer's: providers and
+   * thinking ids. The service runs them before it proposes. Throws PlanRevisionError.
+   */
+  checkPlanSpecs(goal: Goal, specs: readonly TaskSpec[]): Promise<void> {
+    return this.planValidator.check(goal, specs);
   }
 
   // ---- execution --------------------------------------------------------
@@ -832,10 +1607,21 @@ export class GoalManager {
     return run;
   }
 
-  /** Ready tasks whose implement dependencies are already on the integration branch. */
+  /**
+   * Ready tasks whose implement dependencies are already on the integration branch. A task a
+   * pending revision replaces or removes waits for the decision.
+   */
   private launchable(goal: Goal): Task[] {
-    return readyTasks(goal.tasks).filter((task) =>
-      this.pipeline.dependenciesIntegrated(goal, task),
+    const revising = revisionTargets(pendingRevision(goal)?.ops ?? []);
+    // A task the Lead is deciding about waits for that decision.
+    const deciding = new Set(
+      (goal.interventions ?? []).filter(isInterventionLive).map((i) => i.taskId),
+    );
+    return readyTasks(goal.tasks).filter(
+      (task) =>
+        !revising.has(task.id) &&
+        !deciding.has(task.id) &&
+        this.pipeline.dependenciesIntegrated(goal, task),
     );
   }
 
@@ -861,16 +1647,21 @@ export class GoalManager {
       ) {
         break;
       }
-      await this.launch(goalId, task);
+      await this.launch(goalId, task.id);
     }
 
     const latest = this.store.get(goalId);
     if (latest) await this.settleIfStuck(latest);
   }
 
-  private async launch(goalId: string, task: Task): Promise<void> {
+  private async launch(goalId: string, taskId: string): Promise<void> {
     const goal = this.store.get(goalId);
     if (!goal?.config) return;
+    // The pump picked its tasks before earlier launches awaited; a revision applied since may
+    // have changed, removed or held this one. Read it again, synchronously up to task.started,
+    // so the run starts on the spec the reducer accepts it under.
+    const task = this.launchable(goal).find((t) => t.id === taskId);
+    if (!task) return;
     const { maxRuns } = resolveLimits(goal.config);
     if (goal.runs.length >= maxRuns) {
       await this.failGoal(goalId, `Run limit of ${maxRuns} reached`);
@@ -891,6 +1682,7 @@ export class GoalManager {
       ownsWorkspace: !task.rework,
       disposable: task.kind !== "implement",
       canceled: false,
+      leadStop: new AbortController(),
     };
     // Run ids are only unique within a goal, so the slot key includes the goal.
     const slot = `${goalId}:${runId}`;
@@ -919,9 +1711,11 @@ export class GoalManager {
       this.inFlight.delete(slot);
       throw error;
     }
+    this.armWatch(goalId);
     this.track(
       this.executeRun(goalId, task.id, runId, provider, live).finally(() => {
         this.inFlight.delete(slot);
+        this.forgetWatchedRun(slot);
         // A freed slot may unblock this goal or any other waiting for capacity.
         this.pumpAllExecuting();
       }),
@@ -948,6 +1742,7 @@ export class GoalManager {
       const workspace = await this.workspaceFor(goal, task);
       live.workspaceId = workspace.workspaceId;
       live.cwd = workspace.cwd;
+      if (workspace.baseRef) live.baseRef = workspace.baseRef;
       if (!alive()) return await this.abandon(live, this.stopped);
 
       live.policy = goalPermissionPolicy(goal.config);
@@ -978,45 +1773,72 @@ export class GoalManager {
       });
       if (!attached || !alive()) return await this.abandon(live, this.stopped);
 
-      const result = await this.turn(goalId, agentId, this.promptFor(goal, task), {
-        role: "worker",
-        runId,
-        ...(thinking ? { thinking } : {}),
-      });
+      live.timeoutMs = taskRunTimeoutMs(this.store.get(goalId) ?? goal, task);
+      const result = await this.turn(
+        goalId,
+        agentId,
+        this.promptFor(goal, task),
+        { role: "worker", runId, ...(thinking ? { thinking } : {}) },
+        live.timeoutMs,
+        () => {
+          live.turnStartedAt = this.clock.now();
+        },
+        live.leadStop.signal,
+      );
       if (this.stopped) return;
       if (live.canceled || !this.isGoalLive(goalId)) return await this.abandon(live, false);
 
       if (result.outcome === "completed") {
+        await this.settleLateNudge(live, agentId);
         // The task is settled first: a crash after this point leaves a run that
         // recovery closes as succeeded, not a finished task that gets re-run.
         await this.completeRun(goalId, task, runId, live, result.text);
         return;
       }
       const policy = goalPermissionPolicy(this.store.get(goalId)?.config);
-      await this.failRun(goalId, taskId, runId, live, describeFailure(result, policy));
+      await this.failRun(
+        goalId,
+        taskId,
+        runId,
+        live,
+        withLeadStop(live, describeFailure(result, policy)),
+      );
     } catch (error) {
       if (this.stopped) return;
-      await this.failRun(goalId, taskId, runId, live, errorMessage(error));
+      await this.failRun(goalId, taskId, runId, live, withLeadStop(live, errorMessage(error)));
     }
+  }
+
+  /**
+   * A nudge accepted as the turn ends can start a follow-up turn (a provider may queue a steer
+   * for after the turn), which would change the worktree while its work is captured. A run that
+   * completes soon after a nudge has its agent cancelled first.
+   */
+  private async settleLateNudge(live: LiveRun, agentId: string): Promise<void> {
+    if (live.nudgedAt === undefined || this.clock.now() - live.nudgedAt >= NUDGE_SETTLE_MS) return;
+    await this.agents.cancel(agentId).catch((error) => {
+      this.logger.warn({ err: error, agentId }, "Failed to cancel a worker after a late nudge");
+    });
   }
 
   /** Reuse the worktree of the change a rework task fixes; otherwise make a new workspace. */
   private async workspaceFor(
     goal: Goal,
     task: Task,
-  ): Promise<{ workspaceId: string; cwd: string }> {
+  ): Promise<{ workspaceId: string; cwd: string; baseRef?: string }> {
     const changeSet = goal.changeSets.find((c) => c.id === task.rework?.changeSetId);
     if (changeSet) return { workspaceId: changeSet.workspaceId, cwd: changeSet.cwd };
     // Every task gets its own worktree, so an unattended agent never works in the
     // user's checkout. Read and review tasks get theirs too, at the latest integrated
     // commit so they see the work they are asked about. Commits are used, not the
     // branch name, which Paseo may rename.
-    return this.workspaces.create({
+    const created = await this.workspaces.create({
       cwd: goal.config?.cwd ?? "",
       isolation: "worktree",
       title: task.title,
       ...baseRefFor(goal),
     });
+    return { ...created, ...baseRefFor(goal) };
   }
 
   private promptFor(goal: Goal, task: Task): string {
@@ -1071,7 +1893,7 @@ export class GoalManager {
       if (!this.stopped) {
         await this.failGoal(
           goalId,
-          `Could not capture changes of ${task.id}: ${errorMessage(error)}`,
+          `${CAPTURE_FAILED_PREFIX} of ${task.id}: ${errorMessage(error)}`,
         );
       }
     } finally {
@@ -1129,39 +1951,95 @@ export class GoalManager {
       error,
     });
     const goal = this.store.get(goalId);
-    const task = goal?.tasks.find((t) => t.id === taskId);
     // A retry under the policy the agent ran with asks the same thing again: wait for a
     // person. A policy changed since then gets its retry, in the new mode.
-    const unchangedPolicy = live.policy === goalPermissionPolicy(goal?.config);
-    if (goal?.config && task && isPendingRequestFailure(error) && unchangedPolicy) {
+    const waitsForPerson =
+      isPendingRequestFailure(error) && live.policy === goalPermissionPolicy(goal?.config);
+    // A wake-up asked for later (it was deferred) reads the policy this run started under.
+    if (live.policy) this.runPolicies.set(`${goalId}:${runId}`, live.policy);
+    const wake = goal ? this.wakeUpFor(goal, taskId, waitsForPerson) : null;
+    const task = goal?.tasks.find((t) => t.id === taskId);
+    if (wake === null) {
+      await this.continueAfterFailure(goalId, taskId, runId, error, waitsForPerson);
+    } else if (typeof wake === "object" && task) {
+      // Read before the worktree is archived below; the Lead sees what the run left.
+      const workSummary = live.cwd
+        ? await this.git.workSummary({
+            cwd: live.cwd,
+            ...(live.baseRef ? { baseCommit: live.baseRef } : {}),
+          })
+        : undefined;
+      if (!this.stopped) await this.requestWakeUp(goalId, task, error, wake.trigger, workSummary);
+    }
+    // "deferred": the task stays failed and is woken about once the live decision ends.
+    // "woken": the Lead was already asked about this run; its decision says what follows.
+    await this.discard(live.agentId, live.ownsWorkspace ? live.workspaceId : null);
+  }
+
+  /**
+   * What follows a failed run without a Lead decision: a retry after the backoff while attempts
+   * remain, else a notice to the Lead. One that stopped on a request a person must answer
+   * under the same policy only notifies.
+   */
+  private async continueAfterFailure(
+    goalId: string,
+    taskId: string,
+    runId: string,
+    error: string,
+    waitsForPerson: boolean,
+  ): Promise<void> {
+    // Until the retry is recorded, the goal is not stuck: settleIfStuck counts this as work.
+    this.continuing.set(goalId, (this.continuing.get(goalId) ?? 0) + 1);
+    try {
+      await this.continueAfterFailureNow(goalId, taskId, runId, error, waitsForPerson);
+    } finally {
+      const left = (this.continuing.get(goalId) ?? 1) - 1;
+      if (left > 0) this.continuing.set(goalId, left);
+      else this.continuing.delete(goalId);
+      if (!this.stopped) this.track(this.pump(goalId));
+    }
+  }
+
+  private async continueAfterFailureNow(
+    goalId: string,
+    taskId: string,
+    runId: string,
+    error: string,
+    waitsForPerson: boolean,
+  ): Promise<void> {
+    const goal = this.store.get(goalId);
+    const task = goal?.tasks.find((t) => t.id === taskId);
+    if (!goal?.config || !task || task.status !== "failed") return;
+    if (waitsForPerson) {
       await this.notifyLeadOnce(
         goal,
         `task-${task.id}-needs-person-a${task.attempts}`,
         `task ${task.id} stopped: ${error}`,
       );
-    } else if (goal?.config && task) {
-      // Only attempts that failed count against the limit: a restart interrupts a
-      // run without the provider having failed.
-      const failed = countedFailures(goal, taskId);
-      if (failed < goal.config.maxAttempts) {
-        // Give a struggling provider a moment before trying again, longer each time.
-        await this.scheduleRetry(
-          goalId,
-          taskId,
-          runId,
-          resolveLimits(goal.config).retryBackoffMs * failed,
-        );
-      } else {
-        // A task retried by hand can fail for good again; that is a new notice.
-        const forgiven = task.forgivenFailures ?? 0;
-        await this.notifyLeadOnce(
-          goal,
-          `task-${task.id}-failed${forgiven > 0 ? `-after-${forgiven}` : ""}`,
-          `task ${task.id} failed after ${failed} attempts: ${error}`,
-        );
-      }
+      return;
     }
-    await this.discard(live.agentId, live.ownsWorkspace ? live.workspaceId : null);
+    // Only attempts that failed count against the limit: a restart interrupts a
+    // run without the provider having failed.
+    const failed = countedFailures(goal, taskId);
+    if (failed < goal.config.maxAttempts) {
+      // A retry already backing off is not scheduled twice.
+      if (this.retries.has(`${goalId}:${taskId}`)) return;
+      // Give a struggling provider a moment before trying again, longer each time.
+      await this.scheduleRetry(
+        goalId,
+        taskId,
+        runId,
+        resolveLimits(goal.config).retryBackoffMs * failed,
+      );
+      return;
+    }
+    // A task retried by hand can fail for good again; that is a new notice.
+    const forgiven = task.forgivenFailures ?? 0;
+    await this.notifyLeadOnce(
+      goal,
+      `task-${task.id}-failed${forgiven > 0 ? `-after-${forgiven}` : ""}`,
+      `task ${task.id} failed after ${failed} attempts: ${error}`,
+    );
   }
 
   /** Fail a goal that can make no more progress; tell the Lead when all work is done. */
@@ -1169,9 +2047,15 @@ export class GoalManager {
     if (goal.status !== "executing") return;
     // A run that is still finishing may yet retry its task.
     const retrying = [...this.retries.keys()].some((key) => key.startsWith(`${goal.id}:`));
-    const finishing = this.liveRunsFor(goal.id) > 0 || retrying;
+    const finishing = this.liveRunsFor(goal.id) > 0 || retrying || this.continuing.has(goal.id);
     const active = goal.tasks.some((t) => t.status === "running");
     if (finishing || active || this.launchable(goal).length > 0) return;
+    // A pending revision may add or restore work. Its approval or rejection pumps again.
+    if (pendingRevision(goal)) return;
+    // The Lead is deciding about a failed task; its decision pumps again.
+    if ((goal.interventions ?? []).some(isInterventionLive)) return;
+    // A wake-up due (one a restart left unrequested, or one just let go) is asked first.
+    if (this.wakeNext(goal, false)) return;
     // A rework that failed for good leaves its change unfixable; waiting would hang the goal.
     const deadRework = goal.tasks.find((t) => t.rework && t.status === "failed");
     if (deadRework) {
@@ -1199,31 +2083,39 @@ export class GoalManager {
         : "";
       await this.failGoal(
         goal.id,
-        `No task can make progress. Failed or blocked: ${ids}${request}`,
+        `No task can make progress. Failed or blocked: ${ids}${request}${gaveUpText(goal, failed)}`,
       );
     }
   }
 
-  /** The goal ended: stop every agent working for it, including one still being set up. */
-  private async abortGoalWork(goalId: string): Promise<void> {
+  /**
+   * The goal ended: stop every agent working for it, including one still being set up. `lead` is
+   * the Lead as the ending event left it, read synchronously: a recovery started meanwhile gives
+   * the goal a new Lead, which this must not stop.
+   */
+  private async abortGoalWork(
+    goalId: string,
+    lead: { agentId: string | null; workspaceId: string | null },
+  ): Promise<void> {
     const targets: (LiveRun | LiveLead)[] = [...this.inFlight.values()].filter(
       (r) => r.goalId === goalId,
     );
-    const lead = this.leads.get(goalId);
-    if (lead) targets.push(lead);
+    const planning = this.leads.get(goalId);
+    if (planning) targets.push(planning);
     this.cancelRetries(goalId);
+    this.clearWatch(goalId);
+    // Stops the decision timers and the Manager's own decision turn; the Lead is cancelled below.
+    this.interventions.abortGoal(goalId);
     for (const target of targets) target.canceled = true;
     await Promise.allSettled(
       targets.filter((t) => t.agentId).map((t) => this.agents.cancel(t.agentId as string)),
     );
     // The Lead outlives planning, so stop it by name rather than only by archiving its worktree.
-    const leadAgent = this.store.get(goalId)?.leadAgentId;
-    if (leadAgent && !targets.some((t) => t.agentId === leadAgent)) {
-      await this.agents.cancel(leadAgent).catch(() => undefined);
+    if (lead.agentId && !targets.some((t) => t.agentId === lead.agentId)) {
+      await this.agents.cancel(lead.agentId).catch(() => undefined);
     }
     // A finished goal's Lead worktree is no longer needed.
-    const leadWorkspace = this.store.get(goalId)?.leadWorkspaceId;
-    if (leadWorkspace) await this.discard(null, leadWorkspace);
+    if (lead.workspaceId) await this.discard(null, lead.workspaceId);
   }
 
   // ---- deletion ----------------------------------------------------------
@@ -1236,6 +2128,14 @@ export class GoalManager {
    */
   async releaseResources(goal: Goal): Promise<GoalRetainedResource[]> {
     this.clearDeadline(goal.id);
+    this.clearWatch(goal.id);
+    this.lastSeen.delete(goal.id);
+    for (const key of this.refusedWakeUps) {
+      if (key.startsWith(`${goal.id}:`)) this.refusedWakeUps.delete(key);
+    }
+    for (const key of this.runPolicies.keys()) {
+      if (key.startsWith(`${goal.id}:`)) this.runPolicies.delete(key);
+    }
     this.cancelRetries(goal.id);
     for (const [key, cancel] of this.notificationRetries) {
       if (!key.startsWith(`${goal.id}:`)) continue;
@@ -1291,7 +2191,12 @@ export class GoalManager {
    */
   hasLiveWork(goalId: string): boolean {
     return (
-      this.liveRunsFor(goalId) > 0 || this.leads.has(goalId) || this.pipeline.hasLiveWork(goalId)
+      this.liveRunsFor(goalId) > 0 ||
+      this.leads.has(goalId) ||
+      this.interventions.hasLive(goalId) ||
+      this.recoveries.hasLive(goalId) ||
+      this.stoppingRecoveries.has(goalId) ||
+      this.pipeline.hasLiveWork(goalId)
     );
   }
 
@@ -1317,7 +2222,25 @@ export class GoalManager {
     await this.recoverRuns(goalId);
     await this.recoverTasks(goalId);
     await this.pipeline.recover(goalId);
+    await this.recoverInterventions(goalId);
     await this.resume(goalId);
+  }
+
+  /**
+   * Ask the Lead again about an intervention left open (its timer counts from requestedAt, so
+   * one past its time expires at once), or request a wake-up the previous process recorded
+   * the failure for but not the request.
+   */
+  private async recoverInterventions(goalId: string): Promise<void> {
+    const goal = this.store.get(goalId);
+    if (!goal || goal.status !== "executing") return;
+    // The Lead gave up just before the stop: the goal fails as it would have.
+    const gaveUp = gaveUpReason(goal);
+    if (gaveUp) {
+      await this.failGoal(goalId, gaveUp);
+      return;
+    }
+    if (this.resumeDecisions(goal) === 0) this.wakeNext(goal, false);
   }
 
   private async recoverRuns(goalId: string): Promise<void> {
@@ -1351,7 +2274,8 @@ export class GoalManager {
         task.status === "failed" &&
         goal !== undefined &&
         countedFailures(goal, task.id) < maxAttempts &&
-        !isPendingRequestFailure(lastRunError(goal, task.id));
+        !isPendingRequestFailure(lastRunError(goal, task.id)) &&
+        !this.awaitsLead(goal, task.id);
       if (!interrupted && !strandedFailure) continue;
       await this.dispatch(goalId, {
         id: `${goalId}:${task.id}-a${task.attempts}:recovered-${task.status}`,
@@ -1360,6 +2284,21 @@ export class GoalManager {
         taskId: task.id,
       });
     }
+  }
+
+  /**
+   * A failed task the Lead decides about, or decided to give up on, is not retried blindly:
+   * its wake-up is due or deferred, its intervention is live, or the Lead gave up.
+   */
+  private awaitsLead(goal: Goal, taskId: string): boolean {
+    const wake = this.wakeUpFor(goal, taskId, false);
+    if (wake === null) return false;
+    if (wake !== "woken") return true;
+    const run = goal.runs.findLast((r) => r.taskId === taskId);
+    const intervention = goal.interventions?.find(
+      (i) => interventionClass(i) === "failure" && i.runId === run?.id,
+    );
+    return !intervention || isInterventionLive(intervention) || intervention.outcome === "give_up";
   }
 
   private async resume(goalId: string): Promise<void> {
@@ -1378,6 +2317,9 @@ export class GoalManager {
         type: "plan.approved",
       });
     } else if (current.status === "executing") {
+      // A revision proposed just before the restart was never decided; same ids, so a
+      // decision recorded already is a duplicate.
+      this.approvePendingRevision(current);
       this.track(this.pump(goalId));
     }
   }
@@ -1394,11 +2336,14 @@ export class GoalManager {
     });
   }
 
-  /** Tell the chat the goal was started from how it ended, once, as the goal ends. */
-  private async notifyOrigin(goal: Goal, outcome: string): Promise<void> {
+  /**
+   * Tell the chat the goal was started from how it ended, once, as the goal ends. `key` names a
+   * notice other than the goal's own ending, such as a recovery's.
+   */
+  private async notifyOrigin(goal: Goal, outcome: string, notice?: string): Promise<void> {
     if (!goal.config?.originAgentId) return;
     // A reopened goal ends again, and that ending is a new notice.
-    const key = goal.reopens ? `goal-ended-r${goal.reopens}` : "goal-ended";
+    const key = notice ?? (goal.reopens ? `goal-ended-r${goal.reopens}` : "goal-ended");
     await this.deliver(goal.id, {
       id: `${goal.id}:notification:origin:${key}`,
       target: "origin",
@@ -1455,6 +2400,16 @@ export class GoalManager {
     this.track(this.attemptNotification(goalId, input.target, input.key));
   }
 
+  /** Send the Lead's notices held during a decision turn, except ones waiting out a backoff. */
+  private resumeLeadNotifications(goalId: string): void {
+    if (this.stopped) return;
+    for (const notification of this.store.get(goalId)?.notifications ?? []) {
+      if (notification.status !== "pending" || notification.target !== "lead") continue;
+      if (this.notificationRetries.has(`${goalId}:lead:${notification.key}`)) continue;
+      this.track(this.attemptNotification(goalId, "lead", notification.key));
+    }
+  }
+
   /** Send every notification still pending, at once. A delivered one is never sent again. */
   private resumeNotifications(goal: Goal): void {
     for (const notification of goal.notifications ?? []) {
@@ -1474,6 +2429,9 @@ export class GoalManager {
   ): Promise<void> {
     const slot = `${goalId}:${target}:${key}`;
     if (this.stopped || this.delivering.has(slot)) return;
+    // A notice steered into the Lead's decision turn would end up in its answer. It waits,
+    // with no attempt counted, until that turn ends.
+    if (target === "lead" && this.interventions.turnLive(goalId)) return;
     const goal = this.store.get(goalId);
     const notification = goal?.notifications?.find((n) => n.target === target && n.key === key);
     if (!goal || notification?.status !== "pending") return;
@@ -1515,12 +2473,47 @@ export class GoalManager {
   }
 }
 
+/** A run that completes this soon after a nudge has its agent cancelled before capture. */
+const NUDGE_SETTLE_MS = 30_000;
+
+/** A run a watcher rule fired for, waiting for its check-in. */
+interface DueCheckIn {
+  slot: string;
+  live: LiveRun;
+  runId: string;
+  verdict: RunVerdict;
+  cursor: TimelineCursor | null;
+}
+
+/** Why the goal fails when the Lead gave up on a failed task's latest run; null when it did not. */
+function gaveUpReason(goal: Goal): string | null {
+  for (const task of goal.tasks) {
+    if (task.status !== "failed") continue;
+    const text = gaveUpText(goal, [task]);
+    if (text) return text.slice(2);
+  }
+  return null;
+}
+
+/** What the Lead said when it gave up on failed tasks, for the goal's failure reason. */
+function gaveUpText(goal: Goal, failed: readonly Task[]): string {
+  return failed
+    .map((task) => {
+      const run = goal.runs.findLast((r) => r.taskId === task.id);
+      const gaveUp = goal.interventions?.find(
+        (i) => i.runId === run?.id && i.outcome === "give_up" && interventionClass(i) === "failure",
+      );
+      return gaveUp ? `. Lead gave up on ${task.id}: ${gaveUp.note ?? "no reason given"}` : "";
+    })
+    .join("");
+}
+
+/** The diagnosis reads these back: TIME_LIMIT_REACHED_PREFIX and DEADLINE_REACHED_PATTERN. */
 function describeDeadline(goal: Goal): string {
   const { goalTimeoutMs } = resolveLimits(goal.config);
-  const byTimeout = Date.parse(goal.createdAt) + goalTimeoutMs;
-  return goalDeadlineMs(goal) < byTimeout
+  return goalDeadlineMs(goal) < timeLimitEndMs(goal)
     ? `Deadline ${goal.config?.limits?.deadlineAt} reached`
-    : `Time limit of ${Math.round(goalTimeoutMs / 60_000)} minutes reached`;
+    : `${TIME_LIMIT_REACHED_PREFIX} ${Math.round(goalTimeoutMs / 60_000)} minutes reached`;
 }
 
 interface GoalWorkspaceRef {
@@ -1563,26 +2556,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A run the Lead stopped fails with its reason, however its turn ended; that wakes the Lead. */
+function withLeadStop(live: Pick<LiveRun, "stoppedBy">, failure: string): string {
+  return live.stoppedBy === undefined ? failure : `${LEAD_STOP_PREFIX} ${live.stoppedBy}`;
+}
+
 /** What the run of a goal under `policy` ended on, in words a person can act on. */
 function describeFailure(result: TurnResult, policy: GoalPermissionPolicy): string {
   switch (result.outcome) {
     case "failed":
       return result.error;
     case "canceled":
-      return "Agent run was canceled";
+      return RUN_CANCELED_TEXT;
     case "needs_permission":
       return describePendingRequest(result.request, policy);
     case "completed":
       return "";
   }
 }
-
-/** How each pending-request failure starts; isPendingRequestFailure reads them back from the log. */
-const PENDING_QUESTION_PREFIX = "Agent asked a question";
-const PENDING_PERMISSION_PREFIX = "Agent is waiting for permission";
-/** The wording before requests were described; older logs carry it. */
-const LEGACY_PERMISSION_FAILURE =
-  "Agent is waiting for a permission approval; unattended runs cannot continue";
 
 function describePendingRequest(
   request: PendingTurnRequest | undefined,
@@ -1602,19 +2593,6 @@ function describePendingRequest(
       ? "Change the policy to wait or auto, then retry."
       : "Retry and answer it in the agent's chat.";
   return `${PENDING_PERMISSION_PREFIX} to use ${request.tool}${quoted} and the goal's permission policy (${policy}) cannot grant it. ${advice}`;
-}
-
-/**
- * The run ended on a permission or a question nobody could answer. Retrying it under the
- * same policy asks the same thing again, so such a failure is never retried automatically.
- */
-export function isPendingRequestFailure(error: string | null | undefined): boolean {
-  return (
-    !!error &&
-    (error.startsWith(PENDING_QUESTION_PREFIX) ||
-      error.startsWith(PENDING_PERMISSION_PREFIX) ||
-      error.startsWith(LEGACY_PERMISSION_FAILURE))
-  );
 }
 
 /** The error of the task's latest failed run. */

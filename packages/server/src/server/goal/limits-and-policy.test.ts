@@ -461,6 +461,85 @@ describe("limits and policies", () => {
     expect(g.failureReason).toBe(`Deadline ${deadlineAt} reached`);
   });
 
+  test("a goal retried fresh after its time limit runs the full limit again, then times out", async () => {
+    // Event times follow the fake clock, so the new time base is the moment of the retry.
+    env.logOptions.now = () => new Date(env.clock.now()).toISOString();
+    env.script([task("a")], () => "hold");
+    const { store, service } = await start(withConfig({ limits: { goalTimeoutMinutes: 1 } }));
+    await tick();
+    env.clock.advance(61_000);
+    await tick();
+    expect(env.goalOf(store).failureReason).toBe("Time limit of 1 minutes reached");
+
+    // The goal sat failed for ten minutes; fresh does not count that.
+    env.clock.advance(10 * 60_000);
+    const retriedAt = env.clock.now();
+    await service.retry("g1", undefined, undefined, "fresh");
+    await tick();
+    const reopened = env.goalOf(store);
+    expect(reopened.status).toBe("executing");
+    expect(reopened.timeBaseAt).toBe(new Date(retriedAt).toISOString());
+
+    env.clock.advance(59_000);
+    await tick();
+    expect(env.goalOf(store).status).toBe("executing");
+    env.clock.advance(2_000);
+    await tick();
+    const g = env.goalOf(store);
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toBe("Time limit of 1 minutes reached");
+  });
+
+  /** Task a fails at once, b holds, so the goal stays live with a task to retry. */
+  async function liveGoalWithFailedTask(goalTimeoutMinutes: number) {
+    env.logOptions.now = () => new Date(env.clock.now()).toISOString();
+    env.script([task("a"), task("b")], (turn) =>
+      turn.prompt.includes("do a") ? { outcome: "failed", error: "boom" } : "hold",
+    );
+    const booted = await start(withConfig({ maxAttempts: 1, limits: { goalTimeoutMinutes } }));
+    await tick();
+    const goal = env.goalOf(booted.store);
+    expect(goal.status).toBe("executing");
+    expect(goal.tasks.map((t) => t.status)).toEqual(["failed", "running"]);
+    return booted;
+  }
+
+  test("a live goal's task retried fresh outlives its old deadline, then times out at the new one", async () => {
+    const { store, service } = await liveGoalWithFailedTask(1);
+    env.clock.advance(50_000);
+    await service.retry("g1", "a", undefined, "fresh");
+    await tick();
+
+    // The timer armed for the old deadline fires, finds the new one and waits again.
+    env.clock.advance(15_000);
+    await tick();
+    expect(env.goalOf(store).status).toBe("executing");
+    env.clock.advance(44_000);
+    await tick();
+    expect(env.goalOf(store).status).toBe("executing");
+    env.clock.advance(2_000);
+    await tick();
+    expect(env.goalOf(store)).toMatchObject({
+      status: "failed",
+      failureReason: "Time limit of 1 minutes reached",
+    });
+  });
+
+  test("remaining on a running goal counts the time it ran, leaving out a pause", async () => {
+    const { store, service } = await liveGoalWithFailedTask(10);
+    const createdAt = Date.parse(env.goalOf(store).createdAt);
+    env.clock.advance(10_000);
+    await service.pause("g1");
+    env.clock.advance(60_000);
+    await service.resume("g1");
+    env.clock.advance(20_000);
+    await service.retry("g1", "a", undefined, "remaining");
+
+    const retried = (await env.readEvents()).findLast((e) => e.type === "goal.retried");
+    expect(retried).toMatchObject({ timeMode: "remaining", activeMs: 30_000, reopen: false });
+    expect(env.goalOf(store).timeBaseAt).toBe(new Date(createdAt + 60_000).toISOString());
+  });
+
   // ---- read-only roles --------------------------------------------------
 
   test("a reviewer that changes the worktree is undone and asked to review the original", async () => {

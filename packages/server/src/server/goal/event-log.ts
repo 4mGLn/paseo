@@ -53,6 +53,11 @@ export class GoalEventLog {
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
+  /** The time an event appended now would carry. */
+  timestamp(): string {
+    return this.now();
+  }
+
   async listGoalIds(): Promise<string[]> {
     try {
       const names = await readdir(this.dir);

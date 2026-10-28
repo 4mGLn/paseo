@@ -1,5 +1,5 @@
 import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
-import type { Goal, GoalConfig } from "@getpaseo/protocol/goal/types";
+import type { Goal, GoalConfig, TaskSpec } from "@getpaseo/protocol/goal/types";
 
 export interface ResolvedLimits {
   maxTasks: number;
@@ -48,15 +48,39 @@ export function resolveLimits(config: GoalConfig | null | undefined): ResolvedLi
   };
 }
 
-/**
- * When the goal must be finished, in epoch milliseconds: its time limit from
- * creation, or the absolute deadline if that comes first.
- */
-export function goalDeadlineMs(goal: Pick<Goal, "createdAt" | "config">): number {
-  const byTimeout = Date.parse(goal.createdAt) + resolveLimits(goal.config).goalTimeoutMs;
+/** Turn time limit for a task's runs: its own limit, which can only lower the goal's. */
+export function taskRunTimeoutMs(
+  goal: Pick<Goal, "config">,
+  task: Pick<TaskSpec, "runTimeoutMinutes">,
+): number {
+  const goalMs = resolveLimits(goal.config).runTimeoutMs;
+  return task.runTimeoutMinutes === undefined
+    ? goalMs
+    : Math.min(task.runTimeoutMinutes * MINUTE, goalMs);
+}
+
+type DeadlineGoal = Pick<Goal, "createdAt" | "timeBaseAt" | "config">;
+
+/** When the time limit runs out, in epoch milliseconds: counted from timeBaseAt, else creation. */
+export function timeLimitEndMs(goal: DeadlineGoal): number {
+  return Date.parse(goal.timeBaseAt ?? goal.createdAt) + resolveLimits(goal.config).goalTimeoutMs;
+}
+
+/** The absolute deadline in epoch milliseconds, or null when none is set. */
+export function absoluteDeadlineMs(goal: Pick<Goal, "config">): number | null {
   const deadlineAt = goal.config?.limits?.deadlineAt;
   const absolute = deadlineAt ? Date.parse(deadlineAt) : Number.NaN;
-  return Number.isNaN(absolute) ? byTimeout : Math.min(byTimeout, absolute);
+  return Number.isNaN(absolute) ? null : absolute;
+}
+
+/**
+ * When the goal must be finished, in epoch milliseconds: its time limit from its time
+ * base, or the absolute deadline if that comes first.
+ */
+export function goalDeadlineMs(goal: DeadlineGoal): number {
+  const byTimeout = timeLimitEndMs(goal);
+  const absolute = absoluteDeadlineMs(goal);
+  return absolute === null ? byTimeout : Math.min(byTimeout, absolute);
 }
 
 /** The budget the goal has used up, as a reason to stop it, or null while within budget. */

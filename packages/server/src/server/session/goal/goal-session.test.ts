@@ -7,7 +7,14 @@ import type { SessionInboundMessage, SessionOutboundMessage } from "../../messag
 import { GoalEventLog } from "../../goal/event-log.js";
 import { GoalService } from "../../goal/goal-service.js";
 import { GoalStore } from "../../goal/goal-store.js";
-import { GoalSession } from "./goal-session.js";
+import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
+import { toGoalSummary } from "@getpaseo/protocol/goal/progress";
+import type { Goal } from "@getpaseo/protocol/goal/types";
+import {
+  requiredPermissionForInbound,
+  requiredPermissionForOutbound,
+} from "../../authorization/operation-permissions.js";
+import { GoalSession, SLIM_GUIDANCE_CHARS, publishGoalUpdate } from "./goal-session.js";
 
 const task = (id: string, dependsOn: string[] = []) => ({
   id,
@@ -36,6 +43,9 @@ describe("GoalSession", () => {
     configEdit?: boolean,
     usageBreakdown?: boolean,
     integrationRetry?: boolean,
+    planRevision?: boolean,
+    leadInterventions?: boolean,
+    recovery?: boolean,
   ): Promise<GoalSession> {
     const log = new GoalEventLog({ dir });
     const service = new GoalService(new GoalStore(log), log);
@@ -43,24 +53,30 @@ describe("GoalSession", () => {
     return new GoalSession({
       host: {
         emit: (msg) => emitted.push(msg),
-        ...(controlEvents === undefined ? {} : { supportsGoalControlEvents: () => controlEvents }),
-        ...(acknowledgeEvents === undefined
-          ? {}
-          : { supportsGoalAcknowledgeEvents: () => acknowledgeEvents }),
-        ...(managementEvents === undefined
-          ? {}
-          : { supportsGoalManagementEvents: () => managementEvents }),
-        ...(configEdit === undefined ? {} : { supportsGoalConfigEdit: () => configEdit }),
-        ...(usageBreakdown === undefined
-          ? {}
-          : { supportsGoalUsageBreakdown: () => usageBreakdown }),
-        ...(integrationRetry === undefined
-          ? {}
-          : { supportsGoalIntegrationRetry: () => integrationRetry }),
+        ...supported({
+          supportsGoalControlEvents: controlEvents,
+          supportsGoalAcknowledgeEvents: acknowledgeEvents,
+          supportsGoalManagementEvents: managementEvents,
+          supportsGoalConfigEdit: configEdit,
+          supportsGoalUsageBreakdown: usageBreakdown,
+          supportsGoalIntegrationRetry: integrationRetry,
+          supportsGoalPlanRevision: planRevision,
+          supportsGoalLeadInterventions: leadInterventions,
+          supportsGoalRecovery: recovery,
+        }),
       },
       goalService: service,
       logger: pino({ level: "silent" }),
     });
+  }
+
+  /** Host capability checks for the flags given; an absent one is assumed supported. */
+  function supported(flags: Record<string, boolean | undefined>): Record<string, () => boolean> {
+    const checks: Record<string, () => boolean> = {};
+    for (const [name, value] of Object.entries(flags)) {
+      if (value !== undefined) checks[name] = () => value;
+    }
+    return checks;
   }
 
   async function send(session: GoalSession, msg: SessionInboundMessage): Promise<void> {
@@ -659,4 +675,664 @@ describe("GoalSession", () => {
       expect(types.at(-1)).toBe(capable ? "changeset.integration_retried" : "goal.failed");
     });
   }
+
+  test("goal.retry carries its time mode to the service", async () => {
+    // Created two days ago, past the default time limit of a day.
+    const at = new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString();
+    const events = [
+      {
+        type: "goal.created",
+        title: "T",
+        objective: "o",
+        criteria: [{ id: "c1", text: "works" }],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "codex",
+          maxParallel: 2,
+          maxAttempts: 2,
+          autoApprovePlan: false,
+          notifyLead: false,
+        },
+      },
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.failed", taskId: "a", error: "boom" },
+      { type: "goal.failed", reason: "Task a failed" },
+    ];
+    await writeFile(
+      join(dir, "g1.jsonl"),
+      `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+    );
+    const session = await openSession();
+    await send(session, { type: "goal.retry.request", requestId: "r1", goalId: "g1" });
+    const refused = emitted.findLast((m) => m.type === "rpc_error") as {
+      payload: { requestId: string; error: string };
+    };
+    expect(refused.payload).toMatchObject({ requestId: "r1" });
+    expect(refused.payload.error).toMatch(/time limit has passed; choose time mode fresh/);
+
+    await send(session, {
+      type: "goal.retry.request",
+      requestId: "r2",
+      goalId: "g1",
+      timeMode: "fresh",
+    });
+    const goal = lastOf("goal.retry.response").payload.goal;
+    expect(goal?.status).toBe("executing");
+    expect(Date.parse(goal?.timeBaseAt ?? "")).toBeGreaterThan(Date.parse(at));
+  });
+
+  for (const capable of [true, false]) {
+    test(`plan revisions ${capable ? "show to" : "are hidden from"} clients ${capable ? "with" : "without"} the capability`, async () => {
+      const at = new Date().toISOString();
+      const events = [
+        {
+          type: "goal.created",
+          title: "T",
+          objective: "o",
+          criteria: [{ id: "c1", text: "works" }],
+          config: {
+            cwd: "/repo",
+            leadProvider: "claude",
+            defaultProvider: "codex",
+            maxParallel: 2,
+            maxAttempts: 2,
+            autoApprovePlan: false,
+            notifyLead: false,
+          },
+        },
+        { type: "plan.proposed", tasks: [task("a")] },
+        { type: "plan.approved" },
+        {
+          type: "plan.revision_proposed",
+          revisionId: "rv1",
+          source: "person",
+          reason: "more work",
+          ops: [{ op: "add", task: task("b", ["a"]) }],
+        },
+        { type: "plan.revision_approved", revisionId: "rv1" },
+        {
+          type: "plan.revision_proposed",
+          revisionId: "rv2",
+          source: "lead",
+          reason: "less work",
+          ops: [{ op: "remove", taskId: "b" }],
+        },
+        { type: "plan.revision_rejected", revisionId: "rv2", reason: "keep b" },
+        {
+          type: "plan.revision_proposed",
+          revisionId: "rv3",
+          source: "lead",
+          reason: "one more",
+          ops: [{ op: "add", task: task("c") }],
+        },
+      ];
+      await writeFile(
+        join(dir, "g1.jsonl"),
+        `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+      );
+      const session = await openSession(true, true, true, true, true, true, capable);
+      await send(session, { type: "goal.inspect.request", requestId: "r1", goalId: "g1" });
+
+      const inspected = lastOf("goal.inspect.response").payload;
+      expect(inspected.events.map((e) => e.type)).toEqual([
+        "goal.created",
+        "plan.proposed",
+        "plan.approved",
+        ...(capable
+          ? [
+              "plan.revision_proposed",
+              "plan.revision_approved",
+              "plan.revision_proposed",
+              "plan.revision_rejected",
+              "plan.revision_proposed",
+            ]
+          : []),
+      ]);
+      expect(inspected.goal?.tasks.map((t) => t.id)).toEqual(["a", "b"]);
+      // goal.inspect carries every revision in full.
+      expect(inspected.goal?.planRevisions?.map((r) => r.ops.length)).toEqual(
+        capable ? [1, 1, 1] : undefined,
+      );
+
+      // goal.list and mutation responses keep only the pending revision's ops.
+      await send(session, { type: "goal.list.request", requestId: "r2" });
+      await send(session, {
+        type: "goal.rename.request",
+        requestId: "r3",
+        goalId: "g1",
+        title: "U",
+      });
+      for (const goal of [
+        lastOf("goal.list.response").payload.goals[0],
+        lastOf("goal.rename.response").payload.goal,
+      ]) {
+        if (capable) {
+          expect(goal?.planRevisions?.map((r) => [r.id, r.status, r.ops.length])).toEqual([
+            ["rv1", "applied", 0],
+            ["rv2", "rejected", 0],
+            ["rv3", "pending", 1],
+          ]);
+          expect(goal?.planRevisions?.[1]?.decisionReason).toBe("keep b");
+        } else {
+          expect(goal).not.toHaveProperty("planRevisions");
+        }
+      }
+    });
+  }
+
+  for (const [capable, shown] of [
+    [true, "show to clients with"],
+    [false, "are hidden from clients without"],
+  ] as const) {
+    test(`Lead interventions ${shown} the capability`, async () => {
+      const at = new Date().toISOString();
+      const events = [
+        {
+          type: "goal.created",
+          title: "T",
+          objective: "o",
+          criteria: [{ id: "c1", text: "works" }],
+          config: {
+            cwd: "/repo",
+            leadProvider: "claude",
+            defaultProvider: "codex",
+            maxParallel: 2,
+            maxAttempts: 2,
+            autoApprovePlan: false,
+            notifyLead: false,
+            leadInterventions: true,
+          },
+        },
+        { type: "lead.attached", agentId: "lead-1" },
+        { type: "plan.proposed", tasks: [task("a")] },
+        { type: "plan.approved" },
+        { type: "task.started", taskId: "a" },
+        { type: "run.started", runId: "a-a1", taskId: "a", provider: "codex" },
+        {
+          type: "intervention.requested",
+          interventionId: "a-a1:check-1",
+          taskId: "a",
+          runId: "a-a1",
+          trigger: "watch",
+          triggers: ["stall"],
+          checkIn: 1,
+          error: "",
+          workSummary: " src/a.ts | 2 +-",
+        },
+        {
+          type: "intervention.resolved",
+          interventionId: "a-a1:check-1",
+          outcome: "nudged",
+          message: "run the tests",
+        },
+      ];
+      await writeFile(
+        join(dir, "g1.jsonl"),
+        `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+      );
+      const session = await openSession(true, true, true, true, true, true, true, capable);
+      await send(session, { type: "goal.inspect.request", requestId: "r1", goalId: "g1" });
+
+      const inspected = lastOf("goal.inspect.response").payload;
+      const types = inspected.events.map((e) => e.type);
+      expect(types.includes("intervention.requested")).toBe(capable);
+      expect(types.includes("intervention.resolved")).toBe(capable);
+      expect(types.at(-1)).toBe(capable ? "intervention.resolved" : "run.started");
+      await send(session, { type: "goal.list.request", requestId: "r2" });
+      const listedGoal = lastOf("goal.list.response").payload.goals[0];
+      if (!capable) {
+        expect(inspected.goal).not.toHaveProperty("interventions");
+        expect(listedGoal).not.toHaveProperty("interventions");
+        return;
+      }
+      // goal.inspect carries the intervention in full.
+      expect(inspected.goal?.interventions?.[0]).toMatchObject({
+        message: "run the tests",
+        workSummary: " src/a.ts | 2 +-",
+      });
+      // goal.list leaves out the work summary and the nudge's message.
+      const listed = listedGoal?.interventions?.[0];
+      expect(listed).toMatchObject({ outcome: "nudged", checkIn: 1 });
+      expect(listed).not.toHaveProperty("message");
+      expect(listed).not.toHaveProperty("workSummary");
+    });
+  }
+
+  // A failed goal whose recovery Lead proposed a revise that waits for a person, or, with
+  // `applied`, a retry with advice that reopened the goal.
+  async function writeRecoveryLog(applied: boolean): Promise<void> {
+    const at = new Date().toISOString();
+    const decision = applied
+      ? { decision: "retry", reason: "flaky", hints: { b: "use the cache" } }
+      : { decision: "revise", reason: "drop b", ops: [{ op: "remove", taskId: "b" }] };
+    const events = [
+      {
+        type: "goal.created",
+        title: "T",
+        objective: "o",
+        criteria: [{ id: "c1", text: "works" }],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "codex",
+          maxParallel: 2,
+          maxAttempts: 2,
+          autoApprovePlan: false,
+          notifyLead: false,
+        },
+      },
+      { type: "plan.proposed", tasks: [task("a"), task("b")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "b" },
+      { type: "task.failed", taskId: "b", error: "boom" },
+      { type: "goal.failed", reason: "No task can make progress" },
+      {
+        type: "recovery.started",
+        recoveryId: "r1",
+        startedBy: "person",
+        guidance: { goal: "keep the API" },
+      },
+      { type: "lead.attached", agentId: "lead-r1" },
+      {
+        type: "intervention.requested",
+        interventionId: "recovery-r1",
+        trigger: "recovery",
+        error: "",
+      },
+      { type: "recovery.decided", recoveryId: "r1", decision },
+      ...(applied ? [{ type: "recovery.resolved", recoveryId: "r1", outcome: "applied" }] : []),
+    ];
+    await writeFile(
+      join(dir, "g1.jsonl"),
+      `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+    );
+  }
+
+  for (const [capable, shown] of [
+    [true, "show to clients with"],
+    [false, "are hidden from clients without"],
+  ] as const) {
+    test(`recoveries ${shown} the capability`, async () => {
+      await writeRecoveryLog(false);
+      const session = await openSession(true, true, true, true, true, true, true, true, capable);
+      await send(session, { type: "goal.inspect.request", requestId: "r1", goalId: "g1" });
+      const inspected = lastOf("goal.inspect.response").payload;
+      const types = inspected.events.map((e) => e.type);
+      expect(types.includes("recovery.started")).toBe(capable);
+      expect(types.includes("recovery.decided")).toBe(capable);
+      // The Lead's decision prompt goes with the recovery it belongs to.
+      expect(types.includes("intervention.requested")).toBe(capable);
+      // The recovery Lead joining a failed goal stays: older clients know lead.attached.
+      expect(types.filter((t) => t === "lead.attached")).toHaveLength(1);
+      await send(session, { type: "goal.list.request", requestId: "r2" });
+      const listed = lastOf("goal.list.response").payload.goals[0];
+      for (const goal of [inspected.goal, listed]) {
+        if (capable) {
+          expect(goal?.recovery?.status).toBe("awaiting_approval");
+          expect(goal?.guidance).toEqual({ goal: "keep the API" });
+          expect(goal?.interventions?.map((i) => i.id)).toEqual(["recovery-r1"]);
+        } else {
+          expect(goal).not.toHaveProperty("recovery");
+          expect(goal).not.toHaveProperty("guidance");
+          expect(goal?.interventions ?? []).toEqual([]);
+          expect(goal?.status).toBe("failed");
+        }
+      }
+      if (capable) {
+        // A revise waiting for approval keeps its ops in the list, which the person decides on.
+        expect(listed?.recovery?.decision?.ops).toEqual([{ op: "remove", taskId: "b" }]);
+      }
+    });
+  }
+
+  test("the list leaves out an applied recovery's ops and the Lead's advice; inspect keeps them", async () => {
+    await writeRecoveryLog(true);
+    const session = await openSession();
+    await send(session, { type: "goal.inspect.request", requestId: "r1", goalId: "g1" });
+    const inspected = lastOf("goal.inspect.response").payload.goal;
+    expect(inspected?.status).toBe("executing");
+    expect(inspected?.guidance).toEqual({
+      goal: "keep the API",
+      lead: { recoveryId: "r1", tasks: { b: "use the cache" } },
+    });
+    await send(session, { type: "goal.list.request", requestId: "r2" });
+    const listed = lastOf("goal.list.response").payload.goals[0];
+    expect(listed?.guidance).toEqual({ goal: "keep the API" });
+    expect(listed?.recovery).toMatchObject({ status: "applied", decision: { decision: "retry" } });
+  });
+
+  test("plan revision RPCs propose, decide and refuse through the service", async () => {
+    const at = new Date().toISOString();
+    const events = [
+      {
+        type: "goal.created",
+        title: "T",
+        objective: "o",
+        criteria: [{ id: "c1", text: "works" }],
+        config: {
+          cwd: "/repo",
+          leadProvider: "claude",
+          defaultProvider: "codex",
+          maxParallel: 2,
+          maxAttempts: 2,
+          autoApprovePlan: false,
+          notifyLead: false,
+        },
+      },
+      { type: "plan.proposed", tasks: [task("a"), task("b")] },
+      { type: "lead.attached", agentId: "lead-1", workspaceId: "ws-lead" },
+      { type: "plan.approved" },
+    ];
+    await writeFile(
+      join(dir, "g1.jsonl"),
+      `${events.map((e, i) => JSON.stringify({ id: `g1-${i + 1}`, goalId: "g1", seq: i + 1, at, ...e })).join("\n")}\n`,
+    );
+    const session = await openSession();
+    await send(session, {
+      type: "goal.plan.revise.request",
+      requestId: "r1",
+      goalId: "g1",
+      tasks: [task("a")],
+      remove: ["b"],
+      reason: "b is not needed",
+      agentId: "lead-1",
+      eventId: "e1",
+    });
+    const proposed = lastOf("goal.plan.revise.response").payload;
+    expect(proposed.error).toBeNull();
+    expect(proposed.goal?.planRevisions).toEqual([
+      expect.objectContaining({ id: "rev-e1", source: "lead", status: "pending" }),
+    ]);
+
+    await send(session, {
+      type: "goal.plan.reject_revision.request",
+      requestId: "r2",
+      goalId: "g1",
+      revisionId: "rev-e1",
+      feedback: "keep b",
+    });
+    expect(
+      lastOf("goal.plan.reject_revision.response").payload.goal?.planRevisions?.[0],
+    ).toMatchObject({ status: "rejected", decisionReason: "keep b" });
+
+    await send(session, {
+      type: "goal.plan.approve_revision.request",
+      requestId: "r3",
+      goalId: "g1",
+      revisionId: "rev-e1",
+    });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "r3",
+      error: expect.stringMatching(/rev-e1 is rejected/),
+    });
+    await send(session, {
+      type: "goal.plan.revise.request",
+      requestId: "r4",
+      goalId: "g1",
+      ops: [{ op: "remove", taskId: "b" }],
+      reason: "x",
+      agentId: "worker-9",
+    });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "r4",
+      error: expect.stringMatching(/Only the goal's Lead or a person/),
+    });
+  });
+
+  /** A session over a service whose daemon reports `problem` for the integration worktree. */
+  async function openRecoverySession(problem: string | null = null): Promise<GoalSession> {
+    const log = new GoalEventLog({ dir });
+    const service = new GoalService(new GoalStore(log), log);
+    await service.start();
+    service.attachActivityProbe({
+      hasLiveWork: () => false,
+      integrationProblem: async () => problem,
+    });
+    return new GoalSession({
+      host: { emit: (msg) => emitted.push(msg) },
+      goalService: service,
+      logger: pino({ level: "silent" }),
+    });
+  }
+
+  test("recovery RPCs start a recovery, refuse an agent, and carry guidance", async () => {
+    await writeRecoveryLog(false);
+    // Cancel the recovery the log holds, so a new one can start.
+    const session = await openRecoverySession();
+    await send(session, {
+      type: "goal.recovery.cancel.request",
+      requestId: "c1",
+      goalId: "g1",
+      recoveryId: "r1",
+    });
+    expect(lastOf("goal.recovery.cancel.response").payload.goal?.recovery).toMatchObject({
+      id: "r1",
+      status: "ended",
+      outcome: "cancelled",
+    });
+
+    await send(session, {
+      type: "goal.recovery.start.request",
+      requestId: "s1",
+      goalId: "g1",
+      agentId: "agent-7",
+    });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "s1",
+      error: expect.stringContaining("Only a person can start a recovery"),
+    });
+    await send(session, {
+      type: "goal.recovery.start.request",
+      requestId: "s2",
+      goalId: "g1",
+      guidance: { goal: null, tasks: { b: "use the cache" } },
+      eventId: "e1",
+    });
+    const started = lastOf("goal.recovery.start.response").payload;
+    expect(started.error).toBeNull();
+    expect(started.goal?.recovery).toMatchObject({ status: "deciding", startedBy: "person" });
+    // null cleared the person's instruction for the goal; the task's was added.
+    expect(started.goal?.guidance).toEqual({ tasks: { b: "use the cache" } });
+
+    await send(session, {
+      type: "goal.retry.request",
+      requestId: "t1",
+      goalId: "g1",
+      guidance: { goal: "x" },
+      agentId: "agent-7",
+    });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "t1",
+      error: expect.stringContaining("Only a person can give guidance"),
+    });
+    await send(session, { type: "goal.retry.request", requestId: "t2", goalId: "g1" });
+    expect(lastOf("rpc_error").payload).toMatchObject({
+      requestId: "t2",
+      error: expect.stringContaining("cancel the recovery first: paseo goal recover g1 --cancel"),
+    });
+  });
+
+  test("recovery decide applies after the integration check, or ends it for a person, uncounted", async () => {
+    for (const problem of [null, "The integration worktree /w has uncommitted changes"]) {
+      await writeRecoveryLog(false);
+      const session = await openRecoverySession(problem);
+      await send(session, {
+        type: "goal.recovery.decide.request",
+        requestId: "d1",
+        goalId: "g1",
+        recoveryId: "r1",
+        approve: true,
+        eventId: "approve-1",
+      });
+      const goal = lastOf("goal.recovery.decide.response").payload.goal;
+      if (problem === null) {
+        expect(goal?.status).toBe("executing");
+        expect(goal?.recovery).toMatchObject({ status: "applied" });
+        // The slim payload leaves out the applied revise's ops.
+        expect(goal?.recovery?.decision?.ops).toEqual([]);
+        expect(goal?.tasks.map((t) => t.id)).toEqual(["a"]);
+      } else {
+        expect(goal?.status).toBe("failed");
+        expect(goal?.recovery).toMatchObject({ status: "ended", outcome: "needs_person" });
+        expect(goal?.failureReason).toBe(`Recovery needs a person: ${problem}`);
+        expect(goal?.recoveries ?? 0).toBe(0);
+      }
+      await rm(join(dir, "g1.jsonl"));
+    }
+  });
+
+  test("recovery RPCs need automation.manage, like the other goal controls", () => {
+    for (const type of [
+      "goal.recovery.start.request",
+      "goal.recovery.decide.request",
+      "goal.recovery.cancel.request",
+    ] as const) {
+      expect(requiredPermissionForInbound(type)).toBe("automation.manage");
+      const response = {
+        type: type.replace(".request", ".response"),
+        payload: { requestId: "x", goal: null, error: null },
+      };
+      expect(requiredPermissionForOutbound(response as never)).toBe("automation.manage");
+    }
+  });
+});
+
+describe("goal.update pushes", () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const revision = (id: string, status: string) => ({
+    id,
+    source: "lead",
+    reason: id,
+    ops: [{ op: "remove" as const, taskId: "a" }],
+    status,
+    proposedAt: at,
+  });
+  const goal = {
+    id: "g1",
+    title: "T",
+    objective: "",
+    status: "executing",
+    config: null,
+    leadAgentId: null,
+    leadWorkspaceId: null,
+    criteria: [],
+    tasks: [],
+    runs: [],
+    changeSets: [],
+    integration: null,
+    lastSeq: 3,
+    failureReason: null,
+    createdAt: at,
+    updatedAt: at,
+    planRevisions: [revision("rv1", "applied"), revision("rv2", "pending")],
+    interventions: [
+      {
+        id: "a-a1",
+        taskId: "a",
+        runId: "a-a1",
+        trigger: "timeout",
+        error: "timed out",
+        workSummary: " 3 files changed",
+        status: "open",
+        requestedAt: at,
+      },
+    ],
+  } as Goal;
+
+  function session(revisions: boolean, interventions = true, recovery = true) {
+    const sent: SessionOutboundMessage[] = [];
+    return {
+      sent,
+      supports: (capability: ClientCapability) => {
+        if (capability === CLIENT_CAPS.goalPlanRevision) return revisions;
+        if (capability === CLIENT_CAPS.goalLeadInterventions) return interventions;
+        if (capability === CLIENT_CAPS.goalRecovery) return recovery;
+        return true;
+      },
+      publish: (message: SessionOutboundMessage) => sent.push(message),
+    };
+  }
+
+  test("capable clients get the slim history, older ones get no revisions at all", () => {
+    const capable = session(true);
+    const older = session(false);
+    publishGoalUpdate([capable, older], toGoalSummary(goal));
+
+    const pushed = (target: ReturnType<typeof session>) => {
+      const message = target.sent[0];
+      if (message?.type !== "goal.update") throw new Error("no goal.update");
+      return message.payload.goal;
+    };
+    expect(pushed(capable).planRevisions?.map((r) => [r.id, r.ops.length])).toEqual([
+      ["rv1", 0],
+      ["rv2", 1],
+    ]);
+    expect(pushed(capable).interventions?.[0]).not.toHaveProperty("workSummary");
+    expect(pushed(capable).interventions?.[0]?.error).toBe("timed out");
+    expect(pushed(older)).not.toHaveProperty("planRevisions");
+    expect(pushed(older)).not.toHaveProperty("interventions");
+  });
+
+  test("a client that parses revisions but not interventions gets the revisions only", () => {
+    const revisionsOnly = session(true, false);
+    publishGoalUpdate([revisionsOnly], toGoalSummary(goal));
+    const message = revisionsOnly.sent[0];
+    if (message?.type !== "goal.update") throw new Error("no goal.update");
+    expect(message.payload.goal.planRevisions).toHaveLength(2);
+    expect(message.payload.goal).not.toHaveProperty("interventions");
+  });
+
+  test("a recovery reaches only clients that parse it, each in its own payload", () => {
+    const recovering = {
+      ...goal,
+      status: "failed",
+      recovery: {
+        id: "r1",
+        status: "decided",
+        startedAt: at,
+        startedBy: "person",
+        failureReason: "x",
+        decision: { decision: "revise", reason: "r", ops: [{ op: "remove", taskId: "a" }] },
+      },
+      recoveries: 1,
+      guidance: { goal: "keep the API", lead: { recoveryId: "r1", tasks: { a: "hint" } } },
+    } as Goal;
+    const capable = session(true);
+    const older = session(true, true, false);
+    publishGoalUpdate([capable, older], toGoalSummary(recovering));
+    const pushed = (target: ReturnType<typeof session>) => {
+      const message = target.sent[0];
+      if (message?.type !== "goal.update") throw new Error("no goal.update");
+      return message.payload.goal;
+    };
+    expect(pushed(capable).recovery?.decision?.ops).toEqual([]);
+    expect(pushed(capable).guidance).toEqual({ goal: "keep the API" });
+    expect(pushed(capable).recoveries).toBe(1);
+    expect(pushed(older)).not.toHaveProperty("recovery");
+    expect(pushed(older)).not.toHaveProperty("recoveries");
+    expect(pushed(older)).not.toHaveProperty("guidance");
+    expect(pushed(older).planRevisions).toHaveLength(2);
+  });
+
+  test("long guidance is cut in the slim payload and marked", () => {
+    const long = "x".repeat(SLIM_GUIDANCE_CHARS + 100);
+    const guided = { ...goal, guidance: { goal: long, tasks: { a: "short", b: long } } } as Goal;
+    const capable = session(true);
+    publishGoalUpdate([capable], toGoalSummary(guided));
+    const message = capable.sent[0];
+    if (message?.type !== "goal.update") throw new Error("no goal.update");
+    const guidance = message.payload.goal.guidance;
+    expect(guidance?.truncated).toBe(true);
+    expect(guidance?.goal).toHaveLength(SLIM_GUIDANCE_CHARS);
+    expect(guidance?.tasks).toEqual({ a: "short", b: expect.stringMatching(/…$/) });
+    const short = { ...goal, guidance: { goal: "short" } } as Goal;
+    const again = session(true);
+    publishGoalUpdate([again], toGoalSummary(short));
+    const plain = again.sent[0];
+    if (plain?.type !== "goal.update") throw new Error("no goal.update");
+    expect(plain.payload.goal.guidance).toEqual({ goal: "short" });
+  });
 });
