@@ -8,6 +8,9 @@ import {
 } from "./goal-reducer.js";
 import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
 import { goalDeadlineMs } from "./goal-limits.js";
+import { reworkWorktreeProblem } from "./goal-recovery.js";
+import { GoalService } from "./goal-service.js";
+import { GoalStore } from "./goal-store.js";
 import { CONFIG, createGoalTestEnv, task, type GoalTestEnv } from "./goal-test-env.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -691,10 +694,199 @@ describe("goal controls in the Manager", () => {
     const goal = env.goalOf(store);
     expect(goal.status).toBe("failed");
     expect(goal.changeSets[0]?.status).toBe("rejected");
-    expect(goal.changeSets[0]?.rejectionReason).toBeUndefined();
+    // The rework limit is final.
+    expect(goal.changeSets[0]?.rejectionReason).toBe("rework_limit");
     await expect(service.retry("g1", undefined)).rejects.toThrow(
-      "has no failed or cancelled task and no change set rejected by a failed integration to retry",
+      "has no failed or cancelled task, no change set rejected by a failed integration and no failed rework to retry",
     );
+  });
+
+  test("a failed rework is reworked again by retry, refused while its worktree is gone", async () => {
+    let fixing = false;
+    env.script([task("a")], (turn) =>
+      turn.prompt.includes("You are fixing your earlier work") && !fixing
+        ? { outcome: "failed", error: "cannot fix" }
+        : { outcome: "completed", text: "done" },
+    );
+    let reviews = 0;
+    env.stageReplies.review = () => {
+      reviews += 1;
+      const verdict =
+        reviews === 1
+          ? { verdict: "request_changes", findings: ["wrong"] }
+          : { verdict: "approve", findings: [] };
+      return { outcome: "completed", text: env.fenced(JSON.stringify(verdict)) };
+    };
+    const { store, manager, service } = await env.boot();
+    service.attachActivityProbe(manager);
+    await env.createGoal(store);
+    await env.settle(manager);
+    const failed = env.goalOf(store);
+    expect(failed.changeSets[0]).toMatchObject({ id: "cs-a-a1", rejectionReason: "rework_failed" });
+
+    // The worktree the rework runs in was archived: retry and recover are refused, unrecorded.
+    const cwd = failed.changeSets[0]?.cwd ?? "";
+    env.harness.git.missing.add(cwd);
+    const before = (await env.readEvents()).length;
+    await expect(service.retry("g1", undefined)).rejects.toThrow(
+      `The rework worktree ${cwd} of cs-a-a1 is gone, so its rework a-rw1 cannot run again. Its work is on branch ${failed.changeSets[0]?.branch}.`,
+    );
+    await expect(service.startRecovery("g1", {})).rejects.toThrow(/rework worktree .* is gone/);
+    expect(await env.readEvents()).toHaveLength(before);
+
+    env.harness.git.missing.delete(cwd);
+    fixing = true;
+    await service.retry("g1", undefined, "retry-rework");
+    const events = await env.readEvents();
+    expect(events.at(-1)).toMatchObject({
+      type: "goal.retried",
+      taskIds: ["a-rw1"],
+      reopen: true,
+      reworkChangeSetIds: ["cs-a-a1"],
+    });
+    await env.settle(manager);
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("completed");
+    expect(goal.changeSets.map((c) => c.status)).toEqual(["superseded", "integrated"]);
+  });
+
+  test("two reworks that fail together: the first is rejected, and one retry reworks both", async () => {
+    let fixing = false;
+    env.script([task("a"), task("b")], (turn) =>
+      turn.prompt.includes("You are fixing your earlier work") && !fixing
+        ? { outcome: "failed", error: "cannot fix" }
+        : { outcome: "completed", text: "done" },
+    );
+    let reviews = 0;
+    env.stageReplies.review = () => {
+      // The first reviews of a and b ask for changes; the reworks' reviews approve.
+      reviews += 1;
+      const verdict =
+        reviews <= 2
+          ? { verdict: "request_changes", findings: ["wrong"] }
+          : { verdict: "approve", findings: [] };
+      return { outcome: "completed", text: env.fenced(JSON.stringify(verdict)) };
+    };
+    const { store, manager, service } = await env.boot();
+    service.attachActivityProbe(manager);
+    await env.createGoal(store);
+    await env.settle(manager);
+    const failed = env.goalOf(store);
+    expect(failed.status).toBe("failed");
+    expect(failed.tasks.filter((t) => t.rework).map((t) => t.status)).toEqual(["failed", "failed"]);
+    // The Manager rejects the first dead rework it finds and fails the goal; the other change
+    // set is left waiting for its rework, which a reopen retries as a failed task.
+    const rejected = failed.changeSets.filter((c) => c.status === "rejected");
+    expect(rejected.map((c) => c.rejectionReason)).toEqual(["rework_failed"]);
+    expect(failed.changeSets.filter((c) => c.status === "changes_requested")).toHaveLength(1);
+
+    fixing = true;
+    await service.retry("g1", undefined);
+    expect((await env.readEvents()).at(-1)).toMatchObject({
+      type: "goal.retried",
+      taskIds: ["a-rw1", "b-rw1"],
+      reworkChangeSetIds: [rejected[0]?.id],
+    });
+    await env.settle(manager);
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("completed");
+    expect(goal.changeSets.map((c) => c.status).sort()).toEqual([
+      "integrated",
+      "integrated",
+      "superseded",
+      "superseded",
+    ]);
+  });
+
+  test("a retry reworks one change set and merges another again in one event", async () => {
+    const log = new GoalEventLog({ dir: env.logDir() });
+    const store = new GoalStore(log);
+    await store.recover();
+    const captured = (changeSetId: string, taskId: string) => ({
+      type: "changeset.captured",
+      changeSetId,
+      taskId,
+      runId: `${taskId}-a1`,
+      round: 0,
+      supersedes: null,
+      workspaceId: "ws",
+      cwd: "/w",
+      branch: "b",
+      baseCommit: "base",
+      headCommit: "head",
+      files: [],
+    });
+    const move = (changeSetId: string, ...to: string[]) =>
+      to.map((status) => ({ type: "changeset.transitioned", changeSetId, to: status }));
+    const events: Record<string, unknown>[] = [
+      { ...managed(), at: undefined },
+      { type: "plan.proposed", tasks: [spec("a"), spec("b")] },
+      { type: "plan.approved" },
+      {
+        type: "integration.prepared",
+        branch: "int",
+        workspaceId: "wi",
+        cwd: "/i",
+        baseCommit: "base",
+      },
+      { type: "task.started", taskId: "a" },
+      { type: "task.succeeded", taskId: "a" },
+      captured("cs-a", "a"),
+      ...move("cs-a", "in_review", "changes_requested"),
+      {
+        type: "task.added",
+        task: spec("a-rw1"),
+        rework: { changeSetId: "cs-a", reason: "review", round: 1 },
+      },
+      { type: "task.started", taskId: "a-rw1" },
+      { type: "task.failed", taskId: "a-rw1", error: "boom" },
+      {
+        type: "changeset.transitioned",
+        changeSetId: "cs-a",
+        to: "rejected",
+        error: "Rework a-rw1 failed: boom",
+        reason: "rework_failed",
+      },
+      { type: "task.started", taskId: "b" },
+      { type: "task.succeeded", taskId: "b" },
+      captured("cs-b", "b"),
+      ...move("cs-b", "in_review", "approved", "integrating"),
+      {
+        type: "changeset.transitioned",
+        changeSetId: "cs-b",
+        to: "rejected",
+        error: "Integration failed: dirty",
+        reason: "integration_failed",
+      },
+      { type: "goal.failed", reason: "Integrating cs-b failed" },
+    ];
+    for (const [i, { at: _at, ...event }] of events.entries()) {
+      await store.dispatch("g2", { id: `g2-${i}`, goalId: "g2", ...event } as never);
+    }
+    const service = new GoalService(store, log);
+    // Without the Manager to check the rework's worktree, the retry and a recovery are refused.
+    await expect(service.retry("g2", undefined)).rejects.toThrow(
+      "The daemon cannot check the rework worktree yet; retry again in a moment",
+    );
+    await expect(service.startRecovery("g2", {})).rejects.toThrow(
+      "The daemon cannot check the rework worktree yet; recover again in a moment",
+    );
+    service.attachActivityProbe({
+      hasLiveWork: () => false,
+      reworkWorktreeProblem: (failed) => reworkWorktreeProblem(failed, env.harness.git),
+    });
+    const goal = await service.retry("g2", undefined, "retry-both");
+    expect(goal.status).toBe("executing");
+    expect(goal.changeSets.map((c) => [c.id, c.status])).toEqual([
+      ["cs-a", "changes_requested"],
+      ["cs-b", "approved"],
+    ]);
+    expect((await log.read("g2")).at(-1)).toMatchObject({
+      type: "changeset.integration_retried",
+      changeSetIds: ["cs-b"],
+      taskIds: ["a-rw1"],
+      reworkChangeSetIds: ["cs-a"],
+    });
   });
 
   test("a goal reopened just before a restart finishes after it", async () => {

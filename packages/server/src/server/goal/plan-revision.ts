@@ -275,24 +275,6 @@ export function validatePlanRevision(
   return revisedPlan(goal, ops, interventionId);
 }
 
-/**
- * Once verification started, new work would complete on evidence that never saw it, so a
- * change after it may only remove tasks.
- */
-export function checkOpsAfterVerification(
-  goal: Pick<Goal, "verifyStartedAt" | "criteria">,
-  ops: readonly PlanRevisionOp[],
-): void {
-  // A criterion verified by other means counts too, as for an approved revision.
-  if (!goal.verifyStartedAt && !goal.criteria.some((c) => c.verifiedAt)) return;
-  const changing = ops.filter((op) => op.op !== "remove").map(opTaskId);
-  if (changing.length > 0) {
-    throw new PlanRevisionError(
-      `Verification has started, so the plan can only lose tasks; ${changing.join(", ")} cannot be added or replaced.`,
-    );
-  }
-}
-
 /** The decisions a recovery takes. */
 export const RECOVERY_DECISIONS = ["retry", "revise", "needs_person"] as const;
 
@@ -321,7 +303,6 @@ export function checkRecoveryDecision(
   if (decision.hints) checkHints(goal, decision);
   if (!decision.ops) return goal.tasks;
   checkDescriptions(decision.ops);
-  checkOpsAfterVerification(goal, decision.ops);
   return revisedPlan(goal, decision.ops, interventionId);
 }
 

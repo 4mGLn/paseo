@@ -1,11 +1,17 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import type { Goal, GoalEvent, TaskSpec } from "@getpaseo/protocol/goal/types";
+import {
+  type Goal,
+  type GoalEvent,
+  GoalEventSchema,
+  type TaskSpec,
+} from "@getpaseo/protocol/goal/types";
 import {
   GoalTransitionError,
   MAX_INTERVENTIONS_PER_GOAL,
   MAX_NOTIFICATION_ATTEMPTS,
   MAX_PLAN_REVISIONS,
-  MAX_RECOVERIES,
   checkInCapError,
   countedFailures,
   failureWakeUpCapError,
@@ -17,6 +23,7 @@ import {
   MAX_DECISION_REASON_CHARS,
   MAX_INTERVENTION_ERROR_CHARS,
   MAX_NUDGE_CHARS,
+  MAX_RECOVERIES,
   MAX_WORK_SUMMARY_CHARS,
 } from "@getpaseo/protocol/goal/interventions";
 import { TaskGraphError, blockedTasks, readyTasks, validateTaskGraph } from "./task-graph.js";
@@ -662,6 +669,294 @@ describe("integration retry", () => {
     });
     expect(run(legacy).changeSets[0]?.rejectionReason).toBe("integration_failed");
     expect(run([...legacy, retry(["cs1"], ["b"])]).changeSets[0]?.status).toBe("approved");
+  });
+});
+
+describe("rework retry", () => {
+  const config = {
+    cwd: "/repo",
+    leadProvider: "claude",
+    defaultProvider: "codex",
+    maxParallel: 2,
+    maxAttempts: 1,
+    maxReworkRounds: 1,
+    autoApprovePlan: false,
+    notifyLead: false,
+  };
+  const captured = (
+    changeSetId: string,
+    taskId: string,
+    round = 0,
+    supersedes: string | null = null,
+  ) => ({
+    type: "changeset.captured",
+    changeSetId,
+    taskId,
+    runId: `${taskId}-a1`,
+    round,
+    supersedes,
+    workspaceId: "ws",
+    cwd: "/w",
+    branch: "b",
+    baseCommit: "base",
+    headCommit: "head",
+    files: [],
+  });
+  const move = (changeSetId: string, ...to: string[]) =>
+    to.map((status) => ({ type: "changeset.transitioned", changeSetId, to: status }));
+  const origins = {
+    review: [
+      ...move("cs1", "in_review"),
+      {
+        type: "changeset.transitioned",
+        changeSetId: "cs1",
+        to: "changes_requested",
+        findings: "f",
+      },
+    ],
+    conflict: move("cs1", "in_review", "approved", "integrating", "conflicted"),
+    tests: move("cs1", "in_review", "approved", "integrating", "test_failed"),
+  } as const;
+  type Origin = keyof typeof origins;
+  const failRun = (taskId: string, error: string) => [
+    { type: "task.started", taskId },
+    { type: "run.started", runId: `${taskId}-a1`, taskId, provider: "codex" },
+    { type: "run.finished", runId: `${taskId}-a1`, outcome: "failed", error },
+    { type: "task.failed", taskId, error },
+  ];
+  // Task a's change set waits for rework; the rework stops on a permission request, and the
+  // change set is rejected as the pipeline rejects it, then the goal fails.
+  const reworkFailed = (origin: Origin, reason?: string) => [
+    { ...created, config },
+    { type: "plan.proposed", tasks: [task("a")] },
+    { type: "plan.approved" },
+    {
+      type: "integration.prepared",
+      branch: "int",
+      workspaceId: "wi",
+      cwd: "/i",
+      baseCommit: "base",
+    },
+    { type: "task.started", taskId: "a" },
+    { type: "task.succeeded", taskId: "a" },
+    captured("cs1", "a"),
+    ...origins[origin],
+    {
+      type: "task.added",
+      task: task("a-rw1"),
+      rework: { changeSetId: "cs1", reason: origin, round: 1 },
+    },
+    ...failRun("a-rw1", "Agent is waiting for permission to use Bash"),
+    {
+      type: "changeset.transitioned",
+      changeSetId: "cs1",
+      to: "rejected",
+      error: "Rework a-rw1 failed: Agent is waiting for permission to use Bash",
+      ...(reason ? { reason } : {}),
+    },
+    { type: "goal.failed", reason: "Rework a-rw1 failed after 1 attempts." },
+  ];
+  const retry = (extra: Record<string, unknown> = {}) => ({
+    type: "goal.retried",
+    taskIds: ["a-rw1"],
+    reopen: true,
+    ...extra,
+  });
+
+  test("a rejection for a failed rework is marked, also from the error text of an older log", () => {
+    for (const origin of ["review", "conflict", "tests"] as const) {
+      expect(run(reworkFailed(origin, "rework_failed")).changeSets[0]?.rejectionReason).toBe(
+        "rework_failed",
+      );
+      expect(run(reworkFailed(origin)).changeSets[0]?.rejectionReason).toBe("rework_failed");
+    }
+  });
+
+  test("other rejections give no retryable reason", () => {
+    const rejectedWith = (error: string, from: Record<string, unknown>[], reason?: string) =>
+      run([
+        { ...created, config },
+        { type: "plan.proposed", tasks: [task("a")] },
+        { type: "plan.approved" },
+        { type: "task.started", taskId: "a" },
+        { type: "task.succeeded", taskId: "a" },
+        captured("cs1", "a"),
+        ...from,
+        {
+          type: "changeset.transitioned",
+          changeSetId: "cs1",
+          to: "rejected",
+          error,
+          ...(reason ? { reason } : {}),
+        },
+      ]).changeSets[0]?.rejectionReason;
+    const waiting = origins.review;
+    expect(rejectedWith("Rework limit reached after 1 rounds", waiting)).toBeUndefined();
+    expect(rejectedWith("Rework limit reached after 1 rounds", waiting, "rework_limit")).toBe(
+      "rework_limit",
+    );
+    expect(rejectedWith("Rework added no commits", waiting)).toBeUndefined();
+    expect(rejectedWith("Rework task could not be added", waiting)).toBeUndefined();
+    expect(rejectedWith("Review failed: x", move("cs1", "in_review"))).toBeUndefined();
+    // The rework text without a rework task for the change set is not one the pipeline wrote.
+    expect(rejectedWith("Rework a-rw1 failed: boom", waiting)).toBeUndefined();
+    // Nor is it out of a status that does not wait for rework, even with a rework task.
+    const reworkTask = {
+      type: "task.added",
+      task: task("a-rw1"),
+      rework: { changeSetId: "cs1", reason: "review", round: 1 },
+    };
+    expect(
+      rejectedWith("Rework a-rw1 failed: boom", [...move("cs1", "in_review"), reworkTask]),
+    ).toBeUndefined();
+    expect(
+      rejectedWith("Rework a-rw1 failed: boom", [
+        ...move("cs1", "in_review", "approved", "integrating"),
+        reworkTask,
+      ]),
+    ).toBeUndefined();
+  });
+
+  test("a reopen sends the change set back to the status it was rejected from, and reruns its rework", () => {
+    const statuses = { review: "changes_requested", conflict: "conflicted", tests: "test_failed" };
+    for (const origin of ["review", "conflict", "tests"] as const) {
+      const goal = run([...reworkFailed(origin), retry({ reworkChangeSetIds: ["cs1"] })]);
+      expect(goal.status).toBe("executing");
+      expect(goal.changeSets[0]).toMatchObject({
+        status: statuses[origin],
+        round: 0,
+        error: null,
+        cwd: "/w",
+      });
+      expect(goal.changeSets[0]).not.toHaveProperty("rejectionReason");
+      expect(goal.tasks.find((t) => t.id === "a-rw1")).toMatchObject({
+        status: "pending",
+        forgivenFailures: 1,
+      });
+      expect(countedFailures(goal, "a-rw1")).toBe(0);
+    }
+    const review = run([...reworkFailed("review"), retry({ reworkChangeSetIds: ["cs1"] })]);
+    expect(review.changeSets[0]?.findings).toBe("f");
+    // The rework's capture supersedes the reopened change set, as on any rework.
+    const reworked = run([
+      ...reworkFailed("review"),
+      retry({ reworkChangeSetIds: ["cs1"] }),
+      { type: "task.started", taskId: "a-rw1" },
+      { type: "task.succeeded", taskId: "a-rw1" },
+      captured("cs2", "a-rw1", 1, "cs1"),
+    ]);
+    expect(reworked.changeSets.map((c) => c.status)).toEqual(["superseded", "captured"]);
+  });
+
+  test("a reopen must list every failed rework, and only failed reworks", () => {
+    expect(() => run([...reworkFailed("review"), retry()])).toThrow(
+      /every change set whose rework failed reworked again; missing cs1/,
+    );
+    // The same log, with the change set rejected at the rework limit instead.
+    const limited = reworkFailed("review");
+    limited.splice(-2, 1, {
+      type: "changeset.transitioned",
+      changeSetId: "cs1",
+      to: "rejected",
+      error: "Rework limit reached after 1 rounds",
+      reason: "rework_limit",
+    });
+    expect(() => run([...limited, retry({ reworkChangeSetIds: ["cs1"] })])).toThrow(
+      /cs1 is rejected \(rework_limit\); only a change set whose rework failed/,
+    );
+    expect(() => run([...limited, retry()])).toThrow(/cs1 was rejected/);
+    // A change set rejected by review carries no reason and is refused the same way.
+    const reviewRejected = reworkFailed("review");
+    reviewRejected.splice(-2, 1, {
+      type: "changeset.transitioned",
+      changeSetId: "cs1",
+      to: "rejected",
+      error: "Review failed: x",
+    });
+    expect(() => run([...reviewRejected, retry({ reworkChangeSetIds: ["cs1"] })])).toThrow(
+      /cs1 is rejected; only a change set whose rework failed/,
+    );
+    // Only a retry that reopens the failed goal reworks one again.
+    const live = reworkFailed("review").slice(0, -1);
+    expect(() => run([...live, retry({ reopen: false, reworkChangeSetIds: ["cs1"] })])).toThrow(
+      /only a retry that reopens a failed goal reworks a change set again/,
+    );
+    expect(() => run([...reworkFailed("review"), retry({ reworkChangeSetIds: ["nope"] })])).toThrow(
+      /unknown change set nope/,
+    );
+  });
+
+  test("an applied recovery reworks one change set and merges another again in one event", () => {
+    const both = [
+      { ...created, config: { ...config, autoApprovePlan: true } },
+      { type: "lead.attached", agentId: "lead-1", workspaceId: "ws-1" },
+      { type: "plan.proposed", tasks: [task("a"), task("b")] },
+      { type: "plan.approved" },
+      {
+        type: "integration.prepared",
+        branch: "int",
+        workspaceId: "wi",
+        cwd: "/i",
+        baseCommit: "base",
+      },
+      { type: "task.started", taskId: "a" },
+      { type: "task.succeeded", taskId: "a" },
+      captured("cs1", "a"),
+      ...origins.review,
+      {
+        type: "task.added",
+        task: task("a-rw1"),
+        rework: { changeSetId: "cs1", reason: "review", round: 1 },
+      },
+      ...failRun("a-rw1", "boom"),
+      {
+        type: "changeset.transitioned",
+        changeSetId: "cs1",
+        to: "rejected",
+        error: "Rework a-rw1 failed: boom",
+        reason: "rework_failed",
+      },
+      { type: "task.started", taskId: "b" },
+      { type: "task.succeeded", taskId: "b" },
+      captured("cs2", "b"),
+      ...move("cs2", "in_review", "approved", "integrating"),
+      {
+        type: "changeset.transitioned",
+        changeSetId: "cs2",
+        to: "rejected",
+        error: "Integration failed: dirty",
+        reason: "integration_failed",
+      },
+      { type: "goal.failed", reason: "Integrating cs2 failed" },
+      { type: "recovery.started", recoveryId: "r1", startedBy: "person" },
+      { type: "lead.attached", agentId: "lead-r1", workspaceId: "ws-r1" },
+      {
+        type: "intervention.requested",
+        interventionId: "recovery-r1",
+        trigger: "recovery",
+        error: "",
+      },
+      {
+        type: "recovery.decided",
+        recoveryId: "r1",
+        decision: { decision: "retry", reason: "flaky" },
+      },
+    ];
+    const resolved = (extra: Record<string, unknown> = {}) => ({
+      type: "recovery.resolved",
+      recoveryId: "r1",
+      outcome: "applied",
+      ...extra,
+    });
+    expect(() => run([...both, resolved()])).toThrow(/missing cs1/);
+    const goal = run([...both, resolved({ reworkChangeSetIds: ["cs1"] })]);
+    expect(goal.status).toBe("executing");
+    expect(goal.changeSets.map((c) => c.status)).toEqual(["changes_requested", "approved"]);
+    expect(goal.tasks.find((t) => t.id === "a-rw1")?.status).toBe("pending");
+    // A recovery that ends without applying reworks nothing.
+    expect(() =>
+      run([...both, resolved({ outcome: "needs_person", reworkChangeSetIds: ["cs1"] })]),
+    ).toThrow(/only an applied recovery reworks change sets again/);
   });
 });
 
@@ -2064,17 +2359,14 @@ describe("recovery", () => {
     ).toBe("decided");
   });
 
-  test("after verification started a revise may only remove tasks", () => {
+  test("after verification started a recovery may still replace or add tasks", () => {
     const goal = { ...deciding(), verifyStartedAt: AT };
-    expect(() =>
-      apply(goal, [
-        decide({
-          decision: "revise",
-          reason: "x",
-          ops: [{ op: "replace", task: { ...task("b"), title: "smaller" } }],
-        }),
-      ]),
-    ).toThrow(/can only lose tasks; b cannot be added or replaced/);
+    const replaceB = {
+      decision: "revise",
+      reason: "x",
+      ops: [{ op: "replace", task: { ...task("b"), title: "smaller" } }],
+    };
+    expect(apply(goal, [decide(replaceB)]).recovery?.status).toBe("decided");
     expect(apply(goal, [decide(removeC)]).recovery?.status).toBe("decided");
   });
 
@@ -2246,18 +2538,25 @@ describe("recovery", () => {
     expect(next.recovery).toMatchObject({ failedAt: at(10) });
   });
 
-  test("a revise refused once a criterion was verified unless it only removes", () => {
+  test("a criterion verified before keeps its result through a retry or a revise that only removes", () => {
     const goal = deciding();
     const verified: Goal = {
       ...goal,
       criteria: [{ ...goal.criteria[0]!, verifiedAt: AT, evidence: "ok" }],
     };
-    expect(() =>
-      apply(verified, [
-        decide({ decision: "revise", reason: "x", ops: [{ op: "add", task: task("d") }] }),
-      ]),
-    ).toThrow(/can only lose tasks; d cannot be added/);
-    expect(apply(verified, [decide(removeC)]).recovery?.status).toBe("decided");
+    for (const decision of [retry, removeC]) {
+      const applied = apply(verified, [decide(decision), resolveAs("applied")]);
+      expect(applied.status).toBe("executing");
+      expect(applied.criteria[0]).toMatchObject({ verifiedAt: AT, evidence: "ok" });
+      expect(applied).not.toHaveProperty("verificationRound");
+    }
+    // A revise that adds work clears it and starts round 1.
+    const added = apply(verified, [
+      decide({ decision: "revise", reason: "x", ops: [{ op: "add", task: task("d") }] }),
+      resolveAs("applied"),
+    ]);
+    expect(added.criteria[0]).toMatchObject({ verifiedAt: null, evidence: null });
+    expect(added.verificationRound).toBe(1);
   });
 
   test("an applied revise drops a person's guidance for tasks it removed", () => {
@@ -2550,5 +2849,234 @@ describe("intervention caps per reopen", () => {
     };
     expect(apply(failedB(0), [wake]).interventions?.[0]).not.toHaveProperty("epoch");
     expect(apply(failedB(2), [wake]).interventions?.[0]?.epoch).toBe(2);
+  });
+});
+
+describe("recovering a goal that failed verification (b195cf6f)", () => {
+  // The real log, anonymised (test-fixtures): every task succeeded, c2 to c10 were verified,
+  // c1 was not met, and two recoveries ended needs_person because a revise could not add work.
+  const GOAL_ID = "b195cf6f-6f1c-4889-aff8-3f689db7ab15";
+  const LATER = "2026-10-28T08:00:00.000Z";
+  const events = (): GoalEvent[] =>
+    readFileSync(join(import.meta.dirname, "test-fixtures", "b195cf6f-verify.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => GoalEventSchema.parse(JSON.parse(line)));
+  const replayed = (upTo = Number.POSITIVE_INFINITY): Goal => {
+    const goal = replayGoal(events().filter((e) => e.seq <= upTo));
+    if (!goal) throw new Error("empty fixture");
+    return goal;
+  };
+  const step = (goal: Goal, partials: Record<string, unknown>[]) =>
+    apply(
+      goal,
+      partials.map((p) => ({ at: LATER, ...p })),
+    );
+  const t7 = { ...task("t7", ["t5"]), title: "Fix c1" };
+  const addT7 = { decision: "revise", reason: "add a fix for c1", ops: [{ op: "add", task: t7 }] };
+  const recover = (goal: Goal, decision: Record<string, unknown>, id = "rec-3") =>
+    step(goal, [
+      { type: "recovery.started", recoveryId: id, startedBy: "person", timeMode: "fresh" },
+      { type: "lead.attached", agentId: `lead-${id}` },
+      {
+        type: "intervention.requested",
+        interventionId: `recovery-${id}`,
+        trigger: "recovery",
+        error: "",
+      },
+      { type: "recovery.decided", recoveryId: id, decision },
+      { type: "recovery.resolved", recoveryId: id, outcome: "applied", timeMode: "fresh" },
+    ]);
+  // t7 runs, is reviewed and merged.
+  const fixMerged = (goal: Goal) =>
+    step(goal, [
+      { type: "task.started", taskId: "t7" },
+      { type: "run.started", runId: "t7-a1", taskId: "t7", provider: "codex" },
+      { type: "task.succeeded", taskId: "t7", summary: "fixed" },
+      { type: "run.finished", runId: "t7-a1", outcome: "succeeded" },
+      {
+        type: "changeset.captured",
+        changeSetId: "cs-t7-a1",
+        taskId: "t7",
+        runId: "t7-a1",
+        round: 0,
+        supersedes: null,
+        cwd: "/worktrees/w-t7",
+        branch: "feature/fix",
+        baseCommit: "base",
+        headCommit: "head",
+        files: [{ path: "src/fix.ts", status: "M" }],
+      },
+      { type: "changeset.transitioned", changeSetId: "cs-t7-a1", to: "in_review" },
+      { type: "changeset.transitioned", changeSetId: "cs-t7-a1", to: "approved" },
+      { type: "changeset.transitioned", changeSetId: "cs-t7-a1", to: "integrating" },
+      {
+        type: "changeset.transitioned",
+        changeSetId: "cs-t7-a1",
+        to: "integrated",
+        integratedCommit: "merged",
+      },
+    ]);
+  const verifyAll = (goal: Goal, round: number) =>
+    step(
+      goal,
+      goal.criteria.map((c) => ({
+        id: `${GOAL_ID}:verified:${c.id}:v${round}`,
+        type: "criterion.verified",
+        criterionId: c.id,
+        evidence: `round ${round}`,
+      })),
+    );
+
+  test("the fixture replays to the failed goal with one recovery left", () => {
+    const goal = replayed();
+    expect(goal).toMatchObject({ status: "failed", recoveries: 2 });
+    expect(goal).not.toHaveProperty("verificationRound");
+    expect(goal.runs).toHaveLength(21);
+    expect(goal.tasks.map((t) => [t.id, t.kind, t.status])).toEqual([
+      ["t1", "implement", "succeeded"],
+      ["t2", "implement", "succeeded"],
+      ["t3", "implement", "succeeded"],
+      ["t4", "implement", "succeeded"],
+      ["t5", "implement", "succeeded"],
+      ["t6", "review", "succeeded"],
+      ["t3-rw1", "implement", "succeeded"],
+    ]);
+    expect(goal.tasks.find((t) => t.id === "t6")?.summary).toMatch(/^\*\*Verdict: FAIL/);
+    expect(goal.changeSets.find((c) => c.id === "cs-t3-a10")?.status).toBe("superseded");
+    expect(goal.changeSets.find((c) => c.id === "cs-t3-rw1-a1")?.status).toBe("integrated");
+    expect(goal.criteria.filter((c) => !c.verifiedAt).map((c) => c.id)).toEqual(["c1"]);
+    expect(goal.recovery).toMatchObject({
+      id: "rec-212",
+      status: "ended",
+      outcome: "needs_person",
+    });
+    expect(goal.verifyStartedAt).toBeDefined();
+  });
+
+  test("an applied fix task clears every criterion, starts round 1 and counts as a revision", () => {
+    const failed = replayed();
+    const applied = recover(failed, addT7);
+    expect(applied.status).toBe("executing");
+    expect(applied.recoveries).toBe(3);
+    expect(applied.verificationRound).toBe(1);
+    expect(applied).not.toHaveProperty("verifyStartedAt");
+    expect(applied).not.toHaveProperty("verifiedAt");
+    expect(applied.criteria.every((c) => c.verifiedAt === null && c.evidence === null)).toBe(true);
+    expect(applied.tasks.at(-1)).toMatchObject({ id: "t7", status: "pending" });
+    expect(applied.planRevisions?.length).toBe((failed.planRevisions?.length ?? 0) + 1);
+    expect(applied.planRevisions?.at(-1)).toMatchObject({ id: "rec-3", status: "applied" });
+    // History stays: runs, change sets and the verifier's usage.
+    expect(applied.runs).toEqual(failed.runs);
+    expect(applied.changeSets).toEqual(failed.changeSets);
+    expect(applied.usageByRole).toEqual(failed.usageByRole);
+  });
+
+  test("verification restarts only once the fix is merged, and every criterion is verified again", () => {
+    const applied = recover(replayed(), addT7);
+    const merged = fixMerged(applied);
+    expect(merged.verifyStartedAt).toBe(LATER);
+    const done = step(verifyAll(merged, 1), [{ type: "goal.completed" }]);
+    expect(done.status).toBe("completed");
+    expect(done.criteria.every((c) => c.evidence === "round 1")).toBe(true);
+    expect(done.verifiedAt).toBe(LATER);
+  });
+
+  test("a criterion cannot be verified twice in one round, nor by a result from another round", () => {
+    const merged = fixMerged(recover(replayed(), addT7));
+    const verified = (id: string, round: number) => ({
+      id,
+      type: "criterion.verified",
+      criterionId: "c2",
+      evidence: "ok",
+      round,
+    });
+    // A verifier asked before the reset answers late: its round-0 result does not count.
+    expect(() => step(merged, [verified(`${GOAL_ID}:verified:c2`, 0)])).toThrow(
+      /the result is for verification round 0; the goal is in round 1/,
+    );
+    const once = step(merged, [verified(`${GOAL_ID}:verified:c2:v1`, 1)]);
+    expect(once.criteria.find((c) => c.id === "c2")?.verifiedAt).toBe(LATER);
+    expect(() => step(once, [verified(`${GOAL_ID}:verified:c2:v1-again`, 1)])).toThrow(
+      /criterion c2 already verified/,
+    );
+  });
+
+  test("a retry or a revise that only removes keeps the results and the round", () => {
+    const retried = recover(replayed(), { decision: "retry", reason: "check again" });
+    expect(retried.status).toBe("executing");
+    expect(retried).not.toHaveProperty("verificationRound");
+    expect(retried.criteria.filter((c) => c.verifiedAt).map((c) => c.id)).toEqual(
+      replayed()
+        .criteria.filter((c) => c.verifiedAt)
+        .map((c) => c.id),
+    );
+    expect(retried.verifyStartedAt).toBe(replayed().verifyStartedAt);
+  });
+
+  test("a plain revision stays refused after verification started, but is allowed while fix tasks run", () => {
+    const retried = recover(replayed(), { decision: "retry", reason: "check again" });
+    const addT8 = [{ op: "add", task: task("t8", ["t5"]) }];
+    expect(() => step(retried, [propose("p1", "person", addT8)])).toThrow(
+      /verification has started; the plan cannot change/,
+    );
+    const fixing = recover(replayed(), addT7);
+    const revised = step(fixing, [
+      propose("p1", "person", addT8),
+      { type: "plan.revision_approved", revisionId: "p1" },
+    ]);
+    expect(revised.tasks.map((t) => t.id)).toContain("t8");
+  });
+
+  test("a revise is refused once the plan was revised the most times", () => {
+    const failed = replayed();
+    const full: Goal = {
+      ...failed,
+      planRevisions: Array.from({ length: MAX_PLAN_REVISIONS }, (_, i) => ({
+        id: `x${i}`,
+        source: "person",
+        reason: "x",
+        ops: [],
+        status: "rejected" as const,
+        proposedAt: LATER,
+      })),
+    };
+    expect(() => recover(full, addT7)).toThrow(
+      `the plan was already revised ${MAX_PLAN_REVISIONS} times`,
+    );
+  });
+
+  test("a deadline reached mid-verification, then a recovery that adds work, clears the criteria verified so far", () => {
+    // c2 to c4 were verified when the time ran out.
+    const partly = replayed(199);
+    expect(partly.criteria.filter((c) => c.verifiedAt).map((c) => c.id)).toEqual([
+      "c2",
+      "c3",
+      "c4",
+    ]);
+    const failed = step(partly, [
+      { type: "goal.failed", reason: "The goal's time limit of 2160 minutes was reached" },
+    ]);
+    const applied = recover(failed, addT7, "rec-d");
+    expect(applied.verificationRound).toBe(1);
+    expect(applied.criteria.every((c) => c.verifiedAt === null)).toBe(true);
+    const done = step(verifyAll(fixMerged(applied), 1), [{ type: "goal.completed" }]);
+    expect(done.status).toBe("completed");
+  });
+
+  test("a second reset moves to round 2", () => {
+    const round1 = recover(replayed(), addT7);
+    const failedAgain = step(fixMerged(round1), [
+      { id: "v1-c2", type: "criterion.verified", criterionId: "c2", evidence: "ok" },
+      { type: "goal.failed", reason: "Acceptance criteria not met: Criterion c1 (still open)" },
+    ]);
+    const t9 = { ...task("t9", ["t7"]), title: "Fix c1 again" };
+    const round2 = recover(
+      { ...failedAgain, recoveries: 0 },
+      { decision: "revise", reason: "again", ops: [{ op: "add", task: t9 }] },
+      "rec-4",
+    );
+    expect(round2.verificationRound).toBe(2);
+    expect(round2.criteria.every((c) => c.verifiedAt === null)).toBe(true);
   });
 });

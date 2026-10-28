@@ -142,6 +142,13 @@ export class FakeGit implements GitPort {
     }
     return (cwd ? this.heads.get(cwd) : undefined) ?? this.headValue;
   }
+  /** Commits `resolveCommit` knows, by any prefix; every other id resolves to null. */
+  commits = new Set<string>();
+  async resolveCommit(_cwd: string, id: string): Promise<string | null> {
+    const prefix = id.toLowerCase();
+    const matches = [...this.commits].filter((commit) => commit.startsWith(prefix));
+    return matches.length === 1 ? (matches[0] ?? null) : null;
+  }
   async currentBranch(): Promise<string> {
     return "paseo-goal/integration";
   }

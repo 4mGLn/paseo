@@ -112,6 +112,8 @@ describe("change set pipeline", () => {
     expect(g.status).toBe("failed");
     expect(g.failureReason).toMatch(/rework rounds/);
     expect(g.changeSets.map((c) => c.status)).toEqual(["superseded", "rejected"]);
+    // The rework limit is final.
+    expect(g.changeSets[1]?.rejectionReason).toBe("rework_limit");
     expect(h().git.merges).toHaveLength(0);
   });
 
@@ -232,6 +234,39 @@ describe("change set pipeline", () => {
     expect(g.changeSets[0]?.status).toBe("integrated");
   });
 
+  test("a verified criterion is recorded under the round-0 id older logs carry", async () => {
+    env.script([task("a")]);
+    await run();
+    const verified = (await env.readEvents()).filter((e) => e.type === "criterion.verified");
+    expect(verified).toEqual([expect.objectContaining({ id: "g1:verified:c1", round: 0 })]);
+  });
+
+  test("after a recovery adds work, the criterion is recorded under its round's id", async () => {
+    env.script([task("a")]);
+    const base = h().respond;
+    const fix = { decision: "revise", reason: "fix c1", ops: [{ op: "add", task: task("fix") }] };
+    h().respond = (turn) =>
+      turn.prompt.includes("asked you to recover it")
+        ? { outcome: "completed", text: env.fenced(JSON.stringify(fix)) }
+        : (base?.(turn) ?? "hold");
+    let verifies = 0;
+    env.stageReplies.verify = () => {
+      verifies += 1;
+      const criteria = [{ id: "c1", met: verifies > 1, evidence: `round ${verifies - 1}` }];
+      return { outcome: "completed", text: env.fenced(JSON.stringify({ criteria })) };
+    };
+    const { store, manager, service } = await run();
+    expect(goal(store).status).toBe("failed");
+    service.attachActivityProbe(manager);
+    await service.startRecovery("g1", {});
+    await env.settle(manager);
+    expect(goal(store)).toMatchObject({ status: "completed", verificationRound: 1 });
+    const verified = (await env.readEvents()).filter((e) => e.type === "criterion.verified");
+    expect(verified).toEqual([
+      expect.objectContaining({ id: "g1:verified:c1:v1", round: 1, evidence: "round 1" }),
+    ]);
+  });
+
   test("the verifier must answer every criterion", async () => {
     env.script([task("a")]);
     const prompts: string[] = [];
@@ -286,6 +321,12 @@ describe("change set pipeline", () => {
     expect(goal(store).status).toBe("failed");
     expect(goal(store).failureReason).toMatch(/changed nothing/);
     expect(h().git.merges).toHaveLength(0);
+    // Its rework succeeded, so there is nothing to run again: the rejection stays final.
+    expect(goal(store).changeSets[0]).toMatchObject({
+      status: "rejected",
+      error: "Rework added no commits",
+    });
+    expect(goal(store).changeSets[0]).not.toHaveProperty("rejectionReason");
   });
 
   test("after a restart in the middle of a merge, the branch is reset and the merge retried", async () => {
@@ -449,8 +490,81 @@ describe("change set pipeline", () => {
 
     const g = goal(store);
     expect(g.status).toBe("failed");
-    expect(g.failureReason).toMatch(/Rework a-rw1 failed after 2 attempts/);
-    expect(g.changeSets[0]?.status).toBe("rejected");
+    expect(g.failureReason).toBe("Rework a-rw1 failed after 2 attempts.");
+    expect(g.changeSets[0]).toMatchObject({
+      status: "rejected",
+      rejectionReason: "rework_failed",
+      error: "Rework a-rw1 failed: cannot fix",
+    });
+  });
+
+  test("a retry reworks a change set whose rework failed, and the rework supersedes it", async () => {
+    let fixing = false;
+    env.script([task("a")], (turn) =>
+      turn.prompt.includes("You are fixing your earlier work") && !fixing
+        ? { outcome: "failed", error: "cannot fix" }
+        : { outcome: "completed", text: "done" },
+    );
+    setReview((n) => (n === 1 ? REQUEST("needs work") : approve));
+    const { store, manager, service } = await run();
+    expect(goal(store).changeSets[0]?.rejectionReason).toBe("rework_failed");
+
+    fixing = true;
+    service.attachActivityProbe(manager);
+    await service.retry("g1", undefined);
+    await env.settle(manager);
+    const g = goal(store);
+    expect(g.status).toBe("completed");
+    expect(g.changeSets.map((c) => [c.id, c.round, c.status])).toEqual([
+      ["cs-a-a1", 0, "superseded"],
+      ["cs-a-rw1-a3", 1, "integrated"],
+    ]);
+    // The reopen added no second rework for the change set.
+    expect(g.tasks.map((t) => t.id)).toEqual(["a", "a-rw1"]);
+  });
+
+  test("a second round of changes after a reworked rework hits the rework limit, which stays final", async () => {
+    let fixing = false;
+    env.script([task("a")], (turn) =>
+      turn.prompt.includes("You are fixing your earlier work") && !fixing
+        ? { outcome: "failed", error: "cannot fix" }
+        : { outcome: "completed", text: "done" },
+    );
+    setReview(() => REQUEST("still wrong"));
+    const { store, manager, service } = await run({ ...CONFIG, maxReworkRounds: 1 });
+    expect(goal(store).changeSets[0]?.rejectionReason).toBe("rework_failed");
+
+    fixing = true;
+    service.attachActivityProbe(manager);
+    await service.retry("g1", undefined);
+    await env.settle(manager);
+    const g = goal(store);
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toMatch(/after 1 rework rounds/);
+    expect(g.changeSets.map((c) => [c.id, c.status, c.rejectionReason])).toEqual([
+      ["cs-a-a1", "superseded", undefined],
+      ["cs-a-rw1-a3", "rejected", "rework_limit"],
+    ]);
+    await expect(service.retry("g1", undefined)).rejects.toThrow(/no failed or cancelled task/);
+  });
+
+  test("a rework stopped on a request fails the goal with the needs-permission text", async () => {
+    const request =
+      'Agent is waiting for permission to use Bash: "git commit" and the goal\'s permission policy (fail) cannot grant it. Change the policy to wait or auto, then retry.';
+    env.script([task("a")], (turn) =>
+      turn.prompt.includes("You are fixing your earlier work")
+        ? { outcome: "failed", error: request }
+        : { outcome: "completed", text: "done" },
+    );
+    setReview((n) => (n === 1 ? REQUEST("needs work") : approve));
+    const { store } = await run({ ...CONFIG, onPermissionRequest: "fail" });
+
+    const g = goal(store);
+    expect(g.status).toBe("failed");
+    expect(g.failureReason).toBe(
+      `Rework a-rw1 failed after 1 attempts. Task a-rw1 stopped on a request (needs_permission): ${request}`,
+    );
+    expect(g.changeSets[0]?.rejectionReason).toBe("rework_failed");
   });
 
   test("recovery keeps the worktree a rework run was using", async () => {

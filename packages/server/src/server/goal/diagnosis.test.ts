@@ -1,19 +1,23 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { goalActiveMs } from "@getpaseo/protocol/goal/active-time";
 import { diagnoseGoalFailure } from "@getpaseo/protocol/goal/diagnosis";
 import { type Goal, type GoalEvent, GoalEventSchema } from "@getpaseo/protocol/goal/types";
 import { goalForClient, withSlimPlanHistory } from "../session/goal/goal-session.js";
 import { applyGoalEvent, replayGoal } from "./goal-reducer.js";
 
-/** A goal log from this daemon's own goals, trimmed of long text; see test-fixtures. */
-function fixture(name: string): Goal {
+function fixtureEvents(name: string): GoalEvent[] {
   const text = readFileSync(join(import.meta.dirname, "test-fixtures", name), "utf8");
-  const events = text
+  return text
     .trim()
     .split("\n")
     .map((line) => GoalEventSchema.parse(JSON.parse(line)));
-  const goal = replayGoal(events);
+}
+
+/** A goal log from this daemon's own goals, trimmed of long text; see test-fixtures. */
+function fixture(name: string): Goal {
+  const goal = replayGoal(fixtureEvents(name));
   if (!goal) throw new Error(`empty fixture ${name}`);
   return goal;
 }
@@ -88,8 +92,108 @@ describe("diagnosis of real failed goals", () => {
     expect(diagnosis.blockingLimits).toEqual([]);
   });
 
+  test("4fe24f94: the rework of cs-t7-a1 stopped on a permission request; the goal can be recovered", () => {
+    const goal = fixture("4fe24f94.jsonl");
+    const diagnosis = diagnoseGoalFailure(goal, { now: Date.parse("2026-10-28T07:00:00.000Z") });
+    expect(diagnosis.kind).toBe("rework_failed");
+    expect(diagnosis.findings).toEqual([
+      expect.objectContaining({ kind: "rework_failed", personNeeded: "yes" }),
+      expect.objectContaining({ kind: "stuck", personNeeded: "yes" }),
+    ]);
+    expect(diagnosis.findings[0]?.remedy).toMatch(/stopped on a request/);
+    expect(diagnosis.tasks).toEqual([
+      expect.objectContaining({ taskId: "t7-rw1", cause: "pending_request", failedRuns: 1 }),
+    ]);
+    // cs-t5-a3 was in review when the goal failed; a reopen reviews it again.
+    expect(diagnosis.openChangeSets).toEqual([
+      { id: "cs-t5-a3", taskId: "t5", status: "in_review" },
+    ]);
+    expect(diagnosis.runs).toEqual({ used: 15, max: 20 });
+    expect(diagnosis.recoverable).toBe(true);
+  });
+
+  test("b195cf6f later: every task succeeded but c1 was not met; one recovery is left", () => {
+    const goal = fixture("b195cf6f-verify.jsonl");
+    const now = Date.parse("2026-10-28T08:00:00.000Z");
+    const diagnosis = diagnoseGoalFailure(goal, { now });
+    expect(diagnosis.findings).toEqual([
+      {
+        kind: "verification",
+        remedy:
+          "Every task succeeded but a criterion was not met. Recover: the Lead can add fix tasks, and every criterion is checked again afterwards. This is the last recovery.",
+        personNeeded: "no",
+      },
+    ]);
+    // The reason the recoveries started from, not theirs.
+    expect(diagnosis.failureReason).toMatch(/^Acceptance criteria not met: Criterion c1/);
+    expect(diagnosis.tasks).toEqual([]);
+    expect(diagnosis.runs).toEqual({ used: 21, max: 60 });
+    expect(diagnosis.timePassedAtFailure).toBe(false);
+    expect(diagnosis.recoverable).toBe(true);
+    // With recoveries left before the last one, nothing says last; with none, a person decides.
+    const earlier = diagnoseGoalFailure({ ...goal, recoveries: 1 }, { now }).findings[0];
+    expect(earlier?.remedy).not.toContain("last recovery");
+    expect(diagnoseGoalFailure({ ...goal, recoveries: 3 }, { now }).findings[0]).toEqual({
+      kind: "verification",
+      remedy:
+        "Every task succeeded but a criterion was not met, and all 3 recoveries are used. Start a follow-up goal from its integration branch.",
+      personNeeded: "yes",
+    });
+  });
+
+  test("criteria never judged, by a verifier that failed or a time limit mid-verification, are not called unmet", () => {
+    // c2 to c4 were verified when verification stopped.
+    const partly = replayGoal(fixtureEvents("b195cf6f-verify.jsonl").filter((e) => e.seq <= 199));
+    if (!partly) throw new Error("empty fixture");
+    const failAt = (reason: string, at: string): Goal =>
+      applyGoalEvent(partly, {
+        id: "failed",
+        goalId: partly.id,
+        seq: partly.lastSeq + 1,
+        at,
+        type: "goal.failed",
+        reason,
+      });
+    const now = Date.parse("2026-10-28T08:00:00.000Z");
+    const verifierFailed = failAt(
+      "Verification failed: Verifier gave no usable answer: no JSON block",
+      "2026-10-28T07:20:00.000Z",
+    );
+    expect(diagnoseGoalFailure(verifierFailed, { now }).findings).toEqual([
+      {
+        kind: "verification",
+        remedy:
+          "Every task succeeded but verification did not finish, so a criterion was not verified. Recover with retry: the verifier is asked again about the criteria not verified.",
+        personNeeded: "no",
+      },
+    ]);
+    // Well past the 2160 minutes the last fresh retry gave.
+    const late = Date.parse("2026-10-31T00:00:00.000Z");
+    const timedOut = failAt("Time limit of 2160 minutes reached", "2026-10-30T12:00:00.000Z");
+    const findings = diagnoseGoalFailure(timedOut, { now: late }).findings;
+    expect(findings.map((f) => f.kind)).toEqual(["time"]);
+    expect(findings.some((f) => f.remedy.includes("not met"))).toBe(false);
+  });
+
+  test("b195cf6f later: time stopped counting at the failure, through both recoveries", () => {
+    const events = fixtureEvents("b195cf6f-verify.jsonl");
+    const failed = events.find((e) => e.seq === 206);
+    if (!failed) throw new Error("no failure");
+    const atFailure = goalActiveMs(
+      events.filter((e) => e.seq <= 206),
+      Date.parse(failed.at),
+    );
+    expect(atFailure).toBeGreaterThan(0);
+    expect(goalActiveMs(events, Date.parse("2026-10-29T00:00:00.000Z"))).toBe(atFailure);
+  });
+
   test("the slim payload every client gets diagnoses the same as the full goal", () => {
-    for (const name of ["b195cf6f.jsonl", "aff07ea6.jsonl"]) {
+    for (const name of [
+      "b195cf6f.jsonl",
+      "aff07ea6.jsonl",
+      "4fe24f94.jsonl",
+      "b195cf6f-verify.jsonl",
+    ]) {
       const goal = fixture(name);
       const slim = withSlimPlanHistory(goalForClient(goal, {}));
       expect(diagnoseGoalFailure(slim, { now: NEXT_DAY })).toEqual(
