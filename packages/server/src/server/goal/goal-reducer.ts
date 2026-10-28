@@ -6,6 +6,7 @@ import type {
   GoalConfig,
   GoalEvent,
   GoalStatus,
+  GoalWaits,
   Guidance,
   GuidanceChanges,
   LeadIntervention,
@@ -237,7 +238,10 @@ export function applyGoalEvent(goal: Goal | null, event: GoalEvent): Goal {
     throw new GoalTransitionError(event.type, `goal is ${goal.status}`);
   }
 
-  const next = withVerificationTimes(applyToLiveGoal(goal, event), event);
+  const next = withVerificationTimes(
+    withWaitsClosed(goal, applyToLiveGoal(goal, event), event),
+    event,
+  );
   return { ...next, lastSeq: event.seq, updatedAt: event.at };
 }
 
@@ -267,6 +271,11 @@ function allowedOnFailedGoal(goal: Goal, event: GoalEvent): boolean {
       return true;
     case "usage.recorded":
       return event.role === "lead" && goal.recovery !== undefined;
+    // The recovery's Lead may wait for a person's answer while it decides.
+    case "wait.started":
+      return goal.recovery?.status === "deciding";
+    case "wait.ended":
+      return goal.waits?.open[event.agentId] !== undefined;
     case "lead.attached":
       return goal.recovery?.status === "deciding";
     case "intervention.requested":
@@ -456,6 +465,7 @@ const HANDLERS: Record<string, EventHandler> = {
   usage: (goal, event) => applyUsageEvent(goal, event),
   intervention: (goal, event) => applyInterventionEvent(goal, event),
   recovery: (goal, event) => applyRecoveryEvent(goal, event),
+  wait: (goal, event) => applyWaitEvent(goal, event),
 };
 
 function applyToLiveGoal(goal: Goal, event: GoalEvent): Goal {
@@ -464,6 +474,91 @@ function applyToLiveGoal(goal: Goal, event: GoalEvent): Goal {
     throw new GoalTransitionError(event.type, "unknown event group");
   }
   return handler(goal, event);
+}
+
+const NO_WAITS: GoalWaits = { open: {}, excludedMs: 0, since: null };
+
+/**
+ * An agent starts or stops waiting for a person's answer. The goal's time limit leaves the
+ * waiting out: `since` marks when the current stretch with any agent waiting began, and the
+ * stretch is added to `excludedMs` when the last open wait closes, so overlapping waits count
+ * once.
+ */
+function applyWaitEvent(goal: Goal, event: GoalEvent): Goal {
+  const waits = goal.waits ?? NO_WAITS;
+  switch (event.type) {
+    case "wait.started": {
+      if (waits.open[event.agentId]) {
+        throw new GoalTransitionError(event.type, `agent ${event.agentId} is already waiting`);
+      }
+      if (event.runId) {
+        const run = goal.runs.find((r) => r.id === event.runId);
+        if (run?.status !== "running") {
+          throw new GoalTransitionError(event.type, `run ${event.runId} is not running`);
+        }
+      }
+      const opened = { since: event.at, ...(event.runId ? { runId: event.runId } : {}) };
+      return {
+        ...goal,
+        waits: {
+          ...waits,
+          open: { ...waits.open, [event.agentId]: opened },
+          since: waits.since ?? event.at,
+        },
+      };
+    }
+    case "wait.ended":
+      if (!waits.open[event.agentId]) {
+        throw new GoalTransitionError(event.type, `agent ${event.agentId} is not waiting`);
+      }
+      return {
+        ...goal,
+        waits: closeWaits(waits, event.at, (agentId) => agentId === event.agentId),
+      };
+    default:
+      throw new GoalTransitionError(event.type, "unexpected event for this handler");
+  }
+}
+
+/** The waits left once `isClosed` ones close at `at`; the last one to close ends the stretch. */
+function closeWaits(
+  waits: GoalWaits,
+  at: string,
+  isClosed: (agentId: string, wait: GoalWaits["open"][string]) => boolean,
+): GoalWaits {
+  const entries = Object.entries(waits.open);
+  const open = Object.fromEntries(entries.filter(([agentId, wait]) => !isClosed(agentId, wait)));
+  if (Object.keys(open).length === entries.length) return waits;
+  if (Object.keys(open).length > 0 || waits.since === null) return { ...waits, open };
+  const stretch = Math.max(0, Date.parse(at) - Date.parse(waits.since));
+  return {
+    open,
+    excludedMs: waits.excludedMs + (Number.isNaN(stretch) ? 0 : stretch),
+    since: null,
+  };
+}
+
+/**
+ * Waits other events end: run.finished closes the wait of its run (found through the run id
+ * wait.started recorded, since run.finished names no agent), and a goal that ends closes every
+ * wait. A new time base clears the waiting counted before it, which the base already accounts
+ * for; a wait still open counts from there.
+ */
+function withWaitsClosed(previous: Goal, next: Goal, event: GoalEvent): Goal {
+  const waits = next.waits;
+  if (!waits) return next;
+  let after = waits;
+  if (event.type === "run.finished") {
+    after = closeWaits(after, event.at, (_agentId, wait) => wait.runId === event.runId);
+  }
+  if (isTerminalGoalStatus(next.status) && next.status !== previous.status) {
+    after = closeWaits(after, event.at, () => true);
+  }
+  if (next.timeBaseAt !== previous.timeBaseAt) {
+    const open = Object.keys(after.open).length > 0;
+    after = { open: after.open, excludedMs: 0, since: open ? event.at : null };
+  }
+  return after === waits ? next : { ...next, waits: after };
 }
 
 function applyPlanEvent(goal: Goal, event: GoalEvent): Goal {
@@ -2157,7 +2252,7 @@ function restartTimeLimit(goal: Goal, event: RetryEvent): Pick<Goal, "timeBaseAt
   }
   const { timeMode } = event;
   if (timeMode === undefined) {
-    if (at >= goalDeadlineMs(goal)) {
+    if (at >= goalDeadlineMs(goal, at)) {
       throw new GoalTransitionError(
         event.type,
         `${GOAL_TIME_LIMIT_PASSED}; choose time mode fresh (the full limit from now) or remaining (the limit minus the time the goal ran)`,
@@ -2390,7 +2485,7 @@ function refuseDeadlineWhileDeciding(
       `the goal's deadline ${goal.config?.limits?.deadlineAt} passes within the Lead's ${minutes} minutes to decide; set a later deadline or clear it`,
     );
   }
-  if (event.timeMode === undefined && decided >= goalDeadlineMs(goal)) {
+  if (event.timeMode === undefined && decided >= goalDeadlineMs(goal, Date.parse(event.at))) {
     throw new GoalTransitionError(
       event.type,
       // GOAL_TIME_LIMIT_PASSED in the text lets a client ask for a time mode, as after a retry.

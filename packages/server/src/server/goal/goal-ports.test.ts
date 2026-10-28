@@ -187,6 +187,106 @@ describe("settleTurn", () => {
   });
 });
 
+describe("settleTurn onWait", () => {
+  interface Change {
+    waiting: boolean;
+    ended?: boolean;
+    tool?: string;
+  }
+  function recorder() {
+    const changes: Change[] = [];
+    return {
+      changes,
+      onWait: (
+        change: { waiting: true; request: { tool: string } } | { waiting: false; ended?: boolean },
+      ) =>
+        changes.push(
+          change.waiting
+            ? { waiting: true, tool: change.request.tool }
+            : { waiting: false, ...(change.ended ? { ended: true } : {}) },
+        ),
+    };
+  }
+  const bash = { status: "running", permission: { id: "p1", name: "Bash" }, lastMessage: null };
+
+  test("a request that waits a poll starts a wait, and its answer ends it", async () => {
+    const { changes, onWait } = recorder();
+    const result = await settleTurn(
+      sequence(bash, bash, bash, done("ok")),
+      "wait",
+      "a1",
+      async () => {},
+      undefined,
+      onWait,
+    );
+    expect(result).toEqual({ outcome: "completed", text: "ok" });
+    expect(changes).toEqual([{ waiting: true, tool: "Bash" }, { waiting: false }]);
+  });
+
+  test("a request that clears itself by the next poll reports nothing", async () => {
+    const { changes, onWait } = recorder();
+    await settleTurn(sequence(bash, done("ok")), "wait", "a1", async () => {}, undefined, onWait);
+    expect(changes).toEqual([]);
+  });
+
+  test("an async question waits like a permission", async () => {
+    const { changes, onWait } = recorder();
+    const question = { id: "q1", name: "request_user_input", kind: "question" as const };
+    const waiting = { status: "idle", permission: question, lastMessage: null };
+    const answered = { status: "idle", permission: null, lastMessage: null };
+    await settleTurn(
+      sequence(waiting, waiting, answered, done("ok")),
+      "wait",
+      "a1",
+      async () => {},
+      undefined,
+      onWait,
+    );
+    expect(changes).toEqual([{ waiting: true, tool: "request_user_input" }, { waiting: false }]);
+  });
+
+  test("a different request right after another is a new wait", async () => {
+    const { changes, onWait } = recorder();
+    const edit = { status: "running", permission: { id: "p2", name: "Edit" }, lastMessage: null };
+    await settleTurn(
+      sequence(bash, bash, edit, edit, done("ok")),
+      "wait",
+      "a1",
+      async () => {},
+      undefined,
+      onWait,
+    );
+    expect(changes).toEqual([
+      { waiting: true, tool: "Bash" },
+      { waiting: false },
+      { waiting: true, tool: "Edit" },
+      { waiting: false },
+    ]);
+  });
+
+  test("a turn that stops waiting ends the wait as ended, not answered", async () => {
+    const { changes, onWait } = recorder();
+    const controller = new AbortController();
+    let polls = 0;
+    const result = await settleTurn(
+      sequence(bash),
+      "wait",
+      "a1",
+      async () => {
+        polls += 1;
+        if (polls === 3) controller.abort();
+      },
+      controller.signal,
+      onWait,
+    );
+    expect(result).toMatchObject({ outcome: "needs_permission" });
+    expect(changes).toEqual([
+      { waiting: true, tool: "Bash" },
+      { waiting: false, ended: true },
+    ]);
+  });
+});
+
 describe("waitForNoRun", () => {
   /** An agent manager whose one agent is busy until `finish()`. */
   function busyAgent() {

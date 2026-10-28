@@ -1,11 +1,21 @@
 import { GOAL_CONFIG_BOUNDS } from "@getpaseo/protocol/goal/config-bounds";
 import type { Goal, GoalConfig, TaskSpec } from "@getpaseo/protocol/goal/types";
 
+// The time limit is read the same way by the daemon, the CLI and the app.
+export {
+  absoluteDeadlineMs,
+  excludedWaitMs,
+  goalDeadlineMs,
+  timeLimitEndMs,
+} from "@getpaseo/protocol/goal/time-limit";
+
 export interface ResolvedLimits {
   maxTasks: number;
   maxRuns: number;
   runTimeoutMs: number;
   goalTimeoutMs: number;
+  /** Longest one permission request or question waits for a person's answer. */
+  userWaitMs: number;
   retryBackoffMs: number;
   /** Null when no budget is set. */
   maxTotalTokens: number | null;
@@ -20,6 +30,7 @@ export const DEFAULT_LIMITS: ResolvedLimits = {
   maxRuns: BOUNDS.maxRuns.default,
   runTimeoutMs: BOUNDS.runTimeoutMinutes.default * MINUTE,
   goalTimeoutMs: BOUNDS.goalTimeoutMinutes.default * MINUTE,
+  userWaitMs: BOUNDS.userWaitMinutes.default * MINUTE,
   retryBackoffMs: BOUNDS.retryBackoffSeconds.default * 1000,
   maxTotalTokens: BOUNDS.maxTotalTokens.default,
   maxCostUsd: BOUNDS.maxCostUsd.default,
@@ -39,6 +50,10 @@ export function resolveLimits(config: GoalConfig | null | undefined): ResolvedLi
       limits?.goalTimeoutMinutes === undefined
         ? DEFAULT_LIMITS.goalTimeoutMs
         : limits.goalTimeoutMinutes * MINUTE,
+    userWaitMs:
+      limits?.userWaitMinutes === undefined
+        ? DEFAULT_LIMITS.userWaitMs
+        : limits.userWaitMinutes * MINUTE,
     retryBackoffMs:
       limits?.retryBackoffSeconds === undefined
         ? DEFAULT_LIMITS.retryBackoffMs
@@ -57,30 +72,6 @@ export function taskRunTimeoutMs(
   return task.runTimeoutMinutes === undefined
     ? goalMs
     : Math.min(task.runTimeoutMinutes * MINUTE, goalMs);
-}
-
-type DeadlineGoal = Pick<Goal, "createdAt" | "timeBaseAt" | "config">;
-
-/** When the time limit runs out, in epoch milliseconds: counted from timeBaseAt, else creation. */
-export function timeLimitEndMs(goal: DeadlineGoal): number {
-  return Date.parse(goal.timeBaseAt ?? goal.createdAt) + resolveLimits(goal.config).goalTimeoutMs;
-}
-
-/** The absolute deadline in epoch milliseconds, or null when none is set. */
-export function absoluteDeadlineMs(goal: Pick<Goal, "config">): number | null {
-  const deadlineAt = goal.config?.limits?.deadlineAt;
-  const absolute = deadlineAt ? Date.parse(deadlineAt) : Number.NaN;
-  return Number.isNaN(absolute) ? null : absolute;
-}
-
-/**
- * When the goal must be finished, in epoch milliseconds: its time limit from its time
- * base, or the absolute deadline if that comes first.
- */
-export function goalDeadlineMs(goal: DeadlineGoal): number {
-  const byTimeout = timeLimitEndMs(goal);
-  const absolute = absoluteDeadlineMs(goal);
-  return absolute === null ? byTimeout : Math.min(byTimeout, absolute);
 }
 
 /** The budget the goal has used up, as a reason to stop it, or null while within budget. */

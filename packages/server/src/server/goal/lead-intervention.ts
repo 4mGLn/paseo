@@ -1,6 +1,7 @@
 import {
   LEAD_STOP_PREFIX,
   TURN_TIMEOUT_PREFIX,
+  isNoAnswerFailure,
   isWorkerBlocked,
 } from "@getpaseo/protocol/goal/failure-wording";
 import {
@@ -62,6 +63,8 @@ export type WakeUp = { trigger: FailureTrigger } | "deferred" | "woken" | null;
  * prompt still quotes a blocked worker's reason, since it quotes the run's error.
  */
 export function failureTrigger(goal: Goal, task: Task, error: string): FailureTrigger | null {
+  // Nobody answered in time: only a person can answer sooner or allow longer waits.
+  if (isNoAnswerFailure(error)) return null;
   const failed = countedFailures(goal, task.id);
   if (goal.config && failed >= goal.config.maxAttempts) return LAST_ATTEMPT_TRIGGER;
   if (isWorkerBlocked(error)) return "worker_blocked";
@@ -76,7 +79,8 @@ export function failureTrigger(goal: Goal, task: Task, error: string): FailureTr
  * task, its latest run and that run's error. Recovery recomputes it from the log the same way.
  * `waitsForPerson` is true when the run stopped on a request a person must answer under the
  * same permission policy; that path stays the person's. A worker that reported it was blocked
- * is told apart by its error, read here, and wakes the Lead first.
+ * is told apart by its error, read here, and wakes the Lead first. A request nobody answered
+ * within userWaitMinutes stays the person's too, whatever the policy.
  */
 export function dueWakeUp(goal: Goal, taskId: string, waitsForPerson: boolean): WakeUp {
   if (goal.status !== "executing" || !goal.config?.leadInterventions || !goal.leadAgentId) {

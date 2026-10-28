@@ -24,6 +24,7 @@ import type {
   PendingTurnRequest,
   TurnPermission,
   TurnResult,
+  TurnWaitChange,
 } from "./goal-manager.js";
 import type { GoalModelCatalog } from "./goal-thinking.js";
 import type { TimelineCursor } from "./run-watcher.js";
@@ -223,10 +224,14 @@ function awaitsAnswer(wait: AgentWait): boolean {
 /**
  * Turns the next agent event into a turn result. Under the `wait` policy a
  * permission request stays pending in Paseo for a person to answer, and this
- * keeps polling while it waits; the caller's turn timeout is what ends a request
+ * keeps polling while it waits; the caller's user-wait limit is what ends a request
  * nobody answers. A question answered after the turn ended starts a follow-up turn,
  * which this waits for too. A policy given as a function is read again on every
  * poll, so a goal switched to `fail` ends a turn that is waiting.
+ *
+ * `onWait` hears when a request has waited for at least one poll, so a request that clears
+ * itself at once is never reported, and when that wait stops. A different request waiting
+ * right after another is a new wait.
  */
 export async function settleTurn(
   next: () => Promise<AgentWait>,
@@ -234,8 +239,10 @@ export async function settleTurn(
   agentId: string,
   pause: (ms: number) => Promise<void> = sleep,
   signal?: AbortSignal,
+  onWait?: (change: TurnWaitChange) => void,
 ): Promise<TurnResult> {
   const current = typeof policy === "function" ? policy : () => policy;
+  const waits = waitReporter(onWait);
   let wait = await next();
   let followUpPolls = 0;
   while (current() === "wait") {
@@ -243,15 +250,20 @@ export async function settleTurn(
     if (signal?.aborted) break;
     if (awaitsAnswer(wait)) {
       if (wait.status === "idle") followUpPolls = FOLLOW_UP_POLLS;
-    } else if (followUpPolls > 0 && !wait.permission && wait.status === "idle") {
-      // Answered: give the follow-up turn a moment to start.
-      followUpPolls -= 1;
+      waits.see(wait.permission);
     } else {
-      break;
+      waits.see(null);
+      if (followUpPolls > 0 && !wait.permission && wait.status === "idle") {
+        // Answered: give the follow-up turn a moment to start.
+        followUpPolls -= 1;
+      } else {
+        break;
+      }
     }
     await pause(PERMISSION_POLL_MS);
     wait = await next();
   }
+  waits.stop();
   if (wait.permission) {
     return { outcome: "needs_permission", request: pendingTurnRequest(wait.permission) };
   }
@@ -259,6 +271,38 @@ export async function settleTurn(
     return { outcome: "failed", error: wait.lastMessage ?? `Agent ${agentId} failed` };
   }
   return { outcome: "completed", text: wait.lastMessage?.trim() ?? "" };
+}
+
+/**
+ * Tells `onWait` about the requests settleTurn sees at each poll: a request still there at the
+ * next poll starts a wait, and the wait ends when it is gone or replaced, or the turn stops.
+ */
+function waitReporter(onWait: ((change: TurnWaitChange) => void) | undefined) {
+  // The request seen at the previous poll, and whether its wait was reported.
+  let seen: Partial<AgentPermissionRequest> | null = null;
+  let reported = false;
+  const end = (ended: boolean) => {
+    if (reported) onWait?.(ended ? { waiting: false, ended: true } : { waiting: false });
+    reported = false;
+  };
+  return {
+    see(request: Partial<AgentPermissionRequest> | null) {
+      if (!request || (seen && !sameRequest(seen, request))) end(false);
+      else if (seen && !reported) {
+        reported = true;
+        onWait?.({ waiting: true, request: pendingTurnRequest(request) });
+      }
+      seen = request;
+    },
+    stop: () => end(true),
+  };
+}
+
+function sameRequest(
+  a: Partial<AgentPermissionRequest>,
+  b: Partial<AgentPermissionRequest>,
+): boolean {
+  return a.id === undefined || b.id === undefined || a.id === b.id;
 }
 
 export interface GoalPortDeps {
@@ -501,6 +545,7 @@ export function createGoalAgentPort(deps: GoalPortDeps): ManagerAgentPort {
           agentId,
           undefined,
           options?.signal,
+          options?.onWait,
         );
         const end = watcher.end();
         const usage = meter.measure(agentId, watcher.reading());

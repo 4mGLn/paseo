@@ -140,7 +140,8 @@ const TRIGGER_TEXT: Record<string, string> = {
   worker_blocked:
     "stopped because its worker reported it was blocked; that is the worker's own claim, quoted in the error below",
   lead_stopped: "was stopped by you during a check-in",
-  timeout: "hit its run time limit",
+  timeout:
+    "hit its run time limit (time spent waiting for a person's answer does not count toward it)",
   repeated_failure: "failed again",
 };
 
@@ -323,7 +324,7 @@ function checkInFacts(
   const elapsed = elapsedMs === null ? "?" : `${minutes(elapsedMs)}`;
   const failed = task ? countedFailures(goal, task.id) : 0;
   const lines = [
-    `Elapsed: ${elapsed} of ${limit} minutes; at ${limit} minutes the run is stopped as timed out.`,
+    `Elapsed: ${elapsed} of ${limit} minutes, leaving out time spent waiting for a person's answer; at ${limit} minutes the run is stopped as timed out.`,
     `Attempts: ${failed} failed of ${goal.config?.maxAttempts ?? 1} allowed; this run is attempt ${task?.attempts ?? "?"}.`,
   ];
   const { observed } = context;
