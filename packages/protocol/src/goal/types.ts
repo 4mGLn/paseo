@@ -46,6 +46,9 @@ export const TaskSpecSchema = z.object({
   provider: AgentProviderSchema.trim().min(1).optional(),
   // Thinking option id for this task's model. Overrides workerThinking.
   thinking: z.string().trim().min(1).optional(),
+  // Turn time limit for this task's runs. It can only lower the goal's
+  // limits.runTimeoutMinutes, so a plan cannot widen a limit a person set.
+  runTimeoutMinutes: boundedInt(B.limits.runTimeoutMinutes).optional(),
 });
 export type TaskSpec = z.infer<typeof TaskSpecSchema>;
 
@@ -89,6 +92,11 @@ export const GoalConfigSchema = z.object({
   autoApprovePlan: z.boolean(),
   // Send the Lead a message when a task fails for good or all tasks finish.
   notifyLead: z.boolean(),
+  // Wake the Lead to decide what to do when a task times out, fails twice or uses its last
+  // attempt, and when a running task nears its time limit or stalls. Absent means off, so
+  // goals created before it keep running as they did. Needs
+  // server_info.features.goalLeadInterventions.
+  leadInterventions: z.boolean().optional(),
   // Provider for the independent reviewer, and for the verifier unless verifyProvider is set.
   // Defaults to the Lead's.
   reviewProvider: AgentProviderSchema.optional(),
@@ -156,6 +164,7 @@ export type GoalConfig = z.infer<typeof GoalConfigSchema>;
 export const GoalConfigChangesSchema = z.object({
   onPermissionRequest: GoalPermissionPolicySchema.optional(),
   notifyLead: z.boolean().optional(),
+  leadInterventions: z.boolean().optional(),
   autoApprovePlan: z.boolean().optional(),
   requireHumanApproval: z.boolean().optional(),
   testCommand: z.string().trim().min(1).nullable().optional(),
@@ -380,6 +389,132 @@ export const PlanRejectionSchema = z.object({
 });
 export type PlanRejection = z.infer<typeof PlanRejectionSchema>;
 
+// One change to an executing goal's plan. `replace` names an existing task by the spec's id.
+export const PlanRevisionOpSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("add"), task: TaskSpecSchema }),
+  z.object({ op: z.literal("replace"), task: TaskSpecSchema }),
+  z.object({ op: z.literal("remove"), taskId: IdSchema }),
+]);
+export type PlanRevisionOp = z.infer<typeof PlanRevisionOpSchema>;
+
+// A change to the plan after it was approved, proposed by the Lead or a person.
+// `source` is "lead" or "person"; `status` is "pending", "applied", "rejected",
+// "abandoned" or "superseded". Both are strings so a later value does not break an older reader.
+export const PlanRevisionSchema = z.object({
+  id: IdSchema,
+  source: z.string(),
+  reason: z.string(),
+  ops: z.array(PlanRevisionOpSchema),
+  status: z.string(),
+  // The Lead intervention this revision answers.
+  interventionId: IdSchema.optional(),
+  proposedAt: z.string(),
+  decidedAt: z.string().optional(),
+  decisionReason: z.string().optional(),
+});
+export type PlanRevision = z.infer<typeof PlanRevisionSchema>;
+
+// The Manager woke the Lead to decide about a task: after a failed run (a failure wake-up),
+// or while a run is still going (a watch check-in, `trigger` "watch"). `trigger`, `status`
+// and `outcome` are strings so a later value does not break an older reader.
+export const LeadInterventionSchema = z.object({
+  id: IdSchema,
+  // The task and run a failure wake-up or check-in is about: the failed run, or the run being
+  // watched. Optional for a later kind of intervention about the whole goal.
+  taskId: IdSchema.optional(),
+  runId: IdSchema.optional(),
+  // "attempts_exhausted", "lead_stopped", "timeout", "repeated_failure" or "watch".
+  trigger: z.string(),
+  // The failed run's error; empty for a check-in.
+  error: z.string(),
+  // What fired a check-in: "near_timeout", "stall".
+  triggers: z.array(z.string()).optional(),
+  // A check-in's number within its run, from 1.
+  checkIn: z.number().int().positive().optional(),
+  // Diff stat and status of the run's worktree, capped.
+  workSummary: z.string().optional(),
+  // "open", "awaiting_approval" (a revision answering it is pending), "resolved" or "abandoned".
+  status: z.string(),
+  // Failure wake-ups: "revised", "continue", "give_up", "revision_rejected".
+  // Check-ins: "ok", "nudged", "stopped", "run_ended". Both: "expired", "lead_unavailable",
+  // "superseded".
+  outcome: z.string().optional(),
+  note: z.string().optional(),
+  // What the Lead sent the worker, for outcome "nudged".
+  message: z.string().optional(),
+  revisionId: IdSchema.optional(),
+  requestedAt: z.string(),
+  resolvedAt: z.string().optional(),
+  // `reopens` of the goal when it was requested; the caps count only the current one.
+  // Absent means 0.
+  epoch: z.number().int().nonnegative().optional(),
+});
+export type LeadIntervention = z.infer<typeof LeadInterventionSchema>;
+
+// How the Lead, or the Manager without it, decided to recover a failed goal. `decision` is
+// "retry", "revise" or "needs_person", a string so a later value does not break an older
+// reader. `hints` is advice for the workers of failed or cancelled tasks, by task id; `ops`
+// is the plan change of a revise. `fallback` marks a decision the Manager took without the
+// Lead's answer.
+export const RecoveryDecisionSchema = z.object({
+  decision: z.string(),
+  reason: z.string(),
+  hints: z.record(z.string(), z.string()).optional(),
+  ops: z.array(PlanRevisionOpSchema).optional(),
+  fallback: z.boolean().optional(),
+});
+export type RecoveryDecision = z.infer<typeof RecoveryDecisionSchema>;
+
+// The latest recovery of a failed goal. The goal stays failed while the Lead decides.
+// `status` is "deciding", "decided" (being applied), "awaiting_approval" (a revise waits for a
+// person), "applied" (the goal was reopened) or "ended"; `outcome` is "applied", "rejected",
+// "needs_person" or "cancelled". Both are strings so a later value does not break an older reader.
+export const RecoverySchema = z.object({
+  id: IdSchema,
+  status: z.string(),
+  startedAt: z.string(),
+  startedBy: z.string(),
+  // What the goal failed with, and when, as the recovery started. A recovery that ends without
+  // applying rewrites the goal's reason and failure time; these keep the originals.
+  failureReason: z.string(),
+  failedAt: z.string().optional(),
+  // The time mode and active time the restart of the time limit uses when it is applied.
+  timeMode: z.string().optional(),
+  activeMs: z.number().int().nonnegative().optional(),
+  leadAgentId: z.string().optional(),
+  leadWorkspaceId: z.string().optional(),
+  interventionId: IdSchema.optional(),
+  decision: RecoveryDecisionSchema.optional(),
+  decidedAt: z.string().optional(),
+  // True once the recovery counts toward the goal's recovery limit: the Lead decided.
+  counted: z.boolean().optional(),
+  outcome: z.string().optional(),
+  reason: z.string().optional(),
+  resolvedAt: z.string().optional(),
+});
+export type Recovery = z.infer<typeof RecoverySchema>;
+
+// Instructions for the goal's workers. `goal` and `tasks` (by task id) are a person's and are
+// authoritative. `lead` is the Lead's advice from recovery `recoveryId`; the next recovery
+// replaces it.
+export const GuidanceSchema = z.object({
+  goal: z.string().optional(),
+  tasks: z.record(z.string(), z.string()).optional(),
+  lead: z.object({ recoveryId: IdSchema, tasks: z.record(z.string(), z.string()) }).optional(),
+  // Set in goal.list, mutation responses and goal.update when a text was cut short there;
+  // goal.inspect carries it in full.
+  truncated: z.boolean().optional(),
+});
+export type Guidance = z.infer<typeof GuidanceSchema>;
+
+// A person's change to the guidance, merged into the goal's: a string sets an entry, null
+// clears it, absent leaves it.
+export const GuidanceChangesSchema = z.object({
+  goal: z.string().nullable().optional(),
+  tasks: z.record(z.string(), z.string().nullable()).optional(),
+});
+export type GuidanceChanges = z.infer<typeof GuidanceChangesSchema>;
+
 export const GoalSchema = z.object({
   id: IdSchema,
   title: z.string().trim().min(1),
@@ -400,8 +535,24 @@ export const GoalSchema = z.object({
   pausedAt: z.string().nullable().optional(),
   // Plans sent back to the Lead, oldest first. Absent from daemons without goal controls.
   planRejections: z.array(PlanRejectionSchema).optional(),
+  // Plan revisions after approval, oldest first. Absent until the first one is proposed.
+  // goal.list, mutation responses and goal.update send decided revisions with `ops: []`
+  // (left out, not "changed nothing"); goal.inspect sends every revision in full.
+  planRevisions: z.array(PlanRevisionSchema).optional(),
+  // Times the Lead was woken to decide about a task, oldest first. Absent until the first one.
+  interventions: z.array(LeadInterventionSchema).optional(),
   // Times a failed goal was reopened by a retry.
   reopens: z.number().int().nonnegative().optional(),
+  // Where goalTimeoutMinutes counts from, set by a retry that chose a time mode; read absent
+  // as createdAt. Absent from daemons without server_info.features.goalTimeBase.
+  timeBaseAt: z.string().optional(),
+  // The latest recovery, how many recoveries counted toward the limit, when the goal last
+  // failed, and the guidance its workers get. Absent until first set, and from daemons
+  // without server_info.features.goalRecovery.
+  recovery: RecoverySchema.optional(),
+  recoveries: z.number().int().nonnegative().optional(),
+  failedAt: z.string().optional(),
+  guidance: GuidanceSchema.optional(),
   // Usage of every agent turn: Lead, workers, reviewers, verifier. Absent until the
   // first turn is recorded, and from daemons that predate usage tracking.
   usage: UsageTotalsSchema.optional(),
@@ -456,6 +607,26 @@ const eventEnvelope = {
   // Assigned by the log, strictly increasing per goal starting at 1.
   seq: z.number().int().positive(),
   at: z.string(),
+};
+
+/**
+ * How a retry restarts the goal's time limit. `fresh` counts goalTimeoutMinutes from the
+ * retry; `remaining` keeps the time the goal spent running since it was created or last
+ * restarted fresh, leaving out the time it sat paused or failed.
+ */
+export const GOAL_TIME_MODES = ["fresh", "remaining"] as const;
+export type GoalTimeMode = (typeof GOAL_TIME_MODES)[number];
+
+/** Part of the refusal of a retry whose time limit has passed and that chose no time mode. */
+export const GOAL_TIME_LIMIT_PASSED = "the goal's time limit has passed";
+
+// Fields of the events that put a goal back to work (goal.retried, goal.reopened,
+// changeset.integration_retried). `timeMode` is one of GOAL_TIME_MODES, a string so the set
+// can grow; the reducer refuses others. `activeMs` is the time the goal ran, recorded with
+// `remaining` so a replay does not recompute it. Absent: the time limit counts as before.
+const retryTimeFields = {
+  timeMode: z.string().optional(),
+  activeMs: z.number().int().nonnegative().optional(),
 };
 
 export const GoalEventSchema = z.discriminatedUnion("type", [
@@ -610,6 +781,7 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     type: z.literal("changeset.integration_retried"),
     changeSetIds: z.array(IdSchema).min(1),
     taskIds: z.array(IdSchema),
+    ...retryTimeFields,
   }),
   z.object({ ...eventEnvelope, type: z.literal("goal.completed") }),
   z.object({ ...eventEnvelope, type: z.literal("goal.failed"), reason: z.string() }),
@@ -637,6 +809,9 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
     type: z.literal("goal.retried"),
     taskIds: z.array(IdSchema).min(1),
     reopen: z.boolean(),
+    ...retryTimeFields,
+    // A person's change to the workers' guidance. Absent from daemons without goalRecovery.
+    guidance: GuidanceChangesSchema.optional(),
   }),
   // A person dismissed an ended goal. Accepted only after the goal has ended.
   z.object({ ...eventEnvelope, type: z.literal("goal.acknowledged") }),
@@ -656,7 +831,82 @@ export const GoalEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventEnvelope, type: z.literal("goal.config_updated"), config: GoalConfigSchema }),
   // A person reopened a goal that failed while planning (it has no tasks); a fresh Lead
   // plans again. A goal that failed later is reopened by goal.retried instead.
-  z.object({ ...eventEnvelope, type: z.literal("goal.reopened") }),
+  z.object({ ...eventEnvelope, type: z.literal("goal.reopened"), ...retryTimeFields }),
+  // The Lead or a person proposes a change to an executing goal's plan. `interventionId`
+  // is set when it answers a Lead intervention.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("plan.revision_proposed"),
+    revisionId: IdSchema,
+    source: z.string(),
+    reason: z.string(),
+    ops: z.array(PlanRevisionOpSchema).min(1),
+    interventionId: IdSchema.optional(),
+  }),
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("plan.revision_approved"),
+    revisionId: IdSchema,
+  }),
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("plan.revision_rejected"),
+    revisionId: IdSchema,
+    reason: z.string(),
+  }),
+  // The Manager woke the Lead about a task; see LeadInterventionSchema for the fields.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("intervention.requested"),
+    interventionId: IdSchema,
+    taskId: IdSchema.optional(),
+    runId: IdSchema.optional(),
+    trigger: z.string(),
+    error: z.string(),
+    triggers: z.array(z.string()).optional(),
+    checkIn: z.number().int().positive().optional(),
+    workSummary: z.string().optional(),
+  }),
+  // The Lead decided, or the Manager stopped waiting. Outcomes the reducer sets itself
+  // (revised, revision_rejected, superseded, run_ended) never come from this event.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("intervention.resolved"),
+    interventionId: IdSchema,
+    outcome: z.string(),
+    note: z.string().optional(),
+    message: z.string().optional(),
+  }),
+  // A person asked the Lead to recover the failed goal. `timeMode` and `activeMs` are used when
+  // the recovery is applied; see retryTimeFields.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("recovery.started"),
+    recoveryId: IdSchema,
+    startedBy: z.string(),
+    ...retryTimeFields,
+    guidance: GuidanceChangesSchema.optional(),
+  }),
+  // The Lead decided, or the Manager decided without it (`decision.fallback`).
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("recovery.decided"),
+    recoveryId: IdSchema,
+    decision: RecoveryDecisionSchema,
+  }),
+  // The recovery ended. `outcome` "applied" reopens the goal, restarting its time limit with
+  // the recovery's `timeMode` and `activeMs`, copied here; "rejected", "needs_person" and
+  // "cancelled" leave it failed. `uncounted` keeps a Lead-decided recovery that ended before it
+  // could apply (the integration check failed) from counting toward the limit.
+  z.object({
+    ...eventEnvelope,
+    type: z.literal("recovery.resolved"),
+    recoveryId: IdSchema,
+    outcome: z.string(),
+    reason: z.string().optional(),
+    ...retryTimeFields,
+    uncounted: z.boolean().optional(),
+  }),
 ]);
 export type GoalEvent = z.infer<typeof GoalEventSchema>;
 export type GoalEventType = GoalEvent["type"];
