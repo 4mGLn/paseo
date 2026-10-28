@@ -151,6 +151,9 @@ export const DEFAULT_CLIENT_CAPABILITIES = {
   [CLIENT_CAPS.goalConfigEdit]: true,
   [CLIENT_CAPS.goalUsageBreakdown]: true,
   [CLIENT_CAPS.goalIntegrationRetry]: true,
+  [CLIENT_CAPS.goalPlanRevision]: true,
+  [CLIENT_CAPS.goalLeadInterventions]: true,
+  [CLIENT_CAPS.goalRecovery]: true,
 } satisfies Record<Exclude<ClientCapability, typeof CLIENT_CAPS.browserHost>, true>;
 
 /** Calling releases demand; ready waits for membership, or local attachment on broadcast hosts. */

@@ -14,6 +14,9 @@ import type {
   GoalConfigChanges,
   GoalPriority,
   GoalStatus,
+  GoalTimeMode,
+  GuidanceChanges,
+  PlanRevisionOp,
   TaskSpec,
 } from "@getpaseo/protocol/goal/types";
 import { messageTooLargeError } from "./daemon-client-transport-utils.js";
@@ -6691,6 +6694,7 @@ export class DaemonClient {
       throw new Error("Update the host to choose a thinking level per goal role.");
     }
     if (config?.onPermissionRequest === "auto") this.requireGoalConfigEdit();
+    if (config?.leadInterventions) this.requireGoalLeadInterventions();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.create.response">({
       requestId: options.requestId,
       message: {
@@ -6834,6 +6838,10 @@ export class DaemonClient {
     requestId?: string;
   }): Promise<GoalMutationPayload> {
     this.requireGoals();
+    if (options.tasks.some((task) => task.runTimeoutMinutes !== undefined)) {
+      // An older daemon would drop the limit and run the task under the goal's.
+      this.requireGoalPlanRevision();
+    }
     return this.sendNamespacedCorrelatedSessionRequest<"goal.propose_plan.response">({
       requestId: options.requestId,
       message: {
@@ -6946,12 +6954,114 @@ export class DaemonClient {
     requestId?: string;
   }): Promise<GoalMutationPayload> {
     this.requireGoalConfigEdit();
+    if (options.changes.leadInterventions) this.requireGoalLeadInterventions();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.update_config.response">({
       requestId: options.requestId,
       message: {
         type: "goal.update_config.request",
         goalId: options.goalId,
         changes: options.changes,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** The goal setting leadInterventions, and the intervention.* events. */
+  supportsGoalLeadInterventions(): boolean {
+    return this.lastServerInfoMessage?.features?.goalLeadInterventions === true;
+  }
+
+  private requireGoalLeadInterventions(): void {
+    if (!this.supportsGoalLeadInterventions()) {
+      // An older daemon would drop the setting and never wake the Lead.
+      throw new Error("Update the host to let the Lead decide about failing tasks.");
+    }
+  }
+
+  /** goal.retry's timeMode, and goals' timeBaseAt. */
+  supportsGoalTimeBase(): boolean {
+    return this.lastServerInfoMessage?.features?.goalTimeBase === true;
+  }
+
+  /** Revising an executing goal's plan, and a task's own runTimeoutMinutes. */
+  supportsGoalPlanRevision(): boolean {
+    return this.lastServerInfoMessage?.features?.goalPlanRevision === true;
+  }
+
+  private requireGoalPlanRevision(): void {
+    if (!this.supportsGoalPlanRevision()) {
+      throw new Error(
+        "Update the host to revise a running goal's plan or set a task's run timeout.",
+      );
+    }
+  }
+
+  /**
+   * Change an executing goal's plan: `ops`, or the desired plan as `tasks` with `remove`
+   * naming each pending, failed or cancelled task left out. Without `agentId` the revision is
+   * a person's and applies at once; with the goal's Lead agent id it is the Lead's.
+   */
+  async goalRevisePlan(options: {
+    goalId: string;
+    ops?: PlanRevisionOp[];
+    tasks?: TaskSpec[];
+    remove?: string[];
+    reason: string;
+    agentId?: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalPlanRevision();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.plan.revise.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.plan.revise.request",
+        goalId: options.goalId,
+        ...(options.ops ? { ops: options.ops } : {}),
+        ...(options.tasks ? { tasks: options.tasks } : {}),
+        ...(options.remove ? { remove: options.remove } : {}),
+        reason: options.reason,
+        ...(options.agentId ? { agentId: options.agentId } : {}),
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** Approve a plan revision held for a person. */
+  async goalApprovePlanRevision(options: {
+    goalId: string;
+    revisionId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalPlanRevision();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.plan.approve_revision.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.plan.approve_revision.request",
+        goalId: options.goalId,
+        revisionId: options.revisionId,
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** Reject a plan revision held for a person; the plan stays as it was. */
+  async goalRejectPlanRevision(options: {
+    goalId: string;
+    revisionId: string;
+    feedback?: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalPlanRevision();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.plan.reject_revision.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.plan.reject_revision.request",
+        goalId: options.goalId,
+        revisionId: options.revisionId,
+        ...(options.feedback ? { feedback: options.feedback } : {}),
         ...(options.eventId ? { eventId: options.eventId } : {}),
       },
     });
@@ -6990,16 +7100,105 @@ export class DaemonClient {
   async goalRetry(options: {
     goalId: string;
     taskId?: string;
+    /** How the time limit restarts; needs goalTimeBase. */
+    timeMode?: GoalTimeMode;
+    /** The person's instruction for the goal's workers; needs goalRecovery. */
+    guidance?: GuidanceChanges;
     eventId?: string;
     requestId?: string;
   }): Promise<GoalMutationPayload> {
     this.requireGoalControls();
+    if (options.timeMode && !this.supportsGoalTimeBase()) {
+      // An older daemon would drop the mode and refuse the retry for its passed time limit.
+      throw new Error("Update the host to choose how a retried goal's time limit restarts.");
+    }
+    // An older daemon would drop the guidance and retry without it.
+    if (options.guidance) this.requireGoalRecovery();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.retry.response">({
       requestId: options.requestId,
       message: {
         type: "goal.retry.request",
         goalId: options.goalId,
         ...(options.taskId ? { taskId: options.taskId } : {}),
+        ...(options.timeMode ? { timeMode: options.timeMode } : {}),
+        ...(options.guidance ? { guidance: options.guidance } : {}),
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** Recovering a failed goal through its Lead, and guidance on goal.retry. */
+  supportsGoalRecovery(): boolean {
+    return this.lastServerInfoMessage?.features?.goalRecovery === true;
+  }
+
+  private requireGoalRecovery(): void {
+    if (!this.supportsGoalRecovery()) {
+      throw new Error("Update the host to recover a failed goal or give its workers guidance.");
+    }
+  }
+
+  /**
+   * Ask a fresh Lead to decide how a failed goal continues. `timeMode` is required once the
+   * time limit has passed (needs goalTimeBase too); `guidance` is the person's instruction.
+   */
+  async goalRecoveryStart(options: {
+    goalId: string;
+    timeMode?: GoalTimeMode;
+    guidance?: GuidanceChanges;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalRecovery();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.recovery.start.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.recovery.start.request",
+        goalId: options.goalId,
+        ...(options.timeMode ? { timeMode: options.timeMode } : {}),
+        ...(options.guidance ? { guidance: options.guidance } : {}),
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** Approve or reject the Lead's revise while a recovery waits for approval. */
+  async goalRecoveryDecide(options: {
+    goalId: string;
+    recoveryId: string;
+    approve: boolean;
+    message?: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalRecovery();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.recovery.decide.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.recovery.decide.request",
+        goalId: options.goalId,
+        recoveryId: options.recoveryId,
+        approve: options.approve,
+        ...(options.message ? { message: options.message } : {}),
+        ...(options.eventId ? { eventId: options.eventId } : {}),
+      },
+    });
+  }
+
+  /** Stop a recovery that is deciding or waiting for approval. */
+  async goalRecoveryCancel(options: {
+    goalId: string;
+    recoveryId: string;
+    eventId?: string;
+    requestId?: string;
+  }): Promise<GoalMutationPayload> {
+    this.requireGoalRecovery();
+    return this.sendNamespacedCorrelatedSessionRequest<"goal.recovery.cancel.response">({
+      requestId: options.requestId,
+      message: {
+        type: "goal.recovery.cancel.request",
+        goalId: options.goalId,
+        recoveryId: options.recoveryId,
         ...(options.eventId ? { eventId: options.eventId } : {}),
       },
     });
