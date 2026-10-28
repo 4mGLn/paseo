@@ -1917,6 +1917,13 @@ describe("Lead interventions", () => {
     expect(apply(again, [wake("b-a2")]).interventions?.[0]?.runId).toBe("b-a2");
   });
 
+  test("worker_blocked is a failure trigger the reducer accepts", () => {
+    const goal = apply(failedB(), [
+      wake("b-a1", "worker_blocked", { error: "Worker reported it was blocked: disk full" }),
+    ]);
+    expect(goal.interventions?.[0]).toMatchObject({ trigger: "worker_blocked", status: "open" });
+  });
+
   test("a trigger this version does not know is refused", () => {
     expect(() => apply(failedB(), [wake("b-a1", "audit")])).toThrow(/unknown trigger audit/);
     expect(() => apply(failedB(), [wake("b-a1", "")])).toThrow(/unknown trigger/);
@@ -3078,5 +3085,250 @@ describe("recovering a goal that failed verification (b195cf6f)", () => {
     );
     expect(round2.verificationRound).toBe(2);
     expect(round2.criteria.every((c) => c.verifiedAt === null)).toBe(true);
+  });
+});
+
+describe("accepting a failed goal as is", () => {
+  // The b195cf6f log: every task succeeded and is merged, c2 to c10 were verified, c1 was not
+  // met, and two recoveries ended needs_person. A third ends the same way, leaving none.
+  const LATER = "2026-10-28T08:00:00.000Z";
+  const fixtureEvents = (): GoalEvent[] =>
+    readFileSync(join(import.meta.dirname, "test-fixtures", "b195cf6f-verify.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => GoalEventSchema.parse(JSON.parse(line)));
+  const step = (goal: Goal, partials: Record<string, unknown>[]) =>
+    apply(
+      goal,
+      partials.map((p) => ({ at: LATER, ...p })),
+    );
+  const thirdRecoveryEnded = (): Goal => {
+    const goal = replayGoal(fixtureEvents());
+    if (!goal) throw new Error("empty fixture");
+    return step(goal, [
+      { type: "recovery.started", recoveryId: "rec-217", startedBy: "person", timeMode: "fresh" },
+      { type: "lead.attached", agentId: "lead-rec-217" },
+      {
+        type: "intervention.requested",
+        interventionId: "recovery-rec-217",
+        trigger: "recovery",
+        error: "",
+      },
+      {
+        type: "recovery.decided",
+        recoveryId: "rec-217",
+        decision: { decision: "needs_person", reason: "c1 needs a person" },
+      },
+    ]);
+  };
+  const accept = (goal: Goal, fields: Record<string, unknown> = {}) =>
+    step(goal, [
+      {
+        type: "goal.accepted",
+        criterionIds: ["c1"],
+        note: "UV-02 is tracked separately",
+        acceptedFrom: goal.failureReason ?? "",
+        client: "app",
+        ...fields,
+      },
+    ]);
+
+  test("completes the fixture goal with c1 waived, after its last recovery", () => {
+    const failed = thirdRecoveryEnded();
+    expect(failed.status).toBe("failed");
+    expect(failed.recoveries).toBe(3);
+    const reason = failed.failureReason;
+    const done = accept(failed, { note: "  UV-02 is tracked separately  " });
+    expect(done.status).toBe("completed");
+    expect(done.failureReason).toBeNull();
+    expect(done.accepted).toEqual({
+      at: LATER,
+      note: "UV-02 is tracked separately",
+      from: reason,
+      client: "app",
+    });
+    const c1 = done.criteria.find((c) => c.id === "c1");
+    expect(c1).toMatchObject({
+      verifiedAt: null,
+      waived: { at: LATER, note: "UV-02 is tracked separately" },
+    });
+    expect(done.criteria.filter((c) => c.waived).map((c) => c.id)).toEqual(["c1"]);
+    expect(done.criteria.filter((c) => c.verifiedAt)).toHaveLength(failed.criteria.length - 1);
+  });
+
+  test("replays to the same state, and an ended goal takes no reopen", () => {
+    const done = accept(thirdRecoveryEnded());
+    // The same events, parsed by the wire schema and replayed from the log.
+    const base = fixtureEvents();
+    let seq = base[base.length - 1]?.seq ?? 0;
+    const third: Record<string, unknown>[] = [
+      { type: "recovery.started", recoveryId: "rec-217", startedBy: "person", timeMode: "fresh" },
+      { type: "lead.attached", agentId: "lead-rec-217" },
+      {
+        type: "intervention.requested",
+        interventionId: "recovery-rec-217",
+        trigger: "recovery",
+        error: "",
+      },
+      {
+        type: "recovery.decided",
+        recoveryId: "rec-217",
+        decision: { decision: "needs_person", reason: "c1 needs a person" },
+      },
+    ];
+    const beforeAccept = replayGoal(
+      base.concat(
+        third.map((p) =>
+          GoalEventSchema.parse({
+            id: `x${seq}`,
+            goalId: base[0]?.goalId,
+            seq: ++seq,
+            at: LATER,
+            ...p,
+          }),
+        ),
+      ),
+    );
+    const log = base.concat(
+      [
+        ...third,
+        {
+          type: "goal.accepted",
+          criterionIds: ["c1"],
+          note: "UV-02 is tracked separately",
+          acceptedFrom: beforeAccept?.failureReason ?? "",
+          client: "app",
+        },
+      ].map((p, i) =>
+        GoalEventSchema.parse({
+          id: `y${i}`,
+          goalId: base[0]?.goalId,
+          seq: base.length + i + 1,
+          at: LATER,
+          ...p,
+        }),
+      ),
+    );
+    const replayed = replayGoal(log);
+    expect(replayed?.status).toBe("completed");
+    expect(replayed?.accepted).toEqual(done.accepted);
+    expect(replayed?.criteria).toEqual(done.criteria);
+    expect(() =>
+      step(done, [{ type: "recovery.started", recoveryId: "rec-x", startedBy: "person" }]),
+    ).toThrow(/goal is completed/);
+    expect(() => step(done, [{ type: "goal.retried", taskIds: ["t1"], reopen: true }])).toThrow(
+      /goal is completed/,
+    );
+    expect(() => accept(done)).toThrow(/goal is completed/);
+  });
+
+  test("is refused while a recovery is open", () => {
+    const failed = replayGoal(fixtureEvents());
+    if (!failed) throw new Error("empty fixture");
+    const deciding = step(failed, [
+      { type: "recovery.started", recoveryId: "rec-217", startedBy: "person", timeMode: "fresh" },
+    ]);
+    expect(() => accept(deciding)).toThrow(/recovery rec-217 is still deciding/);
+  });
+
+  test("is refused for an archived goal, until it is unarchived", () => {
+    const archived = step(thirdRecoveryEnded(), [{ type: "goal.archived" }]);
+    expect(() => accept(archived)).toThrow(/archived/);
+    expect(accept(step(archived, [{ type: "goal.unarchived" }])).status).toBe("completed");
+  });
+
+  test("is refused unless every unverified criterion is named exactly once", () => {
+    const failed = thirdRecoveryEnded();
+    expect(() => accept(failed, { criterionIds: [] })).toThrow(/missing: c1/);
+    expect(() => accept(failed, { criterionIds: ["c1", "c2"] })).toThrow(
+      /not unverified criteria: c2/,
+    );
+    expect(() => accept(failed, { criterionIds: ["c1", "c99"] })).toThrow(
+      /not unverified criteria: c99/,
+    );
+    expect(() => accept(failed, { criterionIds: ["c1", "c1"] })).toThrow(/named twice/);
+  });
+
+  test("needs a note of bounded length", () => {
+    const failed = thirdRecoveryEnded();
+    expect(() => accept(failed, { note: "   " })).toThrow(/note saying why is required/);
+    expect(() => accept(failed, { note: "x".repeat(2001) })).toThrow(/longer than 2000/);
+    expect(accept(failed, { note: "x".repeat(2000) }).status).toBe("completed");
+  });
+
+  test("is refused when work is not done or not merged", () => {
+    const failed = thirdRecoveryEnded();
+    const reworkFailed = structuredClone(failed);
+    Object.assign(reworkFailed.changeSets.find((c) => c.id === "cs-t5-a1") ?? {}, {
+      status: "rejected",
+      rejectionReason: "rework_failed",
+    });
+    expect(() => accept(reworkFailed)).toThrow(/change sets not merged: cs-t5-a1/);
+    const uncaptured = structuredClone(failed);
+    Object.assign(uncaptured.tasks.find((t) => t.id === "t5") ?? {}, { captured: false });
+    expect(() => accept(uncaptured)).toThrow(/work not captured for: t5/);
+    const taskFailed = run([
+      { ...created, config: revisionConfig },
+      { type: "plan.proposed", tasks: [task("a")] },
+      { type: "plan.approved" },
+      { type: "task.started", taskId: "a" },
+      { type: "task.failed", taskId: "a", error: "boom" },
+      { type: "goal.failed", reason: "Task a failed" },
+    ]);
+    expect(() => accept(taskFailed)).toThrow(/tasks not succeeded: a/);
+  });
+
+  test("is refused with zero tasks, on a manual goal and on a goal that did not fail", () => {
+    const noPlan = run([
+      { ...created, config: revisionConfig },
+      { type: "goal.failed", reason: "The Lead gave no usable plan" },
+    ]);
+    expect(() => accept(noPlan)).toThrow(/before it had a plan/);
+    const manual = run([created, { type: "goal.failed", reason: "x" }]);
+    expect(() => accept(manual)).toThrow(/manual goal/);
+    const verifying = replayGoal(fixtureEvents().filter((e) => e.seq <= 205));
+    if (!verifying) throw new Error("empty fixture");
+    expect(verifying.status).toBe("executing");
+    expect(() => accept(verifying)).toThrow(/requires goal status failed/);
+  });
+
+  test("a goal never accepted carries no acceptance fields", () => {
+    const failed = thirdRecoveryEnded();
+    expect(failed.accepted).toBeUndefined();
+    expect(failed.criteria.some((c) => c.waived)).toBe(false);
+  });
+
+  test("with every criterion verified it completes with nothing waived", () => {
+    const allVerified = structuredClone(thirdRecoveryEnded());
+    Object.assign(allVerified.criteria.find((c) => c.id === "c1") ?? {}, {
+      verifiedAt: LATER,
+      evidence: "ok",
+    });
+    const done = accept(allVerified, { criterionIds: [] });
+    expect(done.status).toBe("completed");
+    expect(done.accepted?.note).toBe("UV-02 is tracked separately");
+    expect(done.criteria.some((c) => c.waived)).toBe(false);
+  });
+
+  test("a merge that failed refuses it; an acknowledged or paused goal is accepted and no stage time is invented", () => {
+    const failed = thirdRecoveryEnded();
+    const mergeFailed = structuredClone(failed);
+    Object.assign(mergeFailed.changeSets.find((c) => c.id === "cs-t5-a1") ?? {}, {
+      status: "rejected",
+      rejectionReason: "integration_failed",
+    });
+    expect(() => accept(mergeFailed)).toThrow(/change sets not merged: cs-t5-a1/);
+
+    const acknowledged = step(failed, [{ type: "goal.acknowledged" }]);
+    const done = accept(acknowledged);
+    expect(done.status).toBe("completed");
+    expect(done.acknowledgedAt).toBe(LATER);
+
+    const { verifyStartedAt: _started, ...unstamped } = failed;
+    const paused = { ...unstamped, pausedAt: LATER };
+    const accepted = accept(paused);
+    expect(accepted.pausedAt).toBeNull();
+    expect(accepted).not.toHaveProperty("verifyStartedAt");
+    expect(accepted).not.toHaveProperty("verifiedAt");
   });
 });

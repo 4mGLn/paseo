@@ -378,6 +378,73 @@ describe("GoalManager", () => {
     expect(goal.tasks[0]).toMatchObject({ status: "succeeded", attempts: 2 });
   });
 
+  test("a task whose worker reported it was blocked is not retried after a restart", async () => {
+    const seed = await boot();
+    seed.manager.stop();
+    await createGoal(seed.store, { ...CONFIG, maxAttempts: 3 });
+    const d = (type: string, extra: Record<string, unknown> = {}) =>
+      seed.store.dispatch("g1", {
+        id: `seed-${type}-${Math.random()}`,
+        goalId: "g1",
+        type,
+        ...extra,
+      } as never);
+    const error = "Worker reported it was blocked: disk full";
+    await d("plan.proposed", { tasks: [task("a")] });
+    await d("plan.approved");
+    await d("task.started", { taskId: "a" });
+    await d("run.started", { runId: "a-a1", taskId: "a", provider: "codex" });
+    await d("run.finished", { runId: "a-a1", outcome: "failed", error });
+    await d("task.failed", { taskId: "a", error });
+
+    script([task("a")]);
+    const second = await boot();
+    await settle(second.manager);
+    const goal = goalOf(second.store);
+    expect(goal.runs).toHaveLength(1);
+    expect(goal.status).toBe("failed");
+    expect(goal.failureReason).toMatch(
+      /^Task a stopped: the worker reported it was blocked: "disk full"\./,
+    );
+  });
+
+  test("a blocked worker the Lead said continue about is retried after a restart", async () => {
+    const seed = await boot();
+    seed.manager.stop();
+    await createGoal(seed.store, { ...CONFIG, leadInterventions: true, maxAttempts: 3 });
+    const d = (type: string, extra: Record<string, unknown> = {}) =>
+      seed.store.dispatch("g1", {
+        id: `seed-${type}-${Math.random()}`,
+        goalId: "g1",
+        type,
+        ...extra,
+      } as never);
+    const error = "Worker reported it was blocked: disk full";
+    await d("lead.attached", { agentId: "lead-1" });
+    await d("plan.proposed", { tasks: [task("a")] });
+    await d("plan.approved");
+    await d("task.started", { taskId: "a" });
+    await d("run.started", { runId: "a-a1", taskId: "a", provider: "codex" });
+    await d("run.finished", { runId: "a-a1", outcome: "failed", error });
+    await d("task.failed", { taskId: "a", error });
+    await d("intervention.requested", {
+      interventionId: "a-a1",
+      taskId: "a",
+      runId: "a-a1",
+      trigger: "worker_blocked",
+      error,
+    });
+    // The daemon stopped during the retry backoff that followed the Lead's continue.
+    await d("intervention.resolved", { interventionId: "a-a1", outcome: "continue" });
+
+    script([task("a")]);
+    const second = await boot();
+    await settle(second.manager);
+    const goal = goalOf(second.store);
+    expect(goal.runs.map((r) => r.id)).toEqual(["a-a1", "a-a2"]);
+    expect(goal.status).toBe("completed");
+  });
+
   test("a task whose run finished just before a crash is not run again", async () => {
     const seed = await boot();
     seed.manager.stop();
@@ -1328,6 +1395,205 @@ describe("Lead interventions", () => {
       ?.resolve(answer({ decision: "give_up", reason: "stop" }));
     await env.settle(manager);
     expect(harness.notified.some((n) => n.text.includes("task b stopped"))).toBe(true);
+  });
+
+  const BLOCKED: TurnResult = {
+    outcome: "completed",
+    text: "Nothing changed.\n\nAnswer: Blocked by a full disk.\n\nTASK_STATUS: blocked: disk full (ENOSPC)",
+  };
+
+  test("a blocked worker: fails its run with the prefix and wakes the Lead with worker_blocked", async () => {
+    const decisions = scriptLead(
+      [task("a")],
+      () => BLOCKED,
+      () => answer({ decision: "give_up", reason: "a person must free disk" }),
+    );
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...LEAD, maxAttempts: 3 });
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.runs.map((r) => [r.id, r.status, r.error])).toEqual([
+      ["a-a1", "failed", "Worker reported it was blocked: disk full (ENOSPC)"],
+    ]);
+    expect(interventionsOf(store)).toEqual([["a-a1", "worker_blocked", "resolved", "give_up"]]);
+    expect(decisions[0]).toContain("its worker reported it was blocked");
+    expect(decisions[0]).toContain("Worker reported it was blocked: disk full (ENOSPC)");
+    expect(goal.status).toBe("failed");
+  });
+
+  test("a blocked worker: is retried when the Lead says continue", async () => {
+    let runs = 0;
+    scriptLead(
+      [task("a")],
+      () => {
+        runs += 1;
+        return runs === 1 ? BLOCKED : { outcome: "completed", text: "ok\nTASK_STATUS: done" };
+      },
+      () => answer({ decision: "continue", reason: "the disk was freed" }),
+    );
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...LEAD, maxAttempts: 3 });
+    await env.settle(manager);
+    expect(interventionsOf(store)).toEqual([["a-a1", "worker_blocked", "resolved", "continue"]]);
+    expect(env.goalOf(store).status).toBe("completed");
+  });
+
+  test("a blocked worker: with interventions off is not retried, and the goal failure opens with the quoted claim", async () => {
+    scriptLead(
+      [task("a")],
+      () => BLOCKED,
+      () => "hold",
+    );
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...CONFIG, leadInterventions: false, maxAttempts: 3 });
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.runs).toHaveLength(1);
+    expect(goal.interventions ?? []).toEqual([]);
+    expect(goal.status).toBe("failed");
+    expect(goal.failureReason).toMatch(
+      /^Task a stopped: the worker reported it was blocked: "disk full \(ENOSPC\)"\. Fix what it names and retry\. No task can make progress\. Failed or blocked: a/,
+    );
+    expect(goal.failureReason).not.toContain("needs_permission");
+  });
+
+  test("a blocked worker: on the last attempt wakes the Lead with attempts_exhausted and quotes the reason", async () => {
+    const decisions = scriptLead(
+      [task("a")],
+      () => BLOCKED,
+      () => answer({ decision: "give_up", reason: "no disk" }),
+    );
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...LEAD, maxAttempts: 1 });
+    await env.settle(manager);
+
+    expect(interventionsOf(store)).toEqual([["a-a1", "attempts_exhausted", "resolved", "give_up"]]);
+    expect(decisions[0]).toContain("Worker reported it was blocked: disk full (ENOSPC)");
+  });
+
+  test("a blocked worker: a Lead that does not answer in time leaves it to a person, not retried", async () => {
+    const decisions = scriptLead(
+      [task("a")],
+      () => BLOCKED,
+      () => "hold",
+    );
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...LEAD, maxAttempts: 3 });
+    await until(decisionAsked);
+    expect(decisions[0]).toContain(
+      "With no usable answer by then, the task is not retried and waits for a person.",
+    );
+    env.clock.advance(DECISION_TIME_PASSED);
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(interventionsOf(store)).toEqual([["a-a1", "worker_blocked", "resolved", "expired"]]);
+    expect(goal.runs).toHaveLength(1);
+    expect(goal.status).toBe("failed");
+    expect(goal.failureReason).toMatch(
+      /^Task a stopped: the worker reported it was blocked: "disk full \(ENOSPC\)"\./,
+    );
+  });
+
+  test("a blocked worker: a Lead that cannot take the turn leaves it to a person, not retried", async () => {
+    scriptLead(
+      [task("a")],
+      () => BLOCKED,
+      () => ({ outcome: "failed", error: "provider down" }),
+    );
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...LEAD, maxAttempts: 3 });
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.interventions?.[0]).toMatchObject({ outcome: "lead_unavailable" });
+    expect(goal.runs).toHaveLength(1);
+    expect(goal.status).toBe("failed");
+    expect(goal.failureReason).toMatch(/^Task a stopped: the worker reported it was blocked/);
+  });
+
+  test("a blocked worker: once the Lead's wake-ups for the task are used, it waits for a person", async () => {
+    let runs = 0;
+    scriptLead(
+      [task("a")],
+      () => {
+        runs += 1;
+        return runs <= 2 ? TIMEOUT : BLOCKED;
+      },
+      () => answer({ decision: "continue", reason: "try again" }),
+    );
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, { ...LEAD, maxAttempts: 5 });
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(interventionsOf(store)).toEqual([
+      ["a-a1", "timeout", "resolved", "continue"],
+      ["a-a2", "timeout", "resolved", "continue"],
+    ]);
+    expect(goal.runs).toHaveLength(3);
+    expect(goal.status).toBe("failed");
+    expect(goal.failureReason).toMatch(/^Task a stopped: the worker reported it was blocked/);
+  });
+
+  test("a blocked worker: a wake-up the reducer refuses leaves it to a person, not retried", async () => {
+    scriptLead(
+      [task("a")],
+      () => BLOCKED,
+      () => answer({ decision: "continue", reason: "x" }),
+    );
+    const { store, manager } = await env.boot();
+    const dispatch = store.dispatch.bind(store);
+    store.dispatch = (goalId, input) =>
+      input.type === "intervention.requested"
+        ? Promise.reject(new GoalTransitionError(input.type, "refused for the test"))
+        : dispatch(goalId, input);
+    await env.createGoal(store, { ...LEAD, maxAttempts: 3 });
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.runs).toHaveLength(1);
+    expect(goal.status).toBe("failed");
+    expect(goal.failureReason).toMatch(/^Task a stopped: the worker reported it was blocked/);
+  });
+
+  test("a blocked worker: a done line is taken out of the report; a report without a status line is kept as it was", async () => {
+    scriptLead(
+      [task("a"), task("b", { kind: "read" })],
+      (turn) =>
+        workTitle(turn) === "a"
+          ? { outcome: "completed", text: "Changed a.ts.\n\n**TASK_STATUS: done**" }
+          : { outcome: "completed", text: "Answer: Blocked by a full disk (ENOSPC)." },
+      () => "hold",
+    );
+    const prompts: string[] = [];
+    const respond = harness.respond;
+    harness.respond = (turn) => {
+      prompts.push(turn.prompt);
+      return respond?.(turn) ?? "hold";
+    };
+    const { store, manager } = await env.boot();
+    await env.createGoal(store, LEAD);
+    await env.settle(manager);
+
+    const goal = env.goalOf(store);
+    expect(goal.status).toBe("completed");
+    expect(goal.tasks.map((t) => [t.id, t.summary])).toEqual([
+      ["a", "Changed a.ts."],
+      ["b", "Answer: Blocked by a full disk (ENOSPC)."],
+    ]);
+    // Workers are told about the status line; the reviewer and verifier answer in JSON.
+    const workerPrompts = prompts.filter((p) => p.includes("You are working on one task"));
+    expect(workerPrompts).toHaveLength(2);
+    for (const prompt of workerPrompts) {
+      expect(prompt).toContain("TASK_STATUS: blocked: <one line");
+      expect(prompt).toContain("background commands you started");
+    }
+    const others = prompts.filter((p) => !p.includes("You are working on one task"));
+    expect(others.some((p) => p.includes("You are the verifier"))).toBe(true);
+    for (const prompt of others) expect(prompt).not.toContain("TASK_STATUS");
   });
 
   test("with notifyLead off the Lead is still woken", async () => {

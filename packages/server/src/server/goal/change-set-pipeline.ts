@@ -22,6 +22,8 @@ import {
   VERIFICATION_NOT_MET_PREFIX,
   WORK_NOT_RECOVERED_PREFIX,
   isPendingRequestFailure,
+  isWorkerBlocked,
+  workerBlockedFailureText,
 } from "@getpaseo/protocol/goal/failure-wording";
 import { goalRoleThinking } from "@getpaseo/protocol/goal/thinking";
 import type { GitPort } from "./git-ops.js";
@@ -671,10 +673,12 @@ export class ChangeSetPipeline {
     const request = isPendingRequestFailure(task.error)
       ? ` Task ${task.id} stopped on a request (needs_permission): ${error}`
       : "";
-    await this.host.failGoal(
-      goalId,
-      `Rework ${task.id} failed after ${task.attempts} attempts.${request}`,
-    );
+    // A worker's blocked claim opens the reason, quoted, as in the Manager's stuck-goal reason.
+    // It is not retried, so the reason names no attempt count.
+    const reason = isWorkerBlocked(task.error)
+      ? `${workerBlockedFailureText(task.id, error)} Rework ${task.id} failed.`
+      : `Rework ${task.id} failed after ${task.attempts} attempts.${request}`;
+    await this.host.failGoal(goalId, reason);
   }
 
   // ---- recovery ----------------------------------------------------------
