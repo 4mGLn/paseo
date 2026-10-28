@@ -8,6 +8,7 @@ import { runLsCommand } from "./ls.js";
 import { runChangesCommand } from "./changes.js";
 import { runNotificationsCommand } from "./notifications.js";
 import { runDiagnoseCommand, runRecoverCommand } from "./recover.js";
+import { runAcceptCommand } from "./accept.js";
 import {
   runArchiveCommand,
   runDeleteCommand,
@@ -326,6 +327,17 @@ export function createGoalCommand(): Command {
       .option("--reject", "Turn down the Lead's plan change; the goal stays failed")
       .option("--message <text>", "Why you rejected it (with --reject)"),
   ).action(withOutput(runRecoverCommand));
+
+  addJsonAndDaemonHostOptions(
+    goal
+      .command("accept")
+      .description(
+        "Accept a failed goal as is: it becomes completed with every criterion still unverified waived. Only when every task succeeded and all work is merged. Cannot be undone. Refused when PASEO_AGENT_ID is set",
+      )
+      .argument("<id>", "Goal ID")
+      .option("--note <text>", "Why you accept it as is (required)")
+      .option("-y, --yes", "Do not ask for confirmation"),
+  ).action(withOutput(runAcceptCommand));
 
   addJsonAndDaemonHostOptions(
     goal
