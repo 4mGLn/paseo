@@ -38,5 +38,17 @@ export const DEADLINE_REACHED_PATTERN = /^Deadline .* reached/;
 export const CAPTURE_FAILED_PREFIX = "Could not capture changes";
 export const WORK_NOT_RECOVERED_PREFIX = "Could not recover the work of task";
 
+/**
+ * Goal failure reason when the verifier judged criteria and found some unmet:
+ * `Acceptance criteria not met: <criterion> (<evidence>); ...`. Any other reason of a goal whose
+ * tasks all succeeded (`Verification failed: ...`, a time limit or deadline) means the
+ * unverified criteria were never judged.
+ */
+export const VERIFICATION_NOT_MET_PREFIX = "Acceptance criteria not met:";
+
+export function isCriteriaNotMetFailure(reason: string | null | undefined): boolean {
+  return !!reason && reason.startsWith(VERIFICATION_NOT_MET_PREFIX);
+}
+
 /** Goal failure reason when the daemon could not resume the goal after a restart. */
 export const RESUME_FAILED_PREFIX = "Recovery failed";
