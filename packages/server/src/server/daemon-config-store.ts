@@ -297,6 +297,12 @@ function pickGoalsPatch(
     : {};
 }
 
+function pickTeamsPatch(
+  teams: MutableDaemonConfigPatch["teams"],
+): Pick<SupportedMutableConfigPatch, "teams"> {
+  return teams !== undefined ? { teams: parseAgentTeamsConfigPatch(teams) } : {};
+}
+
 function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
   return {
     ...pickRelayPatch(patch.relay),
@@ -328,7 +334,7 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       : {}),
     ...(patch.terminalProfiles !== undefined ? { terminalProfiles: patch.terminalProfiles } : {}),
     ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
-    ...(patch.teams !== undefined ? { teams: parseAgentTeamsConfigPatch(patch.teams) } : {}),
+    ...pickTeamsPatch(patch.teams),
     ...pickGoalsPatch(patch.goals),
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
@@ -778,6 +784,14 @@ function mergeMutableAgentPatch(
   return Object.keys(next).length > 0 ? (next as PersistedConfig["agents"]) : undefined;
 }
 
+function mergeTeamsPatch(
+  target: NonNullable<PersistedConfig["daemon"]>,
+  teams: AgentTeamsConfig,
+): void {
+  if (Object.keys(teams).length > 0) target.teams = teams;
+  else delete target.teams;
+}
+
 function mergeMutableDaemonPatch(
   persistedDaemon: PersistedConfig["daemon"],
   patch: Omit<SupportedMutableConfigPatch, "removeProviders">,
@@ -806,10 +820,7 @@ function mergeMutableDaemonPatch(
   if (patch.appendSystemPrompt !== undefined) next.appendSystemPrompt = patch.appendSystemPrompt;
   if (patch.terminalProfiles !== undefined) next.terminalProfiles = patch.terminalProfiles;
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
-  if (patch.teams !== undefined) {
-    if (Object.keys(patch.teams).length > 0) next.teams = patch.teams;
-    else delete next.teams;
-  }
+  if (patch.teams !== undefined) mergeTeamsPatch(next, patch.teams);
   if (patch.goals?.maxConcurrentRuns !== undefined) {
     next.goals = { ...next.goals, maxConcurrentRuns: patch.goals.maxConcurrentRuns };
   }

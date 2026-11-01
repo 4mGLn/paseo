@@ -776,6 +776,7 @@ function GoalCriteria({ goal }: { goal: Goal }): ReactElement {
 
 const styles = StyleSheet.create((theme) => ({
   container: {
+    width: "100%",
     gap: theme.spacing[4],
   },
   backRow: {

@@ -170,6 +170,10 @@ export function GoalFormSheet({
       onClose={onClose}
       footer={footer}
       testID="goal-form-sheet"
+      desktopMaxWidth={720}
+      desktopResizable
+      desktopResizeInitialWidth={720}
+      desktopResizeMaxWidth={960}
     >
       {state.hosts.length > 1 && !state.originAgentId ? (
         <GoalHostField model={model} state={state} size={controlSize} />
