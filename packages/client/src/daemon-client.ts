@@ -6695,6 +6695,7 @@ export class DaemonClient {
     }
     if (config?.onPermissionRequest === "auto") this.requireGoalConfigEdit();
     if (config?.leadInterventions) this.requireGoalLeadInterventions();
+    if (config?.isolation) this.requireGoalIsolation();
     if (config?.limits?.userWaitMinutes !== undefined) this.requireGoalUserWait();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.create.response">({
       requestId: options.requestId,
@@ -6971,6 +6972,18 @@ export class DaemonClient {
   /** The goal setting leadInterventions, and the intervention.* events. */
   supportsGoalLeadInterventions(): boolean {
     return this.lastServerInfoMessage?.features?.goalLeadInterventions === true;
+  }
+
+  /** The goal setting isolation: run in the checkout instead of a worktree per agent. */
+  supportsGoalIsolation(): boolean {
+    return this.lastServerInfoMessage?.features?.goalIsolation === true;
+  }
+
+  private requireGoalIsolation(): void {
+    if (!this.supportsGoalIsolation()) {
+      // An older daemon would drop the setting and cut worktrees, which break GitButler.
+      throw new Error("Update the host to choose where a goal's agents work.");
+    }
   }
 
   private requireGoalLeadInterventions(): void {
