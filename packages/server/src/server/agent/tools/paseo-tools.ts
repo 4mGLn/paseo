@@ -3702,7 +3702,7 @@ function createToolCatalog(
   }
 
   async function listTeamRunMembers(runId: string): Promise<TeamAgentView[]> {
-    const records = new Map((await agentStorage.list()).map((record) => [record.id, record]));
+    const records = new Map((await agentStorage.listAll()).map((record) => [record.id, record]));
     const views = new Map<string, TeamAgentView>();
     for (const live of agentManager.listAgents()) {
       const view = toTeamAgentView(live, records.get(live.id) ?? null);
