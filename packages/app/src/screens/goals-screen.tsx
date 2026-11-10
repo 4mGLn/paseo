@@ -243,7 +243,7 @@ function GoalsScreenContent({ initialServerId, initialGoalId }: GoalsScreenProps
         keyboardShouldPersistTaps="handled"
         testID="goals-list"
       >
-        <View style={styles.column}>{body}</View>
+        <View style={showsDetail ? styles.detailColumn : styles.column}>{body}</View>
       </ScrollView>
       {form ? (
         <GoalFormSheet
@@ -571,6 +571,11 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     maxWidth: 720,
     alignSelf: "center",
+  },
+  detailColumn: {
+    width: "100%",
+    flexGrow: 1,
+    alignSelf: "stretch",
   },
   // Two blocks: search and filters wrap inside the start block, so New goal stays on the
   // first line at any width. On a phone the search field fills the first line beside it and

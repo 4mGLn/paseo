@@ -133,6 +133,9 @@ export function GoalSettingsSheet({
       onClose={onClose}
       footer={footer}
       testID="goal-settings-sheet"
+      desktopResizable
+      desktopResizeInitialWidth={720}
+      desktopResizeMaxWidth={960}
     >
       <Text style={styles.hint} testID="goal-settings-hint">
         {t("goals.actions.settingsHint")}
