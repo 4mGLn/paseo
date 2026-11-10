@@ -173,15 +173,17 @@ export const PASEO_TOOL_CATALOG = {
   },
   wait_for_agent: {
     label: "Wait for agent",
+    completedLabel: "Waited for agent",
     context: targetAgent(),
     detail: {
       inputOrder: ["agentId", "timeoutSeconds"],
       outputFields: ["status", "agentStatus", "lastMessage", "permission"],
     },
   },
-  list_team_members: { label: "List team members" },
+  list_team_members: { label: "List team members", completedLabel: "Listed team members" },
   send_team_message: {
     label: "Message teammate",
+    completedLabel: "Messaged teammate",
     context: targetAgent(),
     detail: { inputOrder: ["agentId", "message"], outputFields: ["outcome", "detail"] },
   },
@@ -375,6 +377,7 @@ export const PASEO_TOOL_CATALOG = {
   // Goals
   goal_revise_plan: {
     label: "Revise goal plan",
+    completedLabel: "Revised goal plan",
     context: field("reason"),
     detail: {
       promptField: "reason",

@@ -383,7 +383,7 @@ function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMut
       : {}),
     ...(patch.terminalProfiles !== undefined ? { terminalProfiles: patch.terminalProfiles } : {}),
     ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
-    ...(patch.teams !== undefined ? { teams: parseAgentTeamsConfigPatch(patch.teams) } : {}),
+    ...pickTeamsPatch(patch.teams),
     ...pickGoalsPatch(patch.goals),
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
@@ -513,10 +513,7 @@ export class DaemonConfigStore {
       merged.skills = { selection: parsedPatch.skills.selection };
     }
     if (parsedPatch.plugins !== undefined) merged.plugins = parsedPatch.plugins;
-    if (parsedPatch.teams !== undefined) {
-      if (Object.keys(parsedPatch.teams).length > 0) merged.teams = parsedPatch.teams;
-      else delete merged.teams;
-    }
+    setTeams(merged, parsedPatch.teams);
     const next = MutableDaemonConfigSchema.parse(
       omitMetadataGenerationProvidersFromConfig(
         omitProvidersFromConfig(merged, removedProviders),
@@ -859,6 +856,18 @@ function mergeMutableAgentPatch(
   return Object.keys(next).length > 0 ? (next as PersistedConfig["agents"]) : undefined;
 }
 
+function pickTeamsPatch(teams: unknown): { teams?: AgentTeamsConfig } {
+  return teams !== undefined ? { teams: parseAgentTeamsConfigPatch(teams) } : {};
+}
+
+// An empty record clears the teams instead of storing an empty object.
+function setTeams(target: object, teams: AgentTeamsConfig | undefined): void {
+  if (teams === undefined) return;
+  const holder = target as { teams?: AgentTeamsConfig };
+  if (Object.keys(teams).length > 0) holder.teams = teams;
+  else delete holder.teams;
+}
+
 function mergeMutableDaemonPatch(
   persistedDaemon: PersistedConfig["daemon"],
   patch: Omit<SupportedMutableConfigPatch, "removeProviders">,
@@ -887,10 +896,7 @@ function mergeMutableDaemonPatch(
   if (patch.appendSystemPrompt !== undefined) next.appendSystemPrompt = patch.appendSystemPrompt;
   if (patch.terminalProfiles !== undefined) next.terminalProfiles = patch.terminalProfiles;
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
-  if (patch.teams !== undefined) {
-    if (Object.keys(patch.teams).length > 0) next.teams = patch.teams;
-    else delete next.teams;
-  }
+  setTeams(next, patch.teams);
   if (patch.goals?.maxConcurrentRuns !== undefined) {
     next.goals = { ...next.goals, maxConcurrentRuns: patch.goals.maxConcurrentRuns };
   }
