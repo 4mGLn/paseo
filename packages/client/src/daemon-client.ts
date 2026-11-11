@@ -7456,6 +7456,7 @@ export class DaemonClient {
   }): Promise<GoalMutationPayload> {
     this.requireGoalConfigEdit();
     if (options.changes.leadInterventions) this.requireGoalLeadInterventions();
+    if (options.changes.policyPaths) this.requireGoalPolicyReview();
     if (options.changes.limits?.userWaitMinutes !== undefined) this.requireGoalUserWait();
     return this.sendNamespacedCorrelatedSessionRequest<"goal.update_config.response">({
       requestId: options.requestId,
@@ -7488,12 +7489,25 @@ export class DaemonClient {
     if (config.onPermissionRequest === "auto") this.requireGoalConfigEdit();
     if (config.leadInterventions) this.requireGoalLeadInterventions();
     if (config.isolation) this.requireGoalIsolation();
+    if (config.policyPaths) this.requireGoalPolicyReview();
     if (config.limits?.userWaitMinutes !== undefined) this.requireGoalUserWait();
   }
 
   /** The goal setting isolation: run in the checkout instead of a worktree per agent. */
   supportsGoalIsolation(): boolean {
     return this.lastServerInfoMessage?.features?.goalIsolation === true;
+  }
+
+  /** The goal setting policyPaths: review a merge again when it changes one of them. */
+  supportsGoalPolicyReview(): boolean {
+    return this.lastServerInfoMessage?.features?.goalPolicyReview === true;
+  }
+
+  private requireGoalPolicyReview(): void {
+    if (!this.supportsGoalPolicyReview()) {
+      // An older daemon would drop the setting and merge without the second review.
+      throw new Error("Update the host to review merges that change policy paths.");
+    }
   }
 
   private requireGoalIsolation(): void {
