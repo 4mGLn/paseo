@@ -1145,6 +1145,22 @@ function CompactSheetBody({
   );
 }
 
+const DEFAULT_DESKTOP_WIDTH = 520;
+
+/** The widest a resizable desktop sheet may grow, and the width it opens at (never past that). */
+function resolveResizeWidths(input: {
+  desktopMaxWidth: number | undefined;
+  desktopResizeMaxWidth: number | undefined;
+  desktopResizeInitialWidth: number | undefined;
+}): { maxWidth: number; initialWidth: number } {
+  const fallback = input.desktopMaxWidth ?? DEFAULT_DESKTOP_WIDTH;
+  const maxWidth = input.desktopResizeMaxWidth ?? fallback;
+  return {
+    maxWidth,
+    initialWidth: Math.min(input.desktopResizeInitialWidth ?? fallback, maxWidth),
+  };
+}
+
 export function AdaptiveModalSheet({
   header,
   showCloseButton = true,
@@ -1171,11 +1187,8 @@ export function AdaptiveModalSheet({
   const { t } = useTranslation();
   const isMobile = useIsCompactFormFactor();
   const desktopResizeEnabled = isDesktopResizeEnabled(desktopResizable, isMobile);
-  const configuredResizeMaxWidth = desktopResizeMaxWidth ?? desktopMaxWidth ?? 520;
-  const initialResizeWidth = Math.min(
-    desktopResizeInitialWidth ?? desktopMaxWidth ?? 520,
-    configuredResizeMaxWidth,
-  );
+  const { maxWidth: configuredResizeMaxWidth, initialWidth: initialResizeWidth } =
+    resolveResizeWidths({ desktopMaxWidth, desktopResizeMaxWidth, desktopResizeInitialWidth });
   const {
     size: desktopResizeSize,
     limits: desktopResizeLimits,

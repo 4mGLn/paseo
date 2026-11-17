@@ -456,7 +456,7 @@ function ControlledAgentControls({
   isRetryingModelProvider = false,
   modeControl,
   modelSelectorServerId = null,
-  teamControl = null,
+  teamControl,
   isCompactLayout,
 }: ControlledAgentControlsProps) {
   const { t } = useTranslation();
