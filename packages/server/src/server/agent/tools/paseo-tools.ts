@@ -3962,7 +3962,8 @@ function createToolCatalog(
         `To reply, call send_team_message with agentId "${caller.id}".`,
       ].join("\n");
       try {
-        const { disposition } = await sendPromptToAgent({
+        const dispatch = await sendPromptToAgent({
+          agentMessages: agentMessages(),
           agentManager,
           agentStorage,
           agentId,
@@ -3972,8 +3973,9 @@ function createToolCatalog(
           unarchive: false,
           logger: childLogger,
         });
-        if (disposition === "turn_started") {
-          await waitForAgentRunStartWithTimeout(agentManager, agentId);
+        const { disposition } = dispatch;
+        if (dispatch.disposition === "turn_started") {
+          await waitForAgentRunStartWithTimeout(agentManager, agentId, dispatch.started);
         }
         return {
           content: [],

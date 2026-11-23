@@ -1537,6 +1537,7 @@ export function DraftAgentControls({
               isRetryingModelProvider={isRetryingModelProvider}
               disabled={disabled}
               modeControl={modeControl}
+              teamControl={teamControl}
               modelSelectorServerId={modelSelectorServerId}
               isCompactLayout={isCompactLayout}
             />
