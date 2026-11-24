@@ -4076,10 +4076,11 @@ describe("send_agent_prompt MCP tool", () => {
           undefined,
           { workspaceId: "wks_parent" },
         );
+        // The sender created the recipient: agents may only prompt their own subagents and creator.
         const recipient = await manager.createAgent(
           { provider: "codex", cwd: existingCwd },
           undefined,
-          { workspaceId: "wks_parent" },
+          { workspaceId: "wks_parent", labels: { [PARENT_AGENT_ID_LABEL]: sender.id } },
         );
         await manager.archiveAgent(recipient.id);
         if (history !== "closed") {
