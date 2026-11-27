@@ -454,6 +454,9 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
       }
       const { notice } = current;
       if (notice && !current.sent) {
+        // The caller's wait_for_agent already returned this outcome: end without notifying again.
+        if (notice.result && (await deliveredByWait(record, notice.result, permissions, signal)))
+          return end(true);
         await deliver(record, notice, permissions, signal);
         signal.throwIfAborted();
         current.sent = true;

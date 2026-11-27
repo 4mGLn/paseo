@@ -274,6 +274,8 @@ export function HostToolsPage({ serverId }: { serverId: string }) {
         </View>
       )}
       <AgentSkillsSection serverId={serverId} />
+      <AgentTeamsSection serverId={serverId} />
+      <GoalRunCapSection serverId={serverId} />
     </View>
   );
 }
